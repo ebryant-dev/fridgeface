@@ -56,3 +56,19 @@ export function stepFromUpright(fromUprightDeg: number, dir: 1 | -1): number {
   if (!isOnStep(n)) return snapTowardUpright(n);
   return normalise(Math.round(n / SNAP_STEP) * SNAP_STEP + dir * SNAP_STEP);
 }
+
+/** Bounds of `pts` rotated by -offDeg about `c`, relative to `c`. */
+export function uprightBounds(pts: readonly { x: number; y: number }[], c: { x: number; y: number }, offDeg: number) {
+  const th = (-offDeg * Math.PI) / 180;
+  const cos = Math.cos(th), sin = Math.sin(th);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    const lx = p.x - c.x, ly = p.y - c.y;
+    const x = lx * cos - ly * sin, y = lx * sin + ly * cos;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}

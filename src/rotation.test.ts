@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Composition } from './composition';
-import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
+import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright, uprightBounds } from './rotation';
 
 // Rest-pose angles from upright, as measured in src/shapes.ts (shapes.ts needs a DOM, which unit tests lack;
 // the browser check confirms these live values).
@@ -102,5 +102,18 @@ describe('Composition rotation', () => {
     expect(c.getPiece(b.id)).toMatchObject({ x: 10, y: 11 });
     expect(c.getPiece(a.id)).toMatchObject({ x: 5, y: 6, rotation: 0 });
     expect(c.getPiece(d.id)).toMatchObject({ x: 20, y: 21, rotation: 0 });
+  });
+});
+
+describe('uprightBounds', () => {
+  it('measures a tilted bar in its upright frame', () => {
+    // A 10 x 100 bar, centred on the origin, drawn tilted 30 degrees clockwise.
+    const th = (30 * Math.PI) / 180;
+    const pts = [[-5, -50], [5, -50], [5, 50], [-5, 50]].map(([x, y]) => ({ x: x * Math.cos(th) - y * Math.sin(th), y: x * Math.sin(th) + y * Math.cos(th) }));
+    const b = uprightBounds(pts, { x: 0, y: 0 }, 30);
+    expect(b.w).toBeCloseTo(10, 6);
+    expect(b.h).toBeCloseTo(100, 6);
+    expect(b.x).toBeCloseTo(-5, 6);
+    expect(b.y).toBeCloseTo(-50, 6);
   });
 });

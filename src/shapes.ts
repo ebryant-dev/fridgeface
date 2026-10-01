@@ -3,6 +3,7 @@ import positiveRoundSvg from './shapes/positive-round.svg?raw';
 import negativeStemSvg from './shapes/negative-stem.svg?raw';
 import negativeRoundSvg from './shapes/negative-round.svg?raw';
 import wedgeSvg from './shapes/wedge.svg?raw';
+import { uprightBounds } from './rotation';
 
 export type Polarity = 'positive' | 'negative';
 export type Pt = { x: number; y: number };
@@ -20,6 +21,12 @@ export interface Shape {
   centroid: Pt;
   /** Bounding box in source units. */
   bbox: { x: number; y: number; w: number; h: number };
+  /**
+   * Bounds in the shape's UPRIGHT frame: the outline rotated by -uprightOffsetDeg about the centroid,
+   * relative to the centroid (so the centroid is the origin). A selection box drawn from this and
+   * rotated by fromUpright hugs the shape at any rotation.
+   */
+  uprightBox: { x: number; y: number; w: number; h: number };
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -121,11 +128,13 @@ function build(id: string, name: string, polarity: Polarity, svg: string, uprigh
   }
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
   const x = Math.min(...xs), y = Math.min(...ys);
+  const centroid = areaCentroid(pts);
   return {
     id, name, polarity, fill, geometry,
     uprightOffsetDeg: off,
-    centroid: areaCentroid(pts),
+    centroid,
     bbox: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y },
+    uprightBox: uprightBounds(pts, centroid, off),
   };
 }
 

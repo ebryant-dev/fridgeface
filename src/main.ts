@@ -6,24 +6,35 @@ import { deserialize, serialize, serializeToString, type SerializedComposition, 
 import { buildShareUrl, decode, encode, encodedFromHash } from './share';
 import { exportFilename, pngSize, renderCompositionSvg } from './export';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
+import { fridgeTexture, type FridgeTexture } from './texture';
+import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
+import { FONT_STACK, registerFont } from './font';
+import { icon } from './icons';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_THRESHOLD = 6; // px of pointer travel before a tray press becomes a drag
-const HANDLE_GAP = 40; // CSS px between a piece's top edge and the rotate handle's centre
+const HANDLE_GAP = 36; // CSS px between the selection box's upright top and the rotate handle's centre
 const HANDLE_HIT = 44; // CSS px, touch target diameter
+const SELECT_PAD = 6; // CSS px between a shape and its selection box
 const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a pan
 const BUTTON_ZOOM = 1.25; // factor per zoom button / key press
 const FIT_MARGIN = 64; // CSS px kept clear around the composition by Frame all
-const FIT_MAX_ZOOM = 2; // framing a lone piece never zooms past this
+const COMFORT_STEM = 0.25; // default view: a positive stem is this fraction of the board's shorter side
+const FIT_MAX_COMFORT = 2; // Frame all never zooms past this multiple of the comfortable scale
 const STORAGE_KEY = 'fridgeface:composition:v1';
 const SAVE_DEBOUNCE_MS = 400;
 const NOTICE_MS = 3500;
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
+const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
 
 const STYLES = `
 :host {
-  --k: 0.3; /* scale: CSS px per source unit (= board unit), shared by tray and board */
+  --k: 0.3; /* board scale: CSS px per board unit at zoom 1 */
+  --tk: 0.32; /* tray scale: CSS px per source unit */
+  --ink: #000;
+  --paper: #fff;
+  --font: ${FONT_STACK};
   display: block;
   position: relative;
   width: 100%;
@@ -31,98 +42,139 @@ const STYLES = `
   overflow: hidden;
   contain: layout paint;
   touch-action: none;
+  font-family: var(--font);
+  color: var(--ink);
+  background: rgb(197 195 192);
 }
 .root { display: flex; flex-direction: column; width: 100%; height: 100%; }
-.board { position: relative; flex: 1 1 auto; min-height: 0; background: #bdbdbd; }
+.board { position: relative; flex: 1 1 auto; min-height: 0; background: rgb(197 195 192); }
 .board svg.surface { display: block; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; -webkit-user-select: none; }
+.board svg.surface:focus-visible { outline: 3px solid var(--ink); outline-offset: -6px; }
 .board svg.surface [data-piece-id] { cursor: grab; }
 .board.space svg.surface, .board.space svg.surface [data-piece-id] { cursor: grab; }
 .board.panning svg.surface, .board.panning svg.surface [data-piece-id] { cursor: grabbing; }
+${shadowCss()}
+
+/* ---- controls: flat black-and-white, Jost caps ---- */
+.panel {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px;
+  background: var(--paper); border: 2px solid var(--ink); border-radius: 0;
+  box-shadow: 2px 3px 0 rgb(0 0 0 / 0.18);
+}
+button.b {
+  font: 500 13px/1 var(--font); letter-spacing: 0.1em; text-transform: uppercase;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 44px; min-height: 44px; padding: 0 12px; box-sizing: border-box;
+  background: var(--paper); color: var(--ink); border: 2px solid var(--ink); border-radius: 0; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button.b .ic { display: none; width: 22px; height: 22px; flex: none; }
+button.b:hover:not(:disabled) { background: #e8e8e8; }
+button.b[aria-pressed="true"], button.b[aria-expanded="true"] { background: var(--ink); color: var(--paper); }
+button.b:disabled { color: #767676; border-color: #767676; cursor: default; background: var(--paper); }
+/* Focus: an inset ring in the button's own text colour (black on white, white on black: 21:1), so it never
+   merges with the panel border; tray shapes get an outside ring on the grey band (>= 9:1). */
+button.b:focus-visible, .linkbox input:focus-visible { outline: 2px solid currentColor; outline-offset: -7px; }
+.tray button:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+.msg { font: 700 13px/1.2 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
 .dock {
   position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px;
   align-items: flex-end; pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
-.view, .history {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px;
-  background: #fff; border: 2px solid #000; border-radius: 10px;
-}
 .view { margin-left: auto; }
-.share { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px; }
-.share button, .linkbox button {
-  font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
-  background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
-}
-.share button:disabled { opacity: 0.35; cursor: default; }
-.share button[aria-pressed="true"], .share button[aria-expanded="true"] { background: #000; color: #fff; }
-.share button:focus-visible, .linkbox button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
-.exportmenu { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.exportmenu { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 4px; }
 .exportmenu[hidden], .linkbox[hidden], .notice [hidden] { display: none; }
 .notice { flex: 0 0 100%; display: flex; pointer-events: none; }
-.notice .msg { font: 600 14px/1.2 system-ui, sans-serif; color: #fff; background: #000; padding: 10px 14px; border-radius: 8px; }
-.linkbox { flex: 0 0 100%; box-sizing: border-box; display: flex; gap: 6px; align-items: center; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px; }
-.linkbox input { flex: 1 1 auto; min-width: 0; min-height: 40px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid #000; border-radius: 6px; }
+.notice .msg { color: var(--paper); background: var(--ink); padding: 11px 14px; }
+.linkbox { flex: 0 0 100%; box-sizing: border-box; flex-wrap: nowrap; }
+.linkbox input { flex: 1 1 auto; min-width: 0; min-height: 44px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); }
 .history .main, .history .confirm { display: contents; }
 .history [hidden] { display: none; }
-.history .msg { font: 600 14px/1.2 system-ui, sans-serif; color: #000; padding: 0 6px; }
-.view button, .history button {
-  font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
-  background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
-}
-.history button { padding: 0 10px; }
-.view button:disabled, .history button:disabled { opacity: 0.35; cursor: default; }
-.view button:focus-visible, .history button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
+.history .msg { padding: 0 8px; }
 .actions {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px;
+  flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box;
 }
-.actions button[aria-pressed="true"] { background: #000; color: #fff; }
 .actions[hidden] { display: none; }
-.actions button {
-  font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
-  background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
-}
-.actions button:disabled { opacity: 0.35; cursor: default; }
-.actions button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
+
+/* ---- tray: a slightly darker band of the same fridge door ---- */
 .tray {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: center;
-  gap: 12px 20px;
-  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
-  background: #8a8a8a;
+  gap: 12px 56px;
+  padding: 18px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  background-color: rgb(186 184 181);
+  background-image: linear-gradient(rgb(0 0 0 / 0.055), rgb(0 0 0 / 0.055)), var(--tex, none);
+  background-size: auto, calc(1024px * var(--tk)) calc(1024px * var(--tk));
+  box-shadow: inset 0 2px 0 rgb(0 0 0 / 0.12);
   box-sizing: border-box;
+  --px: calc(1px / var(--tk));
 }
+.tray .grp { display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
+.tray .shapes { display: flex; align-items: flex-end; justify-content: center; gap: 28px; }
+.tray .bracket { display: flex; align-items: flex-end; gap: 10px; height: 14px; margin: 0 4px; }
+.tray .bracket::before, .tray .bracket::after {
+  content: ""; flex: 1 1 0; height: 12px; border-bottom: 1.5px solid var(--ink); box-sizing: border-box;
+}
+.tray .bracket::before { border-left: 1.5px solid var(--ink); }
+.tray .bracket::after { border-right: 1.5px solid var(--ink); }
+.tray .bracket span { font: 700 13px/1 var(--font); letter-spacing: 0.1em; text-transform: uppercase; transform: translateY(6px); white-space: nowrap; }
 .tray button {
   all: unset;
   box-sizing: content-box;
   cursor: grab;
   line-height: 0;
-  border-radius: 6px;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  width: calc(var(--w) * var(--k) * 1px);
-  height: calc(var(--h) * var(--k) * 1px);
+  width: calc(var(--w) * var(--tk) * 1px);
+  height: calc(var(--h) * var(--tk) * 1px);
 }
-.tray button:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
 .tray svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.preview { position: fixed; z-index: 10; pointer-events: none; line-height: 0; opacity: 0.85; }
+.preview { position: fixed; z-index: 10; pointer-events: none; line-height: 0; opacity: 0.9; }
 .preview svg { display: block; width: 100%; height: 100%; overflow: visible; }
-@media (max-width: 600px) { :host { --k: 0.17; } .tray { gap: 10px 14px; padding-inline: 10px; } }
+
+@media (max-width: 600px) {
+  :host { --k: 0.17; --tk: 0.17; }
+  .tray { gap: 10px 14px; padding: 12px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .tray .grp { display: contents; }
+  .tray .shapes { display: contents; }
+  .tray .bracket { display: none; }
+  button.b.i { padding: 0; width: 44px; }
+  button.b.i .ic { display: block; }
+  button.b.i .tx { display: none; }
+  .panel { gap: 3px; padding: 3px; }
+  .dock { left: 8px; right: 8px; bottom: 8px; gap: 6px; }
+  .actions { top: 8px; }
+  .msg { font-size: 12px; }
+}
 `;
 
-function geometryHtml(s: Shape): string {
-  return s.geometry.kind === 'polygon'
-    ? `<polygon points="${s.geometry.points}" fill="${s.fill}"/>`
-    : `<path d="${s.geometry.d}" fill="${s.fill}"/>`;
+/** A control button: text label on wide screens, icon on narrow ones (`i`). */
+function btn(attrs: string, label: string, ic?: string): string {
+  return `<button type="button" class="b${ic ? ' i' : ''}" ${attrs}>${ic ? icon(ic) : ''}<span class="tx">${label}</span></button>`;
 }
 
+/** The geometry element with an `{a}` placeholder for attributes. */
+function geometryTemplate(s: Shape): string {
+  return s.geometry.kind === 'polygon' ? `<polygon points="${s.geometry.points}" {a}/>` : `<path d="${s.geometry.d}" {a}/>`;
+}
+
+function geometryHtml(s: Shape): string {
+  return geometryTemplate(s).replace('{a}', `fill="${s.fill}"`);
+}
+
+/** A shape at rest in its own source coordinates, with its magnet shadow (tray and drag preview). */
 function shapeSvg(s: Shape): string {
   const { x, y, w, h } = s.bbox;
-  return `<svg viewBox="${x - PAD} ${y - PAD} ${w + 2 * PAD} ${h + 2 * PAD}" aria-hidden="true" focusable="false">${geometryHtml(s)}</svg>`;
+  return (
+    `<svg viewBox="${x - PAD} ${y - PAD} ${w + 2 * PAD} ${h + 2 * PAD}" aria-hidden="true" focusable="false">` +
+    `<g class="sh">${shadowLayersMarkup(geometryTemplate(s))}</g><g class="bd">${geometryHtml(s)}</g></svg>`
+  );
 }
 
 function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}): SVGElementTagNameMap[K] {
@@ -131,9 +183,18 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
   return el;
 }
 
-/** Puts the shape's centroid at the piece's (x, y), then rotates about that centroid. */
-function pieceTransform(p: Piece, s: Shape): string {
-  return `translate(${p.x - s.centroid.x} ${p.y - s.centroid.y}) rotate(${p.rotation} ${s.centroid.x} ${s.centroid.y})`;
+const n3 = (v: number) => String(Math.round(v * 1000) / 1000);
+
+/** Rotation about the centroid, which the piece group has already moved to (x, y). */
+function rotationTransform(p: Piece, s: Shape): string {
+  return `rotate(${n3(p.rotation)}) translate(${n3(-s.centroid.x)} ${n3(-s.centroid.y)})`;
+}
+
+interface PieceEls {
+  g: SVGGElement;
+  /** Every group that carries the piece's rotation (shadow layers and the shape). */
+  rots: SVGGElement[];
+  last?: Piece;
 }
 
 export class FridgeFace extends HTMLElement {
@@ -146,14 +207,22 @@ export class FridgeFace extends HTMLElement {
   private actions!: HTMLElement;
   private boardEl!: HTMLElement;
   private trayEl!: HTMLElement;
-  private els = new Map<string, SVGGElement>();
+  private els = new Map<string, PieceEls>();
+  private texture!: FridgeTexture;
+  private textureRect!: SVGRectElement;
+  private liftedId: string | null = null;
+  private liftTimer = 0;
+  private viewReady = false;
+  private pxZoom = NaN;
+  private kCache = 0;
+  private vpCache: { width: number; height: number } | null = null;
   private selectedId: string | null = null;
   private snap = false;
   private touches = new Map<number, { x: number; y: number }>();
   private rotating: { pointerId: number; id: string; grab: number; startRot: number } | null = null;
   private twist: { id: string; lastAngle: number; accum: number; startRot: number; startPos: { x: number; y: number }; startMid: { x: number; y: number } } | null = null;
 
-  private moving: { pointerId: number; id: string; startPt: { x: number; y: number }; startX: number; startY: number } | null = null;
+  private moving: { pointerId: number; id: string; startPt: { x: number; y: number }; startX: number; startY: number; moved?: boolean } | null = null;
   private trayDrag: { pointerId: number; shape: Shape; startX: number; startY: number; active: boolean; preview?: HTMLElement } | null = null;
   private suppressClick = false;
 
@@ -188,6 +257,9 @@ export class FridgeFace extends HTMLElement {
     window.addEventListener('pagehide', this.onPageHide);
     window.addEventListener('hashchange', this.onHashChange);
     if (this.shadowRoot) return;
+    registerFont();
+    this.texture = fridgeTexture();
+    const tex = this.texture;
     const root = this.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
     style.textContent = STYLES;
@@ -196,54 +268,59 @@ export class FridgeFace extends HTMLElement {
     wrap.innerHTML = `
       <div class="board" part="board">
         <svg class="surface" tabindex="0" role="application" aria-label="Board">
-          <g data-camera transform="matrix(1 0 0 1 0 0)"><g data-pieces></g><g data-overlay></g></g>
+          <defs><pattern id="ff-tex" patternUnits="userSpaceOnUse" x="0" y="0" width="${tex.units}" height="${tex.units}"><image href="${tex.href}" x="0" y="0" width="${tex.units}" height="${tex.units}" preserveAspectRatio="none"/></pattern></defs>
+          <g data-camera transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-overlay></g></g>
         </svg>
-        <div class="actions" role="toolbar" aria-label="Piece actions" hidden>
-          <button type="button" data-action="delete" aria-label="Delete piece">Delete</button>
-          <button type="button" data-action="rotate-left" aria-label="Rotate left 15°">&#8630; 15°</button>
-          <button type="button" data-action="rotate-right" aria-label="Rotate right 15°">15° &#8631;</button>
-          <button type="button" data-action="snap" aria-pressed="false">Snap 15°</button>
-          <button type="button" data-action="forward" aria-label="Bring forward">Forward</button>
-          <button type="button" data-action="backward" aria-label="Send backward">Back</button>
+        <div class="actions panel" role="toolbar" aria-label="Piece actions" hidden>
+          ${btn('data-action="delete" aria-label="Delete piece"', 'Delete', 'delete')}
+          ${btn('data-action="rotate-left" aria-label="Rotate left 15°"', '&#8630; 15°', 'rotate-left')}
+          ${btn('data-action="rotate-right" aria-label="Rotate right 15°"', '15° &#8631;', 'rotate-right')}
+          ${btn('data-action="snap" aria-label="Snap 15°" aria-pressed="false"', 'Snap 15°', 'snap')}
+          ${btn('data-action="forward" aria-label="Bring forward"', 'Forward', 'forward')}
+          ${btn('data-action="backward" aria-label="Send backward"', 'Back', 'backward')}
         </div>
         <div class="dock">
           <div class="notice" role="status" aria-live="polite"><span class="msg" hidden></span></div>
-          <div class="linkbox" role="group" aria-label="Share link" hidden>
+          <div class="linkbox panel" role="group" aria-label="Share link" hidden>
             <input type="text" readonly aria-label="Share link (copy it from here)" />
-            <button type="button" data-share="close" aria-label="Close share link">Close</button>
+            ${btn('data-share="close" aria-label="Close share link"', 'Close', 'close')}
           </div>
-          <div class="history" role="group" aria-label="History">
+          <div class="history panel" role="group" aria-label="History">
             <span class="main" role="group" aria-label="Undo, redo and clear">
-              <button type="button" data-history="undo" aria-label="Undo" disabled>Undo</button>
-              <button type="button" data-history="redo" aria-label="Redo" disabled>Redo</button>
-              <button type="button" data-history="clear" aria-label="Clear board" disabled>Clear</button>
+              ${btn('data-history="undo" aria-label="Undo" disabled', 'Undo', 'undo')}
+              ${btn('data-history="redo" aria-label="Redo" disabled', 'Redo', 'redo')}
+              ${btn('data-history="clear" aria-label="Clear board" disabled', 'Clear', 'clear')}
             </span>
             <span class="confirm" role="alertdialog" aria-label="Confirm clearing the board" hidden>
               <span class="msg">Clear everything?</span>
-              <button type="button" data-history="clear-yes" aria-label="Confirm clear board">Clear</button>
-              <button type="button" data-history="clear-no" aria-label="Cancel clear board">Cancel</button>
+              ${btn('data-history="clear-yes" aria-label="Confirm clear board"', 'Clear')}
+              ${btn('data-history="clear-no" aria-label="Cancel clear board"', 'Cancel')}
             </span>
           </div>
-          <div class="share" role="group" aria-label="Share and export">
-            <button type="button" data-share="copy" aria-label="Copy share link" disabled>Share</button>
-            <button type="button" data-share="export" aria-label="Export" aria-haspopup="true" aria-expanded="false" disabled>Export</button>
+          <div class="share panel" role="group" aria-label="Share and export">
+            ${btn('data-share="copy" aria-label="Copy share link" disabled', 'Share', 'share')}
+            ${btn('data-share="export" aria-label="Export" aria-haspopup="true" aria-expanded="false" disabled', 'Export', 'export')}
             <div class="exportmenu" role="group" aria-label="Export as" hidden>
-              <button type="button" data-export="png">Download PNG</button>
-              <button type="button" data-export="svg">Download SVG</button>
+              ${btn('data-export="png" aria-label="Download PNG"', 'PNG')}
+              ${btn('data-export="svg" aria-label="Download SVG"', 'SVG')}
             </div>
           </div>
-          <div class="view" role="group" aria-label="View">
-            <button type="button" data-view="out" aria-label="Zoom out">&minus;</button>
-            <button type="button" data-view="fit" aria-label="Frame all pieces">Fit</button>
-            <button type="button" data-view="in" aria-label="Zoom in">+</button>
+          <div class="view panel" role="group" aria-label="View">
+            ${btn('data-view="out" aria-label="Zoom out"', '&minus;', 'zoom-out')}
+            ${btn('data-view="fit" aria-label="Frame all pieces"', 'Fit', 'fit')}
+            ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
           </div>
         </div>
       </div>
-      <div class="tray" part="tray" role="group" aria-label="Shapes"></div>`;
+      <div class="tray" part="tray" role="group" aria-label="Shapes">
+        <div class="grp" role="group" aria-label="Positive shapes"><div class="shapes" data-polarity="positive"></div><div class="bracket" aria-hidden="true"><span>Positive</span></div></div>
+        <div class="grp" role="group" aria-label="Negative shapes"><div class="shapes" data-polarity="negative"></div><div class="bracket" aria-hidden="true"><span>Negative</span></div></div>
+      </div>`;
     this.boardEl = wrap.querySelector('.board')!;
     this.trayEl = wrap.querySelector('.tray')!;
     this.surface = wrap.querySelector('svg.surface')!;
     this.cameraEl = wrap.querySelector('[data-camera]')!;
+    this.textureRect = wrap.querySelector('[data-texture]')!;
     this.piecesLayer = wrap.querySelector('[data-pieces]')!;
     this.overlay = wrap.querySelector('[data-overlay]')!;
     this.actions = wrap.querySelector('.actions')!;
@@ -251,6 +328,7 @@ export class FridgeFace extends HTMLElement {
     this.shareEl = wrap.querySelector('.share')!;
     this.noticeEl = wrap.querySelector('.notice .msg')!;
     this.linkboxEl = wrap.querySelector('.linkbox')!;
+    this.trayEl.style.setProperty('--tex', `url("${tex.href}")`);
 
     for (const s of SHAPES) {
       const b = document.createElement('button');
@@ -260,7 +338,7 @@ export class FridgeFace extends HTMLElement {
       b.style.setProperty('--w', String(s.bbox.w + 2 * PAD));
       b.style.setProperty('--h', String(s.bbox.h + 2 * PAD));
       b.innerHTML = shapeSvg(s);
-      this.trayEl.appendChild(b);
+      wrap.querySelector(`.tray [data-polarity=${s.polarity}]`)!.appendChild(b);
     }
     root.append(style, wrap);
 
@@ -305,11 +383,20 @@ export class FridgeFace extends HTMLElement {
       this.syncViewBox();
       if (this.pendingFit && this.boardEl.clientWidth) {
         this.pendingFit = false;
+        this.viewReady = true;
         this.fitToComposition();
+      } else if (!this.viewReady && this.boardEl.clientWidth) {
+        this.viewReady = true;
+        this.setView(this.defaultView());
       }
+      this.applyView(); // the texture rect follows the viewport size
       this.render();
     }).observe(this.boardEl);
     this.syncViewBox();
+    if (this.boardEl.clientWidth) {
+      this.viewReady = true;
+      this.view = this.defaultView();
+    }
     this.applyView();
     this.restoreSaved();
     this.render();
@@ -480,14 +567,19 @@ export class FridgeFace extends HTMLElement {
     return buildShareUrl(base, await encode(this.getComposition()));
   }
 
-  /** The composition as a standalone SVG string (the same renderer the PNG uses). */
+  /** The composition as a standalone SVG string (the same renderer the PNG uses): texture, shadows, pieces. */
   exportSVG(): string {
-    return renderCompositionSvg(this.composition.pieces, (id) => SHAPE_BY_ID.get(id)).svg;
+    return this.renderExport().svg;
+  }
+
+  private renderExport(opaqueBase = true) {
+    const t = this.texture ?? fridgeTexture();
+    return renderCompositionSvg(this.composition.pieces, (id) => SHAPE_BY_ID.get(id), { href: t.href, units: t.units }, opaqueBase);
   }
 
   /** The composition rasterised at 2x (longest side capped at 4096 px). */
   async exportPNG(): Promise<Blob> {
-    const r = renderCompositionSvg(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
+    const r = this.renderExport(false);
     const { width, height } = pngSize(r.width, r.height);
     const img = new Image();
     await new Promise<void>((resolve, reject) => {
@@ -495,10 +587,23 @@ export class FridgeFace extends HTMLElement {
       img.onerror = () => reject(new Error('could not rasterise the composition'));
       img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(r.svg)}`;
     });
+    await img.decode().catch(() => {});
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
+    const ctx = canvas.getContext('2d')!;
+    // Lay the same texture tile first, mapped exactly like the SVG's board-space pattern. Some WebKit
+    // versions draw an SVG image's nested data-URL <image> late or not at all; this keeps the PNG right.
+    const t = this.texture ?? fridgeTexture();
+    const pat = ctx.createPattern(t.canvas, 'repeat');
+    const vb = /viewBox="([-\d.]+) ([-\d.]+)/.exec(r.svg)!;
+    const sc = width / r.width;
+    if (pat) {
+      pat.setTransform(new DOMMatrix().scale(sc).translate(-Number(vb[1]), -Number(vb[2])).scale(t.units / t.px));
+      ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(img, 0, 0, width, height);
     return new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG encoding failed'))), 'image/png'));
   }
 
@@ -612,15 +717,22 @@ export class FridgeFace extends HTMLElement {
 
   // ---- geometry helpers -------------------------------------------------
 
+  /** CSS px per board unit at zoom 1 (from `--k`), cached by syncViewBox so per-frame paths never read styles. */
   private get k(): number {
+    return this.kCache || this.readK();
+  }
+
+  private readK(): number {
     return parseFloat(getComputedStyle(this).getPropertyValue('--k')) || 0.3;
   }
 
   /** Board units are `k` CSS px: size the viewBox to the board's pixel size divided by k. */
   private syncViewBox() {
     const r = this.boardEl.getBoundingClientRect();
-    const k = this.k;
+    const k = (this.kCache = this.readK());
     if (!r.width || !r.height) return;
+    this.vpCache = { width: r.width / k, height: r.height / k };
+    this.pxZoom = NaN; // k may have changed: refresh the shadows' screen-px scale
     this.surface.setAttribute('viewBox', `0 0 ${r.width / k} ${r.height / k}`);
   }
 
@@ -637,6 +749,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private viewport(): { width: number; height: number } {
+    if (this.vpCache) return this.vpCache;
     const r = this.boardEl.getBoundingClientRect();
     const k = this.k;
     return { width: r.width / k, height: r.height / k };
@@ -659,11 +772,38 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** The only per-frame work for pan and zoom: one transform attribute, plus the selection overlay on zoom change. */
+  /**
+   * The only per-frame work for pan and zoom: the camera transform and the texture rect's bounds. On a ZOOM
+   * change only, the screen-px scale `--px` (shadows) and the selection overlay are updated too.
+   */
   private applyView() {
     const { x, y, zoom } = this.view;
     this.cameraEl.setAttribute('transform', `matrix(${zoom} 0 0 ${zoom} ${x} ${y})`);
+    // The texture lives in BOARD space (it moves and scales with the view); its rect just covers the viewport.
+    const vp = this.viewport();
+    const tl = screenToBoard(this.view, { x: 0, y: 0 });
+    const r = this.textureRect;
+    r.setAttribute('x', String(tl.x - 2));
+    r.setAttribute('y', String(tl.y - 2));
+    r.setAttribute('width', String(vp.width / zoom + 4));
+    r.setAttribute('height', String(vp.height / zoom + 4));
+    if (zoom !== this.pxZoom) {
+      this.pxZoom = zoom;
+      this.cameraEl.style.setProperty('--px', `${1 / (this.k * zoom)}px`);
+    }
     if (zoom !== this.overlayZoom) this.renderOverlay();
+  }
+
+  /** The zoom at which a positive stem is COMFORT_STEM of the board's shorter visible side. */
+  comfortZoom(): number {
+    const vp = this.viewport();
+    const side = Math.min(vp.width, vp.height);
+    return side > 0 ? (COMFORT_STEM * side) / STEM_LENGTH : DEFAULT_CAMERA.zoom;
+  }
+
+  /** The default view: comfortable scale, board origin at the top-left. */
+  private defaultView(): Camera {
+    return { x: 0, y: 0, zoom: this.comfortZoom() };
   }
 
   private zoomBy(factor: number) {
@@ -675,10 +815,10 @@ export class FridgeFace extends HTMLElement {
   fitToComposition() {
     const b = rotatedBounds(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
     if (!b) {
-      this.setView({ ...DEFAULT_CAMERA });
+      this.setView(this.defaultView());
       return;
     }
-    this.setView(fitTo(b, this.viewport(), FIT_MARGIN / this.k, FIT_MAX_ZOOM));
+    this.setView(fitTo(b, this.viewport(), FIT_MARGIN / this.k, FIT_MAX_COMFORT * this.comfortZoom()));
   }
 
   private setSpace(on: boolean) {
@@ -750,6 +890,8 @@ export class FridgeFace extends HTMLElement {
       prev.style.width = `${(s.bbox.w + 2 * PAD) * this.k * this.view.zoom}px`;
       prev.style.height = `${(s.bbox.h + 2 * PAD) * this.k * this.view.zoom}px`;
       prev.innerHTML = shapeSvg(s);
+      prev.classList.add('lifted'); // a piece in the hand casts the lifted shadow
+      prev.style.setProperty('--px', `${1 / (this.k * this.view.zoom)}px`);
       this.shadowRoot!.appendChild(prev);
       d.preview = prev;
     }
@@ -816,6 +958,7 @@ export class FridgeFace extends HTMLElement {
       const pt = this.toBoard(e.clientX, e.clientY);
       this.rotating = { pointerId: e.pointerId, id: sel.id, grab: this.angleTo(sel, pt), startRot: sel.rotation };
       this.surface.setPointerCapture(e.pointerId);
+      this.syncLift();
       e.preventDefault();
       return;
     }
@@ -881,6 +1024,7 @@ export class FridgeFace extends HTMLElement {
       startPos: { x: sel.x, y: sel.y },
       startMid: this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2),
     };
+    this.syncLift();
   }
 
   private onBoardMove(e: PointerEvent) {
@@ -931,7 +1075,10 @@ export class FridgeFace extends HTMLElement {
     const m = this.moving;
     if (!m || m.pointerId !== e.pointerId) return;
     const pt = this.toBoard(e.clientX, e.clientY);
+    if (!m.moved && pt.x === m.startPt.x && pt.y === m.startPt.y) return;
+    m.moved = true;
     this.composition.movePiece(m.id, m.startX + (pt.x - m.startPt.x), m.startY + (pt.y - m.startPt.y));
+    this.syncLift();
   }
 
   private onBoardUp(e: PointerEvent) {
@@ -945,6 +1092,7 @@ export class FridgeFace extends HTMLElement {
     if (this.twist && this.touches.size < 2) this.twist = null; // ends cleanly; the remaining finger does nothing
     if (this.moving && this.moving.pointerId === e.pointerId) this.moving = null;
     if (this.rotating && this.rotating.pointerId === e.pointerId) this.rotating = null;
+    this.syncLift();
     this.commitGesture();
   }
 
@@ -1052,38 +1200,55 @@ export class FridgeFace extends HTMLElement {
     this.overlayZoom = this.view.zoom;
     this.overlay.replaceChildren();
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
-    if (sel) {
-      const s = SHAPE_BY_ID.get(sel.shapeId)!;
-      const k = this.k * this.view.zoom; // handle and gap stay in screen size at every zoom
-      const top = s.bbox.y - s.centroid.y; // top edge, in the piece's own frame (centroid at origin)
-      const hy = top - HANDLE_GAP / k;
-      const g = svgEl('g', { transform: `translate(${sel.x} ${sel.y}) rotate(${sel.rotation})` });
-      g.append(
-        svgEl('rect', {
-          x: String(s.bbox.x - s.centroid.x),
-          y: String(top),
-          width: String(s.bbox.w),
-          height: String(s.bbox.h),
-          fill: 'none',
-          stroke: '#0a84ff',
-          'stroke-width': '2',
-          'stroke-dasharray': '6 4',
-          'vector-effect': 'non-scaling-stroke',
-          'pointer-events': 'none',
-        }),
-        svgEl('line', {
-          x1: '0', y1: String(top), x2: '0', y2: String(hy),
-          stroke: '#0a84ff', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'pointer-events': 'none',
-        }),
-      );
-      const h = svgEl('g', { 'data-handle': '', style: 'cursor: grab' });
-      h.append(
-        svgEl('circle', { cx: '0', cy: String(hy), r: String(HANDLE_HIT / 2 / k), fill: 'transparent' }),
-        svgEl('circle', { cx: '0', cy: String(hy), r: String(8 / k), fill: '#fff', stroke: '#0a84ff', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'pointer-events': 'none' }),
-      );
-      g.append(h);
-      this.overlay.appendChild(g);
-    }
+    if (!sel) return;
+    const s = SHAPE_BY_ID.get(sel.shapeId)!;
+    const k = this.k * this.view.zoom; // CSS px per board unit: pad, gap and handle stay screen-sized at every zoom
+    const pad = SELECT_PAD / k;
+    const ub = s.uprightBox; // the shape's bounds in its upright frame, centroid at the origin
+    const bx = ub.x - pad, by = ub.y - pad, bw = ub.w + 2 * pad, bh = ub.h + 2 * pad;
+    const cx = bx + bw / 2; // the handle sits at the box's upright top centre
+    const hy = by - HANDLE_GAP / k;
+    const g = svgEl('g', {
+      transform: `translate(${n3(sel.x)} ${n3(sel.y)}) rotate(${n3(fromUpright(s.uprightOffsetDeg, sel.rotation))})`,
+      'pointer-events': 'none',
+    });
+    // Two-tone strokes (white under black dashes) read on black pieces, white pieces and the grey board.
+    const line = (attrs: Record<string, string>) => {
+      const base = { ...attrs, fill: 'none', 'vector-effect': 'non-scaling-stroke' };
+      return [
+        svgEl(attrs.r ? 'circle' : attrs.width ? 'rect' : 'line', { ...base, stroke: '#fff', 'stroke-width': '3.5' } as Record<string, string>),
+        svgEl(attrs.r ? 'circle' : attrs.width ? 'rect' : 'line', { ...base, stroke: '#000', 'stroke-width': '1.5', ...(attrs.r ? {} : { 'stroke-dasharray': '5 4' }) } as Record<string, string>),
+      ];
+    };
+    g.append(
+      ...line({ x: n3(bx), y: n3(by), width: n3(bw), height: n3(bh) }),
+      ...line({ x1: n3(cx), y1: n3(by), x2: n3(cx), y2: n3(hy + 9 / k) }),
+    );
+    const h = svgEl('g', { 'data-handle': '', style: 'cursor: grab', 'pointer-events': 'all' });
+    h.append(
+      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(HANDLE_HIT / 2 / k), fill: 'transparent' }),
+      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(9 / k), fill: '#fff', stroke: '#000', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke' }),
+      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(3 / k), fill: '#000' }),
+    );
+    g.append(h);
+    this.overlay.appendChild(g);
+  }
+
+  /** The piece being dragged, rotated or twisted is lifted: bigger, softer shadow and a small shift up-left. */
+  private syncLift() {
+    const m = this.moving;
+    const id = this.rotating?.id ?? this.twist?.id ?? (m && m.moved ? m.id : null);
+    if (id === this.liftedId) return;
+    const prev = this.liftedId ? this.els.get(this.liftedId)?.g : undefined;
+    const next = id ? this.els.get(id)?.g : undefined;
+    for (const g of [prev, next]) g?.classList.add('anim');
+    prev?.classList.remove('lifted');
+    next?.classList.add('lifted');
+    this.liftedId = id;
+    clearTimeout(this.liftTimer);
+    this.liftTimer = window.setTimeout(() => {
+      for (const g of this.piecesLayer.querySelectorAll('.anim')) g.classList.remove('anim');
+    }, LIFT_MS + 60);
   }
 
   private renderHistoryUi() {
@@ -1103,24 +1268,35 @@ export class FridgeFace extends HTMLElement {
     const live = new Set(pieces.map((p) => p.id));
     for (const [id, el] of this.els) {
       if (!live.has(id)) {
-        el.remove();
+        el.g.remove();
         this.els.delete(id);
       }
     }
     // Reconcile in stacking order (first = bottom). Elements are kept stable so pointer capture survives.
+    // Each piece is [shadow, shape]: its shadow falls on the pieces below it, never on itself or anything above.
     let expected: ChildNode | null = this.piecesLayer.firstChild;
     for (const p of pieces) {
       const s = SHAPE_BY_ID.get(p.shapeId)!;
       let el = this.els.get(p.id);
       if (!el) {
-        el = svgEl('g', { 'data-piece-id': p.id, 'data-shape': p.shapeId });
-        el.innerHTML = geometryHtml(s);
+        const g = svgEl('g', { 'data-piece-id': p.id, 'data-shape': p.shapeId });
+        g.innerHTML = `<g class="sh">${shadowLayersMarkup(geometryTemplate(s))}</g><g class="bd"><g data-rot>${geometryHtml(s)}</g></g>`;
+        el = { g, rots: [...g.querySelectorAll<SVGGElement>('[data-rot]')] };
         this.els.set(p.id, el);
       }
-      el.setAttribute('transform', pieceTransform(p, s));
-      if (el !== expected) this.piecesLayer.insertBefore(el, expected);
-      else expected = el.nextSibling;
+      if (el.last !== p) {
+        // Pieces are immutable snapshots: an unchanged piece keeps its object, so it costs nothing here.
+        if (!el.last || el.last.x !== p.x || el.last.y !== p.y) el.g.setAttribute('transform', `translate(${n3(p.x)} ${n3(p.y)})`);
+        if (!el.last || el.last.rotation !== p.rotation) {
+          const rot = rotationTransform(p, s);
+          for (const r of el.rots) r.setAttribute('transform', rot);
+        }
+        el.last = p;
+      }
+      if (el.g !== expected) this.piecesLayer.insertBefore(el.g, expected);
+      else expected = el.g.nextSibling;
     }
+    this.syncLift();
 
     this.renderOverlay();
     this.renderHistoryUi();
