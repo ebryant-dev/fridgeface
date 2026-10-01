@@ -1,0 +1,26 @@
+{
+  "name": "fridgeface",
+  "version": "0.1.0",
+  "description": "Fridgeface: an interactive five-shape type toy, shipped as the <fridge-face> web component.",
+  "type": "module",
+  "main": "./dist/fridgeface.js",
+  "module": "./dist/fridgeface.js",
+  "exports": {
+    ".": "./dist/fridgeface.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}
