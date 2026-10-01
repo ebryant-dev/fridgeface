@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: early development (chunk 2: place, select, move, delete and restack pieces).
+Status: early development (chunk 4: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board).
 
 © Edward Hamel. All rights reserved.
 

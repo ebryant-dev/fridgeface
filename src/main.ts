@@ -1,5 +1,6 @@
 import { SHAPES, type Shape } from './shapes';
 import { Composition, type Piece } from './composition';
+import { DEFAULT_CAMERA, fitTo, panBy, rotatedBounds, screenToBoard, zoomAt, type Camera } from './camera';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -7,6 +8,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_THRESHOLD = 6; // px of pointer travel before a tray press becomes a drag
 const HANDLE_GAP = 40; // CSS px between a piece's top edge and the rotate handle's centre
 const HANDLE_HIT = 44; // CSS px, touch target diameter
+const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a pan
+const BUTTON_ZOOM = 1.25; // factor per zoom button / key press
+const FIT_MARGIN = 64; // CSS px kept clear around the composition by Frame all
+const FIT_MAX_ZOOM = 2; // framing a lone piece never zooms past this
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 
 const STYLES = `
@@ -18,11 +23,23 @@ const STYLES = `
   height: 100%;
   overflow: hidden;
   contain: layout paint;
+  touch-action: none;
 }
 .root { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .board { position: relative; flex: 1 1 auto; min-height: 0; background: #bdbdbd; }
 .board svg.surface { display: block; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; -webkit-user-select: none; }
 .board svg.surface [data-piece-id] { cursor: grab; }
+.board.space svg.surface, .board.space svg.surface [data-piece-id] { cursor: grab; }
+.board.panning svg.surface, .board.panning svg.surface [data-piece-id] { cursor: grabbing; }
+.view {
+  position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; padding: 6px;
+  background: #fff; border: 2px solid #000; border-radius: 10px;
+}
+.view button {
+  font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
+  background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
+}
+.view button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
 .actions {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
   display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px;
@@ -91,7 +108,7 @@ export class FridgeFace extends HTMLElement {
   readonly composition = new Composition();
 
   private surface!: SVGSVGElement;
-  private camera!: SVGGElement;
+  private cameraEl!: SVGGElement;
   private piecesLayer!: SVGGElement;
   private overlay!: SVGGElement;
   private actions!: HTMLElement;
@@ -108,7 +125,19 @@ export class FridgeFace extends HTMLElement {
   private trayDrag: { pointerId: number; shape: Shape; startX: number; startY: number; active: boolean; preview?: HTMLElement } | null = null;
   private suppressClick = false;
 
+  // Camera (view) state. Changes only touch the <g data-camera> transform, batched per animation frame.
+  private view: Camera = { ...DEFAULT_CAMERA };
+  private frame = 0;
+  private overlayZoom = NaN;
+  private spaceDown = false;
+  private pan: { pointerId: number; startX: number; startY: number; startView: Camera; active: boolean } | null = null;
+  private pinch: { ids: [number, number]; lastMid: { x: number; y: number }; lastDist: number } | null = null;
+  private readonly onWindowKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') this.setSpace(false); };
+  private readonly onWindowBlur = () => this.setSpace(false);
+
   connectedCallback() {
+    window.addEventListener('keyup', this.onWindowKeyUp);
+    window.addEventListener('blur', this.onWindowBlur);
     if (this.shadowRoot) return;
     const root = this.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
@@ -128,12 +157,17 @@ export class FridgeFace extends HTMLElement {
           <button type="button" data-action="forward" aria-label="Bring forward">Forward</button>
           <button type="button" data-action="backward" aria-label="Send backward">Back</button>
         </div>
+        <div class="view" role="group" aria-label="View">
+          <button type="button" data-view="out" aria-label="Zoom out">&minus;</button>
+          <button type="button" data-view="fit" aria-label="Frame all pieces">Fit</button>
+          <button type="button" data-view="in" aria-label="Zoom in">+</button>
+        </div>
       </div>
       <div class="tray" part="tray" role="group" aria-label="Shapes"></div>`;
     this.boardEl = wrap.querySelector('.board')!;
     this.trayEl = wrap.querySelector('.tray')!;
     this.surface = wrap.querySelector('svg.surface')!;
-    this.camera = wrap.querySelector('[data-camera]')!;
+    this.cameraEl = wrap.querySelector('[data-camera]')!;
     this.piecesLayer = wrap.querySelector('[data-pieces]')!;
     this.overlay = wrap.querySelector('[data-overlay]')!;
     this.actions = wrap.querySelector('.actions')!;
@@ -167,11 +201,26 @@ export class FridgeFace extends HTMLElement {
       this.runAction(act, this.selectedId);
     });
     this.addEventListener('keydown', (e) => this.onKey(e));
+    this.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+    // Safari reports trackpad pinch as proprietary gesture events; the page must never zoom.
+    for (const t of ['gesturestart', 'gesturechange', 'gestureend']) this.addEventListener(t, (e) => e.preventDefault());
+    wrap.querySelector('.view')!.addEventListener('click', (e) => {
+      const v = (e.target as HTMLElement).closest('button')?.dataset.view;
+      if (v === 'in') this.zoomBy(BUTTON_ZOOM);
+      else if (v === 'out') this.zoomBy(1 / BUTTON_ZOOM);
+      else if (v === 'fit') this.fitToComposition();
+    });
 
     this.composition.onChange(() => this.render());
     new ResizeObserver(() => { this.syncViewBox(); this.render(); }).observe(this.boardEl);
     this.syncViewBox();
+    this.applyView();
     this.render();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener('keyup', this.onWindowKeyUp);
+    window.removeEventListener('blur', this.onWindowBlur);
   }
 
   // ---- geometry helpers -------------------------------------------------
@@ -188,12 +237,81 @@ export class FridgeFace extends HTMLElement {
     this.surface.setAttribute('viewBox', `0 0 ${r.width / k} ${r.height / k}`);
   }
 
-  /** Client (screen) point -> board units, through the camera transform. */
+  /** Client point -> screen (viewBox) units, the camera's input space. */
+  private clientToScreen(clientX: number, clientY: number): { x: number; y: number } {
+    const r = this.boardEl.getBoundingClientRect();
+    const k = this.k;
+    return { x: (clientX - r.left) / k, y: (clientY - r.top) / k };
+  }
+
+  /** Client point -> board units, through the camera state (not the DOM, which lags by a frame). */
   private toBoard(clientX: number, clientY: number): { x: number; y: number } {
-    const m = this.camera.getScreenCTM();
-    if (!m) return { x: 0, y: 0 };
-    const pt = new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
-    return { x: pt.x, y: pt.y };
+    return screenToBoard(this.view, this.clientToScreen(clientX, clientY));
+  }
+
+  private viewport(): { width: number; height: number } {
+    const r = this.boardEl.getBoundingClientRect();
+    const k = this.k;
+    return { width: r.width / k, height: r.height / k };
+  }
+
+  // ---- camera ---------------------------------------------------------------
+
+  /** Current view (a copy). zoom 1 = default; screen = board * zoom + (x, y) in viewBox units (CSS px / k). */
+  getView(): Camera {
+    return { ...this.view };
+  }
+
+  private setView(c: Camera) {
+    this.view = c;
+    if (!this.frame) {
+      this.frame = requestAnimationFrame(() => {
+        this.frame = 0;
+        this.applyView();
+      });
+    }
+  }
+
+  /** The only per-frame work for pan and zoom: one transform attribute, plus the selection overlay on zoom change. */
+  private applyView() {
+    const { x, y, zoom } = this.view;
+    this.cameraEl.setAttribute('transform', `matrix(${zoom} 0 0 ${zoom} ${x} ${y})`);
+    if (zoom !== this.overlayZoom) this.renderOverlay();
+  }
+
+  private zoomBy(factor: number) {
+    const vp = this.viewport();
+    this.setView(zoomAt(this.view, { x: vp.width / 2, y: vp.height / 2 }, factor));
+  }
+
+  /** Frame every piece (rotated bounds) with a margin; with no pieces, reset to the default view. */
+  fitToComposition() {
+    const b = rotatedBounds(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
+    if (!b) {
+      this.setView({ ...DEFAULT_CAMERA });
+      return;
+    }
+    this.setView(fitTo(b, this.viewport(), FIT_MARGIN / this.k, FIT_MAX_ZOOM));
+  }
+
+  private setSpace(on: boolean) {
+    if (this.spaceDown === on) return;
+    this.spaceDown = on;
+    this.boardEl?.classList.toggle('space', on);
+  }
+
+  private onWheel(e: WheelEvent) {
+    if (e.ctrlKey || e.metaKey) e.preventDefault(); // pinch arrives as ctrl+wheel: the page must never zoom
+    if (!this.overBoard(e.clientX, e.clientY)) return;
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.boardEl.clientHeight : 1;
+    if (e.ctrlKey || e.metaKey) {
+      const d = Math.max(-60, Math.min(60, e.deltaY * unit));
+      this.setView(zoomAt(this.view, this.clientToScreen(e.clientX, e.clientY), Math.exp(-d * 0.0075)));
+    } else {
+      const k = this.k;
+      this.setView(panBy(this.view, (-e.deltaX * unit) / k, (-e.deltaY * unit) / k));
+    }
   }
 
   private overBoard(clientX: number, clientY: number): boolean {
@@ -242,15 +360,15 @@ export class FridgeFace extends HTMLElement {
       const s = d.shape;
       const prev = document.createElement('div');
       prev.className = 'preview';
-      prev.style.width = `${(s.bbox.w + 2 * PAD) * this.k}px`;
-      prev.style.height = `${(s.bbox.h + 2 * PAD) * this.k}px`;
+      prev.style.width = `${(s.bbox.w + 2 * PAD) * this.k * this.view.zoom}px`;
+      prev.style.height = `${(s.bbox.h + 2 * PAD) * this.k * this.view.zoom}px`;
       prev.innerHTML = shapeSvg(s);
       this.shadowRoot!.appendChild(prev);
       d.preview = prev;
     }
     // Keep the shape's centroid under the pointer, matching where the piece will land.
     const s = d.shape;
-    const k = this.k;
+    const k = this.k * this.view.zoom; // the ghost is drawn at the size the piece will land at
     d.preview!.style.left = `${e.clientX - (s.centroid.x - (s.bbox.x - PAD)) * k}px`;
     d.preview!.style.top = `${e.clientY - (s.centroid.y - (s.bbox.y - PAD)) * k}px`;
   }
@@ -292,9 +410,18 @@ export class FridgeFace extends HTMLElement {
     if (e.pointerType === 'touch') {
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touches.size >= 2) {
-        if (this.touches.size === 2 && !this.twist && this.selectedId) this.startTwist(e);
+        if (this.touches.size === 2 && !this.twist && !this.pinch) {
+          // Twist rotates a piece only if the first finger landed on it (or its handle); otherwise two fingers pinch/pan the board.
+          if ((this.moving || this.rotating) && this.selectedId) this.startTwist(e);
+          else this.startPinch();
+        }
         return; // extra fingers never select or move anything
       }
+    }
+    if (this.spaceDown || e.button === 1) {
+      this.startPan(e, true);
+      e.preventDefault();
+      return;
     }
     const handle = (e.target as Element).closest?.('[data-handle]');
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
@@ -307,7 +434,7 @@ export class FridgeFace extends HTMLElement {
     }
     const id = (e.target as Element).closest?.('[data-piece-id]')?.getAttribute('data-piece-id') ?? null;
     if (!id) {
-      this.select(null);
+      this.startPan(e, false); // a click without movement deselects (on release)
       return;
     }
     const piece = this.composition.getPiece(id);
@@ -315,6 +442,27 @@ export class FridgeFace extends HTMLElement {
     this.select(id); // selecting never changes stacking order
     this.moving = { pointerId: e.pointerId, id, startPt: this.toBoard(e.clientX, e.clientY), startX: piece.x, startY: piece.y };
     this.surface.setPointerCapture(e.pointerId);
+  }
+
+  private startPan(e: PointerEvent, active: boolean) {
+    this.pan = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, startView: { ...this.view }, active };
+    if (active) this.boardEl.classList.add('panning');
+    this.surface.setPointerCapture(e.pointerId);
+  }
+
+  private startPinch() {
+    const ids = [...this.touches.keys()].slice(0, 2) as [number, number];
+    this.pan = null;
+    this.boardEl.classList.remove('panning');
+    this.pinch = { ids, ...this.pinchState(ids) } as typeof this.pinch;
+  }
+
+  private pinchState(ids: [number, number]) {
+    const a = this.touches.get(ids[0])!, b = this.touches.get(ids[1])!;
+    return {
+      lastMid: this.clientToScreen((a.x + b.x) / 2, (a.y + b.y) / 2),
+      lastDist: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+    };
   }
 
   private angleTo(p: Piece, pt: { x: number; y: number }): number {
@@ -350,6 +498,28 @@ export class FridgeFace extends HTMLElement {
 
   private onBoardMove(e: PointerEvent) {
     if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pn = this.pinch;
+    if (pn) {
+      if (!this.touches.has(pn.ids[0]) || !this.touches.has(pn.ids[1])) return;
+      const next = this.pinchState(pn.ids);
+      let v = zoomAt(this.view, pn.lastMid, next.lastDist / pn.lastDist);
+      v = panBy(v, next.lastMid.x - pn.lastMid.x, next.lastMid.y - pn.lastMid.y);
+      this.setView(v);
+      pn.lastMid = next.lastMid;
+      pn.lastDist = next.lastDist;
+      return;
+    }
+    const pa = this.pan;
+    if (pa && pa.pointerId === e.pointerId) {
+      if (!pa.active) {
+        if (Math.hypot(e.clientX - pa.startX, e.clientY - pa.startY) < PAN_THRESHOLD) return;
+        pa.active = true;
+        this.boardEl.classList.add('panning');
+      }
+      const k = this.k;
+      this.setView(panBy(pa.startView, (e.clientX - pa.startX) / k, (e.clientY - pa.startY) / k));
+      return;
+    }
     const t = this.twist;
     if (t) {
       const piece = this.composition.getPiece(t.id);
@@ -379,6 +549,12 @@ export class FridgeFace extends HTMLElement {
 
   private onBoardUp(e: PointerEvent) {
     this.touches.delete(e.pointerId);
+    if (this.pinch && this.touches.size < 2) this.pinch = null; // the remaining finger does nothing
+    if (this.pan && this.pan.pointerId === e.pointerId) {
+      if (!this.pan.active && e.type === 'pointerup') this.select(null);
+      this.pan = null;
+      this.boardEl.classList.remove('panning');
+    }
     if (this.twist && this.touches.size < 2) this.twist = null; // ends cleanly; the remaining finger does nothing
     if (this.moving && this.moving.pointerId === e.pointerId) this.moving = null;
     if (this.rotating && this.rotating.pointerId === e.pointerId) this.rotating = null;
@@ -421,6 +597,19 @@ export class FridgeFace extends HTMLElement {
       }
       return;
     }
+    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.code === 'Space') {
+        const origin = e.composedPath()[0] as Element | undefined;
+        if (!origin?.closest?.('button')) {
+          this.setSpace(true);
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.key === '+' || e.key === '=') { this.zoomBy(BUTTON_ZOOM); e.preventDefault(); return; }
+      if (e.key === '-' || e.key === '_') { this.zoomBy(1 / BUTTON_ZOOM); e.preventDefault(); return; }
+      if (e.shiftKey && e.code === 'Digit1') { this.fitToComposition(); e.preventDefault(); return; }
+    }
     const id = this.selectedId;
     if (!id || e.metaKey || e.ctrlKey || e.altKey) return;
     const step = e.shiftKey ? 10 : 1;
@@ -450,38 +639,14 @@ export class FridgeFace extends HTMLElement {
 
   // ---- rendering ----------------------------------------------------------
 
-  private render() {
-    const pieces = this.composition.pieces;
-    if (this.selectedId && !this.composition.getPiece(this.selectedId)) this.selectedId = null;
-
-    const live = new Set(pieces.map((p) => p.id));
-    for (const [id, el] of this.els) {
-      if (!live.has(id)) {
-        el.remove();
-        this.els.delete(id);
-      }
-    }
-    // Reconcile in stacking order (first = bottom). Elements are kept stable so pointer capture survives.
-    let expected: ChildNode | null = this.piecesLayer.firstChild;
-    for (const p of pieces) {
-      const s = SHAPE_BY_ID.get(p.shapeId)!;
-      let el = this.els.get(p.id);
-      if (!el) {
-        el = svgEl('g', { 'data-piece-id': p.id, 'data-shape': p.shapeId });
-        el.innerHTML = geometryHtml(s);
-        this.els.set(p.id, el);
-      }
-      el.setAttribute('transform', pieceTransform(p, s));
-      if (el !== expected) this.piecesLayer.insertBefore(el, expected);
-      else expected = el.nextSibling;
-    }
-
-    // Selection indicator: a separate overlay above every piece.
+  /** Selection box and rotate handle, drawn in board space but sized in screen pixels (counter-scaled by zoom). */
+  private renderOverlay() {
+    this.overlayZoom = this.view.zoom;
     this.overlay.replaceChildren();
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
     if (sel) {
       const s = SHAPE_BY_ID.get(sel.shapeId)!;
-      const k = this.k;
+      const k = this.k * this.view.zoom; // handle and gap stay in screen size at every zoom
       const top = s.bbox.y - s.centroid.y; // top edge, in the piece's own frame (centroid at origin)
       const hy = top - HANDLE_GAP / k;
       const g = svgEl('g', { transform: `translate(${sel.x} ${sel.y}) rotate(${sel.rotation})` });
@@ -511,7 +676,36 @@ export class FridgeFace extends HTMLElement {
       g.append(h);
       this.overlay.appendChild(g);
     }
+  }
 
+  private render() {
+    const pieces = this.composition.pieces;
+    if (this.selectedId && !this.composition.getPiece(this.selectedId)) this.selectedId = null;
+
+    const live = new Set(pieces.map((p) => p.id));
+    for (const [id, el] of this.els) {
+      if (!live.has(id)) {
+        el.remove();
+        this.els.delete(id);
+      }
+    }
+    // Reconcile in stacking order (first = bottom). Elements are kept stable so pointer capture survives.
+    let expected: ChildNode | null = this.piecesLayer.firstChild;
+    for (const p of pieces) {
+      const s = SHAPE_BY_ID.get(p.shapeId)!;
+      let el = this.els.get(p.id);
+      if (!el) {
+        el = svgEl('g', { 'data-piece-id': p.id, 'data-shape': p.shapeId });
+        el.innerHTML = geometryHtml(s);
+        this.els.set(p.id, el);
+      }
+      el.setAttribute('transform', pieceTransform(p, s));
+      if (el !== expected) this.piecesLayer.insertBefore(el, expected);
+      else expected = el.nextSibling;
+    }
+
+    this.renderOverlay();
+    const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
     // Action bar.
     this.actions.hidden = !sel;
     if (sel) {
