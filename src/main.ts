@@ -10,6 +10,10 @@ import { fridgeTexture, type FridgeTexture } from './texture';
 import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
 import { FONT_STACK, registerFont } from './font';
 import { icon } from './icons';
+import {
+  announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
+  announceSelected, announceSnap, announceZoom, pieceCount,
+} from './announce';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -25,13 +29,16 @@ const FIT_MAX_COMFORT = 2; // Frame all never zooms past this multiple of the co
 const STORAGE_KEY = 'fridgeface:composition:v1';
 const SAVE_DEBOUNCE_MS = 400;
 const NOTICE_MS = 3500;
+const PAN_KEY_PX = 60; // CSS px per arrow-key pan step (x4 with Shift)
+const ANNOUNCE_BATCH_MS = 60; // announcements arriving within this window are read as one
+const ANNOUNCE_SETTLE_MS = 450; // rapid keypresses (rotate, nudge, zoom) are summarised once they pause
+const SHARE_PRECOMPUTE_MS = 250;
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
 
 const STYLES = `
+/* The host is a size container so the compact layouts follow the element's own box, not the window's. */
 :host {
-  --k: 0.3; /* board scale: CSS px per board unit at zoom 1 */
-  --tk: 0.32; /* tray scale: CSS px per source unit */
   --ink: #000;
   --paper: #fff;
   --font: ${FONT_STACK};
@@ -41,12 +48,27 @@ const STYLES = `
   height: 100%;
   overflow: hidden;
   contain: layout paint;
+  container-type: size;
   touch-action: none;
+  /* No iOS long-press callout, text selection, tap flash or double-tap zoom on the board, tray or controls. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
   font-family: var(--font);
   color: var(--ink);
   background: rgb(197 195 192);
 }
-.root { display: flex; flex-direction: column; width: 100%; height: 100%; }
+.root {
+  --k: 0.3; /* board scale: CSS px per board unit at zoom 1 */
+  --tk: 0.32; /* tray scale: CSS px per source unit */
+  /* Safe-area insets that actually overlap this element (set from JS; 0 when the element is not at a screen edge). */
+  --sat: 0px; --sar: 0px; --sab: 0px; --sal: 0px;
+  display: flex; flex-direction: column; width: 100%; height: 100%;
+}
+.sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.probe { position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
 .board { position: relative; flex: 1 1 auto; min-height: 0; background: rgb(197 195 192); }
 .board svg.surface { display: block; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; -webkit-user-select: none; }
 .board svg.surface:focus-visible { outline: 3px solid var(--ink); outline-offset: -6px; }
@@ -62,6 +84,7 @@ ${shadowCss()}
   box-shadow: 2px 3px 0 rgb(0 0 0 / 0.18);
 }
 button.b {
+  touch-action: manipulation;
   font: 500 13px/1 var(--font); letter-spacing: 0.1em; text-transform: uppercase;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-width: 44px; min-height: 44px; padding: 0 12px; box-sizing: border-box;
@@ -74,11 +97,11 @@ button.b[aria-pressed="true"], button.b[aria-expanded="true"] { background: var(
 button.b:disabled { color: #767676; border-color: #767676; cursor: default; background: var(--paper); }
 /* Focus: an inset ring in the button's own text colour (black on white, white on black: 21:1), so it never
    merges with the panel border; tray shapes get an outside ring on the grey band (>= 9:1). */
-button.b:focus-visible, .linkbox input:focus-visible { outline: 2px solid currentColor; outline-offset: -7px; }
+button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { outline: 2px solid currentColor; outline-offset: -7px; }
 .tray button:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
 .msg { font: 700 13px/1.2 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
 .dock {
-  position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px;
+  position: absolute; left: calc(10px + var(--sal)); right: calc(10px + var(--sar)); bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px;
   align-items: flex-end; pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
@@ -88,13 +111,13 @@ button.b:focus-visible, .linkbox input:focus-visible { outline: 2px solid curren
 .notice { flex: 0 0 100%; display: flex; pointer-events: none; }
 .notice .msg { color: var(--paper); background: var(--ink); padding: 11px 14px; }
 .linkbox { flex: 0 0 100%; box-sizing: border-box; flex-wrap: nowrap; }
-.linkbox input { flex: 1 1 auto; min-width: 0; min-height: 44px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); }
+.linkbox input { -webkit-user-select: text; user-select: text; flex: 1 1 auto; min-width: 0; min-height: 44px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); }
 .history .main, .history .confirm { display: contents; }
 .history [hidden] { display: none; }
 .history .msg { padding: 0 8px; }
 .actions {
-  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box;
+  position: absolute; top: calc(10px + var(--sat)); left: 50%; transform: translateX(-50%);
+  flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 16px - var(--sal) - var(--sar)); box-sizing: border-box;
 }
 .actions[hidden] { display: none; }
 
@@ -106,7 +129,7 @@ button.b:focus-visible, .linkbox input:focus-visible { outline: 2px solid curren
   align-items: flex-end;
   justify-content: center;
   gap: 12px 56px;
-  padding: 18px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  padding: 18px calc(16px + var(--sar)) calc(12px + var(--sab)) calc(16px + var(--sal));
   background-color: rgb(186 184 181);
   background-image: linear-gradient(rgb(0 0 0 / 0.055), rgb(0 0 0 / 0.055)), var(--tex, none);
   background-size: auto, calc(1024px * var(--tk)) calc(1024px * var(--tk));
@@ -138,21 +161,107 @@ button.b:focus-visible, .linkbox input:focus-visible { outline: 2px solid curren
 .preview { position: fixed; z-index: 10; pointer-events: none; line-height: 0; opacity: 0.9; }
 .preview svg { display: block; width: 100%; height: 100%; overflow: visible; }
 
-@media (max-width: 600px) {
-  :host { --k: 0.17; --tk: 0.17; }
-  .tray { gap: 10px 14px; padding: 12px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+/* Compact layout (phones, either orientation): the element is narrow OR short. Icon controls, a small tray. */
+@container (max-width: 600px), (max-height: 520px) {
+  .root { --k: 0.17; --tk: 0.17; }
+  .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab)) calc(10px + var(--sal)); }
   .tray .grp { display: contents; }
   .tray .shapes { display: contents; }
   .tray .bracket { display: none; }
+  .tray button { position: relative; }
+  .tray button::after { content: ""; position: absolute; inset: -6px -9px; } /* thin stems get a larger touch target */
   button.b.i { padding: 0; width: 44px; }
   button.b.i .ic { display: block; }
   button.b.i .tx { display: none; }
   .panel { gap: 3px; padding: 3px; }
-  .dock { left: 8px; right: 8px; bottom: 8px; gap: 6px; }
-  .actions { top: 8px; }
+  .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
+  .actions { top: calc(8px + var(--sat)); }
   .msg { font-size: 12px; }
 }
+@container (max-height: 520px) {
+  .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab)); }
+}
+
+/* ---- keyboard shortcuts dialog ---- */
+.help {
+  position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  padding: calc(12px + var(--sat, 0px)) calc(12px + var(--sar, 0px)) calc(12px + var(--sab, 0px)) calc(12px + var(--sal, 0px));
+  background: rgb(0 0 0 / 0.6); box-sizing: border-box;
+}
+.help[hidden] { display: none; }
+.helpbox {
+  display: flex; flex-direction: column; width: min(760px, 100%); max-height: 100%; box-sizing: border-box;
+  background: var(--paper); border: 2px solid var(--ink); box-shadow: 4px 6px 0 rgb(0 0 0 / 0.25);
+}
+.helphead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px 6px 16px; border-bottom: 2px solid var(--ink); }
+.helphead h2 { margin: 0; font: 700 15px/1.2 var(--font); letter-spacing: 0.1em; text-transform: uppercase; }
+.helpbody { overflow: auto; padding: 4px 16px 16px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.helpbody h3 { margin: 16px 0 6px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.helpbody ul { margin: 0; padding: 0; list-style: none; columns: 2 340px; column-gap: 28px; }
+.helpbody li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 0; break-inside: avoid; border-bottom: 1px solid #d0d0d0; font: 500 13px/1.3 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
+.helpbody li > span:first-child { flex: 1 1 0; min-width: 0; }
+.helpbody .keys { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px; flex: 0 1 auto; max-width: 62%; }
+.helpbody kbd { font: 700 12px/1 var(--font); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 6px; border: 1.5px solid var(--ink); background: #f2f2f2; min-width: 12px; text-align: center; box-sizing: content-box; }
+.helpbody .combo { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.helpbody .or { font-size: 11px; align-self: center; color: #4a4a4a; }
+
+/* ---- motion: none at all when the visitor asks for less ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
 `;
+
+/** Every keyboard shortcut, in the order the help dialog lists them. Each entry is a list of alternative key combos. */
+const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (readonly string[])[]; text: string }[] }[] = [
+  { title: 'Add and choose', items: [
+    { keys: [['1'], ['2'], ['3'], ['4'], ['5']], text: 'Add a piece (tray order)' },
+    { keys: [['N'], ['P']], text: 'Next or previous piece in the stacking order' },
+    { keys: [['Esc']], text: 'Close a menu, then deselect' },
+  ] },
+  { title: 'Move and rotate the selected piece', items: [
+    { keys: [['Arrows'], ['Shift', 'Arrows']], text: 'Move 1 unit, or 10' },
+    { keys: [[','], ['.']], text: 'Rotate 1 degree anticlockwise or clockwise' },
+    { keys: [['Shift', ','], ['Shift', '.']], text: 'Rotate one 15 degree step' },
+    { keys: [['S']], text: 'Turn snap on or off' },
+  ] },
+  { title: 'Stack and delete', items: [
+    { keys: [[']'], ['[']], text: 'Bring forward, send backward' },
+    { keys: [['Delete'], ['Backspace']], text: 'Delete the piece' },
+  ] },
+  { title: 'View', items: [
+    { keys: [['Arrows'], ['Alt', 'Arrows']], text: 'Pan the board; Shift for bigger steps. With a piece selected, only Alt + Arrows pans' },
+    { keys: [['+'], ['\u2212']], text: 'Zoom in or out' },
+    { keys: [['F'], ['Shift', '1']], text: 'Frame all pieces' },
+    { keys: [['Space', 'drag']], text: 'Pan with the pointer' },
+  ] },
+  { title: 'History, share and export', items: [
+    { keys: [['Ctrl', 'Z'], ['Cmd', 'Z']], text: 'Undo' },
+    { keys: [['Ctrl', 'Shift', 'Z'], ['Ctrl', 'Y']], text: 'Redo' },
+    { keys: [['C']], text: 'Copy the share link' },
+    { keys: [['E']], text: 'Open the export menu' },
+  ] },
+  { title: 'Everything else', items: [
+    { keys: [['Tab'], ['Shift', 'Tab']], text: 'Move to the next or previous control' },
+    { keys: [['?']], text: 'Show or hide this list' },
+  ] },
+  { title: 'Pointer and touch', items: [
+    { keys: [['Drag']], text: 'Drag a shape from the tray onto the board, or move a piece' },
+    { keys: [['Handle']], text: 'Drag the round handle above a piece to rotate it' },
+    { keys: [['Wheel'], ['Pinch']], text: 'Pan or zoom the board' },
+  ] },
+];
+
+function shortcutsHtml(): string {
+  const combo = (c: readonly string[]) => `<span class="combo">${c.map((k) => `<kbd>${k}</kbd>`).join('<span class="or" aria-hidden="true">+</span>')}</span>`;
+  return SHORTCUTS.map(
+    (sec) =>
+      `<h3>${sec.title}</h3><ul>` +
+      sec.items
+        .map((it) => `<li><span>${it.text}</span><span class="keys">${it.keys.map(combo).join('<span class="or">or</span>')}</span></li>`)
+        .join('') +
+      `</ul>`,
+  ).join('');
+}
 
 /** A control button: text label on wide screens, icon on narrow ones (`i`). */
 function btn(attrs: string, label: string, ic?: string): string {
@@ -207,6 +316,19 @@ export class FridgeFace extends HTMLElement {
   private actions!: HTMLElement;
   private boardEl!: HTMLElement;
   private trayEl!: HTMLElement;
+  private rootEl!: HTMLElement;
+  private liveEl!: HTMLElement;
+  private helpEl!: HTMLElement;
+  private insetProbe!: HTMLElement;
+  private helpOpener: HTMLElement | SVGElement | null = null;
+  private insets = '';
+  private sayQueue: string[] = [];
+  private sayTimer = 0;
+  private sayClearTimer = 0;
+  private later = new Map<string, number>();
+  private shareVer = 0; // bumped on every composition change
+  private shareTimer = 0;
+  private shareCache: { url: string; ver: number; base: string } | null = null;
   private els = new Map<string, PieceEls>();
   private texture!: FridgeTexture;
   private textureRect!: SVGRectElement;
@@ -250,13 +372,19 @@ export class FridgeFace extends HTMLElement {
   private pinch: { ids: [number, number]; lastMid: { x: number; y: number }; lastDist: number } | null = null;
   private readonly onWindowKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') this.setSpace(false); };
   private readonly onWindowBlur = () => this.setSpace(false);
+  private readonly onWindowResize = () => this.syncInsets();
 
   connectedCallback() {
     window.addEventListener('keyup', this.onWindowKeyUp);
     window.addEventListener('blur', this.onWindowBlur);
     window.addEventListener('pagehide', this.onPageHide);
     window.addEventListener('hashchange', this.onHashChange);
+    window.addEventListener('resize', this.onWindowResize);
+    window.addEventListener('orientationchange', this.onWindowResize);
     if (this.shadowRoot) return;
+    // A landmark for the whole toy (the host page can override either attribute).
+    if (!this.hasAttribute('role')) this.setAttribute('role', 'region');
+    if (!this.hasAttribute('aria-label') && !this.hasAttribute('aria-labelledby')) this.setAttribute('aria-label', 'Fridgeface');
     registerFont();
     this.texture = fridgeTexture();
     const tex = this.texture;
@@ -267,9 +395,9 @@ export class FridgeFace extends HTMLElement {
     wrap.className = 'root';
     wrap.innerHTML = `
       <div class="board" part="board">
-        <svg class="surface" tabindex="0" role="application" aria-label="Board">
+        <svg class="surface" tabindex="0" role="application" aria-label="Fridgeface board" aria-describedby="ff-desc">
           <defs><pattern id="ff-tex" patternUnits="userSpaceOnUse" x="0" y="0" width="${tex.units}" height="${tex.units}"><image href="${tex.href}" x="0" y="0" width="${tex.units}" height="${tex.units}" preserveAspectRatio="none"/></pattern></defs>
-          <g data-camera transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-overlay></g></g>
+          <g data-camera aria-hidden="true" transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-overlay></g></g>
         </svg>
         <div class="actions panel" role="toolbar" aria-label="Piece actions" hidden>
           ${btn('data-action="delete" aria-label="Delete piece"', 'Delete', 'delete')}
@@ -280,7 +408,7 @@ export class FridgeFace extends HTMLElement {
           ${btn('data-action="backward" aria-label="Send backward"', 'Back', 'backward')}
         </div>
         <div class="dock">
-          <div class="notice" role="status" aria-live="polite"><span class="msg" hidden></span></div>
+          <div class="notice" aria-hidden="true"><span class="msg" hidden></span></div>
           <div class="linkbox panel" role="group" aria-label="Share link" hidden>
             <input type="text" readonly aria-label="Share link (copy it from here)" />
             ${btn('data-share="close" aria-label="Close share link"', 'Close', 'close')}
@@ -299,8 +427,8 @@ export class FridgeFace extends HTMLElement {
           </div>
           <div class="share panel" role="group" aria-label="Share and export">
             ${btn('data-share="copy" aria-label="Copy share link" disabled', 'Share', 'share')}
-            ${btn('data-share="export" aria-label="Export" aria-haspopup="true" aria-expanded="false" disabled', 'Export', 'export')}
-            <div class="exportmenu" role="group" aria-label="Export as" hidden>
+            ${btn('data-share="export" aria-label="Export" aria-haspopup="true" aria-expanded="false" aria-controls="ff-export" disabled', 'Export', 'export')}
+            <div class="exportmenu" id="ff-export" role="group" aria-label="Export as" hidden>
               ${btn('data-export="png" aria-label="Download PNG"', 'PNG')}
               ${btn('data-export="svg" aria-label="Download SVG"', 'SVG')}
             </div>
@@ -309,13 +437,29 @@ export class FridgeFace extends HTMLElement {
             ${btn('data-view="out" aria-label="Zoom out"', '&minus;', 'zoom-out')}
             ${btn('data-view="fit" aria-label="Frame all pieces"', 'Fit', 'fit')}
             ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
+            ${btn('data-view="help" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
           </div>
         </div>
       </div>
-      <div class="tray" part="tray" role="group" aria-label="Shapes">
+      <div class="tray" part="tray" role="group" aria-label="Add a piece">
         <div class="grp" role="group" aria-label="Positive shapes"><div class="shapes" data-polarity="positive"></div><div class="bracket" aria-hidden="true"><span>Positive</span></div></div>
         <div class="grp" role="group" aria-label="Negative shapes"><div class="shapes" data-polarity="negative"></div><div class="bracket" aria-hidden="true"><span>Negative</span></div></div>
       </div>`;
+    wrap.insertAdjacentHTML('afterbegin', '<div class="probe" aria-hidden="true"></div>');
+    const outer = document.createElement('div'); // siblings of .root: never made inert, so the live region keeps working
+    outer.innerHTML = `
+      <div class="sr" id="ff-desc">Press 1 to 5 to add a piece. N and P choose a piece. Arrow keys move it, comma and period rotate it, the bracket keys restack it, Delete removes it. Press question mark for every shortcut.</div>
+      <div class="sr" id="ff-live" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div class="help" hidden>
+        <div class="helpbox" role="dialog" aria-modal="true" aria-labelledby="ff-help-title">
+          <div class="helphead"><h2 id="ff-help-title">Keyboard shortcuts</h2>${btn('data-help="close" aria-label="Close keyboard shortcuts"', 'Close', 'close')}</div>
+          <div class="helpbody" tabindex="0" role="region" aria-label="Shortcut list">${shortcutsHtml()}</div>
+        </div>
+      </div>`;
+    this.rootEl = wrap;
+    this.liveEl = outer.querySelector('#ff-live')!;
+    this.helpEl = outer.querySelector('.help')!;
+    this.insetProbe = wrap.querySelector('.probe')!;
     this.boardEl = wrap.querySelector('.board')!;
     this.trayEl = wrap.querySelector('.tray')!;
     this.surface = wrap.querySelector('svg.surface')!;
@@ -334,13 +478,14 @@ export class FridgeFace extends HTMLElement {
       const b = document.createElement('button');
       b.type = 'button';
       b.dataset.shape = s.id;
-      b.setAttribute('aria-label', s.name);
+      b.setAttribute('aria-label', `Add ${s.name.toLowerCase()}`);
+      b.setAttribute('aria-keyshortcuts', String(SHAPES.indexOf(s) + 1));
       b.style.setProperty('--w', String(s.bbox.w + 2 * PAD));
       b.style.setProperty('--h', String(s.bbox.h + 2 * PAD));
       b.innerHTML = shapeSvg(s);
       wrap.querySelector(`.tray [data-polarity=${s.polarity}]`)!.appendChild(b);
     }
-    root.append(style, wrap);
+    root.append(style, wrap, ...outer.children);
 
     this.trayEl.addEventListener('pointerdown', (e) => this.onTrayDown(e));
     this.trayEl.addEventListener('pointermove', (e) => this.onTrayMove(e));
@@ -357,6 +502,9 @@ export class FridgeFace extends HTMLElement {
       const act = (e.target as HTMLElement).closest('button')?.dataset.action;
       if (!act || !this.selectedId) return;
       this.runAction(act, this.selectedId);
+      // The pressed button may now be disabled or gone (Delete hides the bar): keep keyboard focus on the board.
+      const pressed = (e.target as HTMLElement).closest('button')!;
+      if (this.actions.hidden || pressed.disabled) this.surface.focus();
     });
     this.addEventListener('keydown', (e) => this.onKey(e));
     this.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -366,7 +514,12 @@ export class FridgeFace extends HTMLElement {
       const v = (e.target as HTMLElement).closest('button')?.dataset.view;
       if (v === 'in') this.zoomBy(BUTTON_ZOOM);
       else if (v === 'out') this.zoomBy(1 / BUTTON_ZOOM);
-      else if (v === 'fit') this.fitToComposition();
+      else if (v === 'fit') this.frameAll();
+      else if (v === 'help') this.openHelp(e.target as HTMLElement);
+    });
+    this.helpEl.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      if (t === this.helpEl || t.closest('[data-help=close]')) this.closeHelp();
     });
 
     this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
@@ -380,8 +533,16 @@ export class FridgeFace extends HTMLElement {
 
     this.composition.onChange((pieces) => this.onCompositionChange(pieces));
     new ResizeObserver(() => {
+      const before = this.viewReady && !this.pendingFit ? this.vpCache : null;
+      const centre = before ? screenToBoard(this.view, { x: before.width / 2, y: before.height / 2 }) : null;
       this.syncViewBox();
-      if (this.pendingFit && this.boardEl.clientWidth) {
+      this.syncInsets();
+      const after = this.vpCache;
+      if (centre && after && (after.width !== before!.width || after.height !== before!.height)) {
+        // Window resize, rotation, the iOS URL bar: keep the same board point at the centre of the board.
+        const z = this.view.zoom;
+        this.setView({ x: after.width / 2 - centre.x * z, y: after.height / 2 - centre.y * z, zoom: z });
+      } else if (this.pendingFit && this.boardEl.clientWidth) {
         this.pendingFit = false;
         this.viewReady = true;
         this.fitToComposition();
@@ -393,6 +554,7 @@ export class FridgeFace extends HTMLElement {
       this.render();
     }).observe(this.boardEl);
     this.syncViewBox();
+    this.syncInsets();
     if (this.boardEl.clientWidth) {
       this.viewReady = true;
       this.view = this.defaultView();
@@ -408,6 +570,8 @@ export class FridgeFace extends HTMLElement {
     window.removeEventListener('blur', this.onWindowBlur);
     window.removeEventListener('pagehide', this.onPageHide);
     window.removeEventListener('hashchange', this.onHashChange);
+    window.removeEventListener('resize', this.onWindowResize);
+    window.removeEventListener('orientationchange', this.onWindowResize);
     this.flushSave();
   }
 
@@ -441,6 +605,7 @@ export class FridgeFace extends HTMLElement {
       this.restoring = false;
     }
     if (!undoable) this.history.reset(this.composition.pieces);
+    else this.say(announceLoaded(this.composition.pieces.length));
     this.render();
     if (this.boardEl.clientWidth) this.fitToComposition();
     else this.pendingFit = true;
@@ -465,6 +630,7 @@ export class FridgeFace extends HTMLElement {
   private onCompositionChange(pieces: readonly Piece[]) {
     if (!this.applying && !this.inGesture) this.history.record(pieces, this.coalesceKey);
     if (!this.restoring) this.scheduleSave(); // restoring what is already saved needs no write-back
+    this.scheduleShareUrl();
     this.render();
   }
 
@@ -504,16 +670,17 @@ export class FridgeFace extends HTMLElement {
   }
 
   undo() {
-    this.stepHistory(() => this.history.undo());
+    this.stepHistory('undo', () => this.history.undo());
   }
 
   redo() {
-    this.stepHistory(() => this.history.redo());
+    this.stepHistory('redo', () => this.history.redo());
   }
 
-  private stepHistory(fn: () => readonly Piece[] | undefined) {
+  private stepHistory(kind: 'undo' | 'redo', fn: () => readonly Piece[] | undefined) {
     if (this.inGesture) return;
     const snap = fn();
+    this.say(announceHistory(kind, !!snap));
     if (!snap) return;
     this.applying = true;
     try {
@@ -530,6 +697,7 @@ export class FridgeFace extends HTMLElement {
   private showConfirm(on: boolean) {
     this.historyEl.querySelector<HTMLElement>('.main')!.hidden = on;
     this.historyEl.querySelector<HTMLElement>('.confirm')!.hidden = !on;
+    if (on) this.say('Clear everything? Choose Clear to confirm or Cancel. Escape cancels.');
     const target = on ? 'clear-no' : 'clear';
     this.historyEl.querySelector<HTMLButtonElement>(`[data-history=${target}]`)!.focus();
   }
@@ -548,6 +716,7 @@ export class FridgeFace extends HTMLElement {
     else if (act === 'clear-no') this.showConfirm(false);
     else if (act === 'clear-yes') {
       this.clearBoard();
+      this.say('Board cleared.');
       this.showConfirm(false);
       this.surface.focus();
     }
@@ -558,13 +727,33 @@ export class FridgeFace extends HTMLElement {
 
   /** Share URL for the current composition: `<share-base>#c=<encoded>`. The base is the `share-base` attribute, else this page without its hash. */
   async getShareUrl(): Promise<string> {
+    const ver = this.shareVer;
+    const base = this.shareBase();
+    const url = buildShareUrl(base, await encode(this.getComposition()));
+    if (ver === this.shareVer) this.shareCache = { url, ver, base };
+    return url;
+  }
+
+  private shareBase(): string {
     let base = this.getAttribute('share-base') || location.href;
     try {
       base = new URL(base, location.href).href;
     } catch {
       base = location.href;
     }
-    return buildShareUrl(base, await encode(this.getComposition()));
+    return base;
+  }
+
+  /**
+   * Safari only allows `navigator.clipboard.writeText` synchronously inside the user gesture, and encoding is
+   * async. So the URL is precomputed shortly after every composition change; the Share click then uses it directly.
+   */
+  private scheduleShareUrl() {
+    this.shareVer++;
+    this.shareCache = null;
+    clearTimeout(this.shareTimer);
+    if (!this.composition.pieces.length) return;
+    this.shareTimer = window.setTimeout(() => void this.getShareUrl().catch(() => {}), SHARE_PRECOMPUTE_MS);
   }
 
   /** The composition as a standalone SVG string (the same renderer the PNG uses): texture, shadows, pieces. */
@@ -624,6 +813,7 @@ export class FridgeFace extends HTMLElement {
 
   private showLinkBox(url: string) {
     this.linkboxEl.hidden = false;
+    this.say('Copying was blocked. The share link is selected: copy it from the field.');
     const input = this.linkboxEl.querySelector<HTMLInputElement>('input')!;
     input.value = url;
     input.focus();
@@ -638,23 +828,45 @@ export class FridgeFace extends HTMLElement {
   private onShareClick(e: MouseEvent) {
     const b = (e.target as HTMLElement).closest('button');
     if (!b || b.disabled) return;
-    if (b.dataset.share === 'copy') void this.copyShareLink();
+    if (b.dataset.share === 'copy') this.copyShareLink();
     else if (b.dataset.share === 'export') this.showExportMenu(!!this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden);
     else if (b.dataset.export === 'png' || b.dataset.export === 'svg') {
       this.showExportMenu(false);
+      this.shareEl.querySelector<HTMLButtonElement>('[data-share=export]')!.focus(); // the menu button just vanished
       void this.download(b.dataset.export);
     }
   }
 
-  private async copyShareLink() {
+  private copyShareLink() {
+    const c = this.shareCache;
+    if (c && c.ver === this.shareVer && c.base === this.shareBase() && navigator.clipboard?.writeText) {
+      // Fast path: the URL is ready, so the clipboard write happens synchronously inside the click.
+      let p: Promise<void>;
+      try {
+        p = navigator.clipboard.writeText(c.url);
+      } catch {
+        p = Promise.reject(new Error('clipboard unavailable'));
+      }
+      p.then(() => this.linkCopied(), () => this.showLinkBox(c.url));
+      return;
+    }
+    void this.copyShareLinkSlow(); // precompute stale or pending: compute now (may end at the selectable field)
+  }
+
+  private async copyShareLinkSlow() {
     const url = await this.getShareUrl();
     try {
       await navigator.clipboard.writeText(url);
-      this.hideLinkBoxQuietly();
-      this.notice('Link copied');
+      this.linkCopied();
     } catch {
       this.showLinkBox(url); // clipboard unavailable or refused: let the visitor copy it by hand
     }
+  }
+
+  private linkCopied() {
+    this.hideLinkBoxQuietly();
+    this.notice('Link copied');
+    this.say('Link copied.');
   }
 
   private hideLinkBoxQuietly() {
@@ -670,6 +882,7 @@ export class FridgeFace extends HTMLElement {
       if (touch && navigator.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file] });
+          this.say(`${kind.toUpperCase()} shared.`);
           return;
         } catch (err) {
           if ((err as DOMException)?.name === 'AbortError') return; // the visitor closed the share sheet
@@ -685,9 +898,11 @@ export class FridgeFace extends HTMLElement {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      this.say(`${kind.toUpperCase()} exported.`);
     } catch (err) {
       console.warn('fridgeface: export failed', err);
       this.notice("Couldn't export that");
+      this.say("Couldn't export that.");
     }
   }
 
@@ -703,6 +918,7 @@ export class FridgeFace extends HTMLElement {
     const r = await decode(enc);
     if (!r.ok || (r.pieces.length === 0 && r.dropped > 0)) {
       this.notice("That link couldn't be opened");
+      this.say("That link couldn't be opened.");
       return;
     }
     this.applyLoaded(r.pieces, true);
@@ -723,7 +939,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private readK(): number {
-    return parseFloat(getComputedStyle(this).getPropertyValue('--k')) || 0.3;
+    return parseFloat(getComputedStyle(this.boardEl).getPropertyValue('--k')) || 0.3;
   }
 
   /** Board units are `k` CSS px: size the viewBox to the board's pixel size divided by k. */
@@ -809,6 +1025,148 @@ export class FridgeFace extends HTMLElement {
   private zoomBy(factor: number) {
     const vp = this.viewport();
     this.setView(zoomAt(this.view, { x: vp.width / 2, y: vp.height / 2 }, factor));
+    this.sayLater('zoom', () => announceZoom(this.view.zoom / this.comfortZoom()));
+  }
+
+  private frameAll() {
+    this.fitToComposition();
+    this.say(this.composition.pieces.length ? 'Framed all pieces.' : 'View reset.');
+  }
+
+  /** Pan by a screen-pixel step in the direction of the arrow key (the board moves the other way). */
+  private panKey(dx: number, dy: number, big: boolean) {
+    const px = (big ? 4 : 1) * PAN_KEY_PX;
+    const k = this.k;
+    this.setView(panBy(this.view, (-dx * px) / k, (-dy * px) / k));
+    this.sayLater('pan', () => 'Panned.');
+  }
+
+  /** Pan (keeping the zoom) only if the piece is off the visible board or too close to its edge. */
+  private revealPiece(p: Piece) {
+    const vp = this.viewport();
+    const at = { x: p.x * this.view.zoom + this.view.x, y: p.y * this.view.zoom + this.view.y };
+    const m = 48 / this.k;
+    if (at.x >= m && at.x <= vp.width - m && at.y >= m && at.y <= vp.height - m) return;
+    this.setView({ ...this.view, x: vp.width / 2 - p.x * this.view.zoom, y: vp.height / 2 - p.y * this.view.zoom });
+  }
+
+  // ---- announcements (one polite live region) -------------------------------------
+
+  /** Queue text for the live region; texts arriving within a few ms are read together. */
+  private say(text: string) {
+    if (!this.liveEl || !text) return;
+    if (this.sayQueue[this.sayQueue.length - 1] !== text) this.sayQueue.push(text);
+    if (this.sayTimer) return;
+    this.sayTimer = window.setTimeout(() => {
+      this.sayTimer = 0;
+      const out = this.sayQueue.join(' ');
+      this.sayQueue = [];
+      this.liveEl.textContent = ''; // clear first so a repeated message is announced again
+      this.liveEl.textContent = out;
+      clearTimeout(this.sayClearTimer);
+      this.sayClearTimer = window.setTimeout(() => (this.liveEl.textContent = ''), 10_000);
+    }, ANNOUNCE_BATCH_MS);
+  }
+
+  /** Rapid input (1 degree rotations, nudges, zoom steps): say only the final state, once input pauses. */
+  private sayLater(key: string, text: () => string | null) {
+    clearTimeout(this.later.get(key));
+    this.later.set(key, window.setTimeout(() => {
+      this.later.delete(key);
+      const t = text();
+      if (t) this.say(t);
+    }, ANNOUNCE_SETTLE_MS));
+  }
+
+  private nameOf(p: Piece): string {
+    return SHAPE_BY_ID.get(p.shapeId)!.name;
+  }
+
+  private rotationText(id: string): string | null {
+    const p = this.composition.getPiece(id);
+    return p ? announceRotated(this.nameOf(p), fromUpright(this.offsetOf(p), p.rotation)) : null;
+  }
+
+  private movedText(id: string): string | null {
+    const p = this.composition.getPiece(id);
+    return p ? announceMoved(this.nameOf(p)) : null;
+  }
+
+  private sayRotation(id: string) {
+    this.sayLater(`rot:${id}`, () => this.rotationText(id));
+  }
+
+  private sayMoved(id: string) {
+    this.sayLater(`move:${id}`, () => this.movedText(id));
+  }
+
+  // ---- insets ------------------------------------------------------------------------
+
+  /** Safe-area insets, but only the part that overlaps THIS element (an embedded box mid-page needs none). */
+  private syncInsets() {
+    if (!this.insetProbe) return;
+    const cs = getComputedStyle(this.insetProbe);
+    const r = this.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const vh = window.innerHeight;
+    const px = (v: string) => parseFloat(v) || 0;
+    // How far the element's edge is from the matching screen edge (never negative); the inset only counts where it overlaps.
+    const over = (inset: number, gap: number) => (inset > 0 ? Math.max(0, inset - Math.max(0, gap)) : 0);
+    const t = over(px(cs.paddingTop), r.top);
+    const rt = over(px(cs.paddingRight), vw - r.right);
+    const b = over(px(cs.paddingBottom), vh - r.bottom);
+    const l = over(px(cs.paddingLeft), r.left);
+    const key = `${t}|${rt}|${b}|${l}`;
+    if (key === this.insets) return;
+    this.insets = key;
+    for (const st of [this.rootEl.style, this.helpEl.style]) {
+      st.setProperty('--sat', `${t}px`);
+      st.setProperty('--sar', `${rt}px`);
+      st.setProperty('--sab', `${b}px`);
+      st.setProperty('--sal', `${l}px`);
+    }
+  }
+
+  // ---- keyboard shortcuts dialog -------------------------------------------------------
+
+  private get helpOpen(): boolean {
+    return !!this.helpEl && !this.helpEl.hidden;
+  }
+
+  private openHelp(opener?: HTMLElement | null) {
+    if (this.helpOpen) return;
+    this.helpOpener = opener?.closest?.('button') ?? (this.shadowRoot!.activeElement as HTMLElement | null) ?? this.surface;
+    this.showExportMenu(false);
+    this.helpEl.hidden = false;
+    this.rootEl.inert = true; // contains focus and hides the rest from assistive tech while the dialog is open
+    this.helpEl.querySelector<HTMLElement>('[data-help=close]')!.focus();
+  }
+
+  private closeHelp() {
+    if (!this.helpOpen) return;
+    this.helpEl.hidden = true;
+    this.rootEl.inert = false;
+    const back: HTMLElement | SVGElement = this.helpOpener && this.helpOpener.isConnected && !(this.helpOpener as HTMLButtonElement).disabled ? this.helpOpener : this.surface;
+    this.helpOpener = null;
+    back.focus();
+  }
+
+  /** Dialog keys: Escape closes; Tab and Shift+Tab wrap inside the dialog. */
+  private onHelpKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      this.closeHelp();
+      e.preventDefault();
+    } else if (e.key === 'Tab') {
+      const items = [...this.helpEl.querySelectorAll<HTMLElement>('button, [tabindex="0"]')];
+      const active = this.shadowRoot!.activeElement as HTMLElement | null;
+      const i = active ? items.indexOf(active) : -1;
+      const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : i < 0 || i === items.length - 1 ? 0 : i + 1;
+      items[next]?.focus();
+      e.preventDefault();
+    } else if (e.key === '?') {
+      this.closeHelp();
+      e.preventDefault();
+    }
   }
 
   /** Frame every piece (rotated bounds) with a margin; with no pieces, reset to the default view. */
@@ -851,6 +1209,7 @@ export class FridgeFace extends HTMLElement {
   private addAt(shape: Shape, x: number, y: number) {
     const p = this.composition.addPiece(shape.id, x, y);
     this.select(p.id);
+    this.say(announceAdded(shape.name, this.composition.pieces.length));
   }
 
   private addNearCentre(shape: Shape) {
@@ -898,8 +1257,10 @@ export class FridgeFace extends HTMLElement {
     // Keep the shape's centroid under the pointer, matching where the piece will land.
     const s = d.shape;
     const k = this.k * this.view.zoom; // the ghost is drawn at the size the piece will land at
-    d.preview!.style.left = `${e.clientX - (s.centroid.x - (s.bbox.x - PAD)) * k}px`;
-    d.preview!.style.top = `${e.clientY - (s.centroid.y - (s.bbox.y - PAD)) * k}px`;
+    // The ghost is positioned against the host (layout containment makes it the containing block), so subtract its origin.
+    const host = this.getBoundingClientRect();
+    d.preview!.style.left = `${e.clientX - host.left - (s.centroid.x - (s.bbox.x - PAD)) * k}px`;
+    d.preview!.style.top = `${e.clientY - host.top - (s.centroid.y - (s.bbox.y - PAD)) * k}px`;
   }
 
   private onTrayUp(e: PointerEvent) {
@@ -932,6 +1293,21 @@ export class FridgeFace extends HTMLElement {
   private select(id: string | null) {
     this.selectedId = id;
     this.render();
+  }
+
+  /** N / P: step the selection through the stacking order (bottom to top, wrapping). */
+  private cycleSelection(dir: 1 | -1) {
+    const pieces = this.composition.pieces;
+    if (!pieces.length) {
+      this.say('No pieces on the board.');
+      return;
+    }
+    const cur = this.selectedId ? this.composition.indexOf(this.selectedId) : -1;
+    const i = cur < 0 ? (dir === 1 ? 0 : pieces.length - 1) : (cur + dir + pieces.length) % pieces.length;
+    const p = pieces[i];
+    this.select(p.id);
+    this.revealPiece(p);
+    this.say(announceSelected(this.nameOf(p), i, pieces.length, fromUpright(this.offsetOf(p), p.rotation)));
   }
 
   private onBoardDown(e: PointerEvent) {
@@ -1089,11 +1465,27 @@ export class FridgeFace extends HTMLElement {
       this.pan = null;
       this.boardEl.classList.remove('panning');
     }
-    if (this.twist && this.touches.size < 2) this.twist = null; // ends cleanly; the remaining finger does nothing
-    if (this.moving && this.moving.pointerId === e.pointerId) this.moving = null;
-    if (this.rotating && this.rotating.pointerId === e.pointerId) this.rotating = null;
+    // One summary per gesture, never per pixel.
+    let said: (() => string | null) | null = null;
+    if (this.twist && this.touches.size < 2) {
+      const id = this.twist.id;
+      this.twist = null; // ends cleanly; the remaining finger does nothing
+      said = () => this.rotationText(id);
+    }
+    if (this.moving && this.moving.pointerId === e.pointerId) {
+      const { id, moved } = this.moving;
+      this.moving = null;
+      if (moved) said = () => this.movedText(id);
+    }
+    if (this.rotating && this.rotating.pointerId === e.pointerId) {
+      const id = this.rotating.id;
+      this.rotating = null;
+      said = () => this.rotationText(id);
+    }
     this.syncLift();
     this.commitGesture();
+    const t = said?.();
+    if (t) this.say(t);
   }
 
   // ---- keyboard and actions -----------------------------------------------
@@ -1109,66 +1501,117 @@ export class FridgeFace extends HTMLElement {
   private setSnap(on: boolean) {
     this.snap = on;
     const p = on && this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
+    this.say(announceSnap(on));
     if (p) {
       const off = this.offsetOf(p);
-      this.composition.setRotation(p.id, rotationFor(off, snapTowardUpright(fromUpright(off, p.rotation))));
+      if (this.composition.setRotation(p.id, rotationFor(off, snapTowardUpright(fromUpright(off, p.rotation))))) this.sayRotation(p.id);
     }
     this.render();
   }
 
   private runAction(act: string, id: string) {
-    if (act === 'rotate-left') this.stepRotate(id, -1);
-    else if (act === 'rotate-right') this.stepRotate(id, 1);
-    else if (act === 'snap') this.setSnap(!this.snap);
-    else if (act === 'delete') this.composition.deletePiece(id);
-    else if (act === 'forward') this.composition.bringForward(id);
-    else if (act === 'backward') this.composition.sendBackward(id);
+    if (act === 'rotate-left' || act === 'rotate-right') {
+      this.stepRotate(id, act === 'rotate-left' ? -1 : 1);
+      this.sayRotation(id);
+    } else if (act === 'snap') this.setSnap(!this.snap);
+    else if (act === 'delete') {
+      if (this.composition.deletePiece(id)) this.say(announceDeleted(this.composition.pieces.length));
+    } else if (act === 'forward' || act === 'backward') {
+      const dir = act === 'forward' ? 'forward' : 'backward';
+      const moved = dir === 'forward' ? this.composition.bringForward(id) : this.composition.sendBackward(id);
+      this.say(announceRestacked(dir, moved, this.composition.indexOf(id), this.composition.pieces.length));
+    }
   }
 
   private nudge(id: string, x: number, y: number) {
     this.coalesced(`nudge:${id}`, () => this.composition.movePiece(id, x, y));
+    this.sayMoved(id);
   }
 
   private onKey(e: KeyboardEvent) {
+    if (this.helpOpen) {
+      this.onHelpKey(e);
+      return;
+    }
+    const origin = e.composedPath()[0] as HTMLElement | undefined;
+    const inField = origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement;
+    if (inField) {
+      if (e.key === 'Escape' && !this.linkboxEl.hidden) { this.hideLinkBox(); e.preventDefault(); }
+      return; // typing, selecting and copying in the share field are the browser's
+    }
     if ((e.metaKey || e.ctrlKey) && !e.altKey) {
       const k = e.key.toLowerCase();
       if (k === 'z') { if (e.shiftKey) this.redo(); else this.undo(); e.preventDefault(); return; }
       if (k === 'y' && e.ctrlKey) { this.redo(); e.preventDefault(); return; }
     }
-    if (e.key === 'Escape' && !this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden) {
-      this.showExportMenu(false);
-      this.shareEl.querySelector<HTMLButtonElement>('[data-share=export]')!.focus();
-      e.preventDefault();
-      return;
-    }
-    if (e.key === 'Escape' && this.confirming()) {
-      this.showConfirm(false);
-      e.preventDefault();
-      return;
-    }
+    // Escape closes the innermost thing first: export menu, clear confirm, share field, then the selection.
     if (e.key === 'Escape') {
-      if (this.selectedId) {
+      if (!this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden) {
+        this.showExportMenu(false);
+        this.shareEl.querySelector<HTMLButtonElement>('[data-share=export]')!.focus();
+        e.preventDefault();
+      } else if (this.confirming()) {
+        this.showConfirm(false);
+        e.preventDefault();
+      } else if (!this.linkboxEl.hidden) {
+        this.hideLinkBox();
+        e.preventDefault();
+      } else if (this.selectedId) {
         this.select(null);
+        this.say('Selection cleared.');
         e.preventDefault();
       }
       return;
     }
-    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+    if (plain) {
       if (e.code === 'Space') {
-        const origin = e.composedPath()[0] as Element | undefined;
         if (!origin?.closest?.('button')) {
           this.setSpace(true);
           e.preventDefault();
         }
         return;
       }
+      if (e.key === '?') { this.openHelp(); e.preventDefault(); return; }
       if (e.key === '+' || e.key === '=') { this.zoomBy(BUTTON_ZOOM); e.preventDefault(); return; }
       if (e.key === '-' || e.key === '_') { this.zoomBy(1 / BUTTON_ZOOM); e.preventDefault(); return; }
-      if (e.shiftKey && e.code === 'Digit1') { this.fitToComposition(); e.preventDefault(); return; }
+      if (e.shiftKey && e.code === 'Digit1') { this.frameAll(); e.preventDefault(); return; }
+      if (!e.shiftKey && e.key >= '1' && e.key <= '5') { this.addNearCentre(SHAPES[Number(e.key) - 1]); e.preventDefault(); return; }
+      const letter = e.key.length === 1 ? e.key.toLowerCase() : '';
+      if (letter === 'n' || letter === 'p') { this.cycleSelection(letter === 'n' ? 1 : -1); e.preventDefault(); return; }
+      if (letter === 'f') { this.frameAll(); e.preventDefault(); return; }
+      if (letter === 'c' || letter === 'e') {
+        if (!this.composition.pieces.length) this.say('Nothing to share or export yet.');
+        else if (letter === 'c') this.copyShareLink();
+        else {
+          this.showExportMenu(true);
+          this.shareEl.querySelector<HTMLButtonElement>('[data-export=png]')!.focus();
+        }
+        e.preventDefault();
+        return;
+      }
     }
+    // Arrow keys: move the selected piece, or pan the board (Alt always pans). Shift = bigger steps.
+    const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key as string] as [number, number] | undefined;
     const id = this.selectedId;
+    if (arrow && !e.metaKey && !e.ctrlKey) {
+      if (e.altKey || !id) {
+        this.panKey(arrow[0], arrow[1], e.shiftKey);
+        e.preventDefault();
+        return;
+      }
+      const piece = this.composition.getPiece(id);
+      if (!piece) return;
+      const step = e.shiftKey ? 10 : 1;
+      this.nudge(id, piece.x + arrow[0] * step, piece.y + arrow[1] * step);
+      e.preventDefault();
+      return;
+    }
+    if (['PageUp', 'PageDown', 'Home', 'End'].includes(e.key) && plain && origin === (this.surface as unknown)) {
+      e.preventDefault(); // the focused board never scrolls the page behind it
+      return;
+    }
     if (!id || e.metaKey || e.ctrlKey || e.altKey) return;
-    const step = e.shiftKey ? 10 : 1;
     const piece = this.composition.getPiece(id);
     if (!piece) return;
     // Shift+, and Shift+. produce < and > on US layouts, so match on the physical key too.
@@ -1176,6 +1619,7 @@ export class FridgeFace extends HTMLElement {
     if (rot) {
       if (e.shiftKey) this.stepRotate(id, rot as 1 | -1);
       else this.coalesced(`rot1:${id}`, () => this.composition.rotatePiece(id, rot));
+      this.sayRotation(id);
       e.preventDefault();
       return;
     }
@@ -1184,10 +1628,8 @@ export class FridgeFace extends HTMLElement {
       case 'Backspace': this.runAction('delete', id); break;
       case ']': this.runAction('forward', id); break;
       case '[': this.runAction('backward', id); break;
-      case 'ArrowLeft': this.nudge(id, piece.x - step, piece.y); break;
-      case 'ArrowRight': this.nudge(id, piece.x + step, piece.y); break;
-      case 'ArrowUp': this.nudge(id, piece.x, piece.y - step); break;
-      case 'ArrowDown': this.nudge(id, piece.x, piece.y + step); break;
+      case 's':
+      case 'S': this.runAction('snap', id); break;
       default: return;
     }
     e.preventDefault();
