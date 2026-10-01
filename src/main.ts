@@ -1,6 +1,8 @@
 import { SHAPES, type Shape } from './shapes';
 import { Composition, type Piece } from './composition';
 import { DEFAULT_CAMERA, fitTo, panBy, rotatedBounds, screenToBoard, zoomAt, type Camera } from './camera';
+import { History } from './history';
+import { deserialize, serialize, serializeToString, type SerializedComposition, type DeserializeResult } from './serialize';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -12,6 +14,8 @@ const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a
 const BUTTON_ZOOM = 1.25; // factor per zoom button / key press
 const FIT_MARGIN = 64; // CSS px kept clear around the composition by Frame all
 const FIT_MAX_ZOOM = 2; // framing a lone piece never zooms past this
+const STORAGE_KEY = 'fridgeface:composition:v1';
+const SAVE_DEBOUNCE_MS = 400;
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 
 const STYLES = `
@@ -31,15 +35,26 @@ const STYLES = `
 .board svg.surface [data-piece-id] { cursor: grab; }
 .board.space svg.surface, .board.space svg.surface [data-piece-id] { cursor: grab; }
 .board.panning svg.surface, .board.panning svg.surface [data-piece-id] { cursor: grabbing; }
-.view {
-  position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; padding: 6px;
+.dock {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px;
+  align-items: flex-end; pointer-events: none;
+}
+.dock > * { pointer-events: auto; }
+.view, .history {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px;
   background: #fff; border: 2px solid #000; border-radius: 10px;
 }
-.view button {
+.view { margin-left: auto; }
+.history .main, .history .confirm { display: contents; }
+.history [hidden] { display: none; }
+.history .msg { font: 600 14px/1.2 system-ui, sans-serif; color: #000; padding: 0 6px; }
+.view button, .history button {
   font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
   background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
 }
-.view button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
+.history button { padding: 0 10px; }
+.view button:disabled, .history button:disabled { opacity: 0.35; cursor: default; }
+.view button:focus-visible, .history button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
 .actions {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
   display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px;
@@ -125,6 +140,16 @@ export class FridgeFace extends HTMLElement {
   private trayDrag: { pointerId: number; shape: Shape; startX: number; startY: number; active: boolean; preview?: HTMLElement } | null = null;
   private suppressClick = false;
 
+  // History and persistence.
+  private history = new History<readonly Piece[]>([], { equals: sameSnapshot });
+  private applying = false; // true while undo/redo/load rewrite the composition
+  private restoring = false; // true while the saved composition is read back on load
+  private coalesceKey: string | null = null;
+  private saveTimer = 0;
+  private pendingFit = false;
+  private historyEl!: HTMLElement;
+  private readonly onPageHide = () => this.flushSave();
+
   // Camera (view) state. Changes only touch the <g data-camera> transform, batched per animation frame.
   private view: Camera = { ...DEFAULT_CAMERA };
   private frame = 0;
@@ -138,6 +163,7 @@ export class FridgeFace extends HTMLElement {
   connectedCallback() {
     window.addEventListener('keyup', this.onWindowKeyUp);
     window.addEventListener('blur', this.onWindowBlur);
+    window.addEventListener('pagehide', this.onPageHide);
     if (this.shadowRoot) return;
     const root = this.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
@@ -157,10 +183,24 @@ export class FridgeFace extends HTMLElement {
           <button type="button" data-action="forward" aria-label="Bring forward">Forward</button>
           <button type="button" data-action="backward" aria-label="Send backward">Back</button>
         </div>
-        <div class="view" role="group" aria-label="View">
-          <button type="button" data-view="out" aria-label="Zoom out">&minus;</button>
-          <button type="button" data-view="fit" aria-label="Frame all pieces">Fit</button>
-          <button type="button" data-view="in" aria-label="Zoom in">+</button>
+        <div class="dock">
+          <div class="history" role="group" aria-label="History">
+            <span class="main" role="group" aria-label="Undo, redo and clear">
+              <button type="button" data-history="undo" aria-label="Undo" disabled>Undo</button>
+              <button type="button" data-history="redo" aria-label="Redo" disabled>Redo</button>
+              <button type="button" data-history="clear" aria-label="Clear board" disabled>Clear</button>
+            </span>
+            <span class="confirm" role="alertdialog" aria-label="Confirm clearing the board" hidden>
+              <span class="msg">Clear everything?</span>
+              <button type="button" data-history="clear-yes" aria-label="Confirm clear board">Clear</button>
+              <button type="button" data-history="clear-no" aria-label="Cancel clear board">Cancel</button>
+            </span>
+          </div>
+          <div class="view" role="group" aria-label="View">
+            <button type="button" data-view="out" aria-label="Zoom out">&minus;</button>
+            <button type="button" data-view="fit" aria-label="Frame all pieces">Fit</button>
+            <button type="button" data-view="in" aria-label="Zoom in">+</button>
+          </div>
         </div>
       </div>
       <div class="tray" part="tray" role="group" aria-label="Shapes"></div>`;
@@ -171,6 +211,7 @@ export class FridgeFace extends HTMLElement {
     this.piecesLayer = wrap.querySelector('[data-pieces]')!;
     this.overlay = wrap.querySelector('[data-overlay]')!;
     this.actions = wrap.querySelector('.actions')!;
+    this.historyEl = wrap.querySelector('.history')!;
 
     for (const s of SHAPES) {
       const b = document.createElement('button');
@@ -211,16 +252,171 @@ export class FridgeFace extends HTMLElement {
       else if (v === 'fit') this.fitToComposition();
     });
 
-    this.composition.onChange(() => this.render());
-    new ResizeObserver(() => { this.syncViewBox(); this.render(); }).observe(this.boardEl);
+    this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
+
+    this.composition.onChange((pieces) => this.onCompositionChange(pieces));
+    new ResizeObserver(() => {
+      this.syncViewBox();
+      if (this.pendingFit && this.boardEl.clientWidth) {
+        this.pendingFit = false;
+        this.fitToComposition();
+      }
+      this.render();
+    }).observe(this.boardEl);
     this.syncViewBox();
     this.applyView();
+    this.restoreSaved();
     this.render();
   }
 
   disconnectedCallback() {
     window.removeEventListener('keyup', this.onWindowKeyUp);
     window.removeEventListener('blur', this.onWindowBlur);
+    window.removeEventListener('pagehide', this.onPageHide);
+    this.flushSave();
+  }
+
+  // ---- history, persistence, public API --------------------------------------
+
+  /** The composition in the wire format (`{ v: 1, pieces: [{ s, x, y, r }] }`), bottom piece first. */
+  getComposition(): SerializedComposition {
+    return serialize(this.composition.pieces);
+  }
+
+  /**
+   * Replace the board with a composition (object or JSON string in the wire format) and frame it.
+   * One undoable step. Never throws; an invalid payload leaves the board untouched.
+   */
+  loadComposition(data: unknown): DeserializeResult {
+    const r = deserialize(data);
+    if (!r.ok) return r;
+    this.applyLoaded(r.pieces, true);
+    return r;
+  }
+
+  private applyLoaded(pieces: Parameters<Composition['replace']>[0], undoable: boolean) {
+    this.selectedId = null;
+    this.coalesceKey = null;
+    this.applying = !undoable;
+    this.restoring = !undoable;
+    try {
+      this.composition.replace(pieces);
+    } finally {
+      this.applying = false;
+      this.restoring = false;
+    }
+    if (!undoable) this.history.reset(this.composition.pieces);
+    this.render();
+    if (this.boardEl.clientWidth) this.fitToComposition();
+    else this.pendingFit = true;
+  }
+
+  private restoreSaved() {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch {
+      return; // storage unavailable: the toy simply works unsaved
+    }
+    if (raw === null) return;
+    const r = deserialize(raw);
+    if (!r.ok) {
+      console.warn(`fridgeface: ignoring saved composition (${r.error})`);
+      return;
+    }
+    if (r.pieces.length) this.applyLoaded(r.pieces, false);
+  }
+
+  private onCompositionChange(pieces: readonly Piece[]) {
+    if (!this.applying && !this.inGesture) this.history.record(pieces, this.coalesceKey);
+    if (!this.restoring) this.scheduleSave(); // restoring what is already saved needs no write-back
+    this.render();
+  }
+
+  private get inGesture(): boolean {
+    return !!(this.moving || this.rotating || this.twist);
+  }
+
+  /** A drag / handle drag / twist is one step: record once, when the gesture ends. */
+  private commitGesture() {
+    if (this.inGesture) return;
+    if (this.history.record(this.composition.pieces)) this.render();
+  }
+
+  private coalesced(key: string, fn: () => void) {
+    this.coalesceKey = key;
+    try {
+      fn();
+    } finally {
+      this.coalesceKey = null;
+    }
+  }
+
+  private scheduleSave() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => this.flushSave(), SAVE_DEBOUNCE_MS);
+  }
+
+  private flushSave() {
+    if (!this.saveTimer) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = 0;
+    try {
+      localStorage.setItem(STORAGE_KEY, serializeToString(this.composition.pieces));
+    } catch {
+      /* storage full, blocked or unavailable: carry on without saving */
+    }
+  }
+
+  undo() {
+    this.stepHistory(() => this.history.undo());
+  }
+
+  redo() {
+    this.stepHistory(() => this.history.redo());
+  }
+
+  private stepHistory(fn: () => readonly Piece[] | undefined) {
+    if (this.inGesture) return;
+    const snap = fn();
+    if (!snap) return;
+    this.applying = true;
+    try {
+      this.composition.restore(snap); // render() drops the selection if that piece no longer exists
+    } finally {
+      this.applying = false;
+    }
+  }
+
+  private clearBoard() {
+    this.composition.clear();
+  }
+
+  private showConfirm(on: boolean) {
+    this.historyEl.querySelector<HTMLElement>('.main')!.hidden = on;
+    this.historyEl.querySelector<HTMLElement>('.confirm')!.hidden = !on;
+    const target = on ? 'clear-no' : 'clear';
+    this.historyEl.querySelector<HTMLButtonElement>(`[data-history=${target}]`)!.focus();
+  }
+
+  private confirming(): boolean {
+    return !this.historyEl.querySelector<HTMLElement>('.confirm')!.hidden;
+  }
+
+  private onHistoryClick(e: MouseEvent) {
+    const b = (e.target as HTMLElement).closest('button');
+    const act = b?.dataset.history;
+    if (!b || !act) return;
+    if (act === 'undo') this.undo();
+    else if (act === 'redo') this.redo();
+    else if (act === 'clear') this.showConfirm(true);
+    else if (act === 'clear-no') this.showConfirm(false);
+    else if (act === 'clear-yes') {
+      this.clearBoard();
+      this.showConfirm(false);
+      this.surface.focus();
+    }
+    if (b.disabled) this.surface.focus(); // keep keyboard focus alive when the pressed button turns off
   }
 
   // ---- geometry helpers -------------------------------------------------
@@ -558,6 +754,7 @@ export class FridgeFace extends HTMLElement {
     if (this.twist && this.touches.size < 2) this.twist = null; // ends cleanly; the remaining finger does nothing
     if (this.moving && this.moving.pointerId === e.pointerId) this.moving = null;
     if (this.rotating && this.rotating.pointerId === e.pointerId) this.rotating = null;
+    this.commitGesture();
   }
 
   // ---- keyboard and actions -----------------------------------------------
@@ -589,7 +786,21 @@ export class FridgeFace extends HTMLElement {
     else if (act === 'backward') this.composition.sendBackward(id);
   }
 
+  private nudge(id: string, x: number, y: number) {
+    this.coalesced(`nudge:${id}`, () => this.composition.movePiece(id, x, y));
+  }
+
   private onKey(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === 'z') { if (e.shiftKey) this.redo(); else this.undo(); e.preventDefault(); return; }
+      if (k === 'y' && e.ctrlKey) { this.redo(); e.preventDefault(); return; }
+    }
+    if (e.key === 'Escape' && this.confirming()) {
+      this.showConfirm(false);
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape') {
       if (this.selectedId) {
         this.select(null);
@@ -619,7 +830,7 @@ export class FridgeFace extends HTMLElement {
     const rot = e.code === 'Period' || e.key === '.' || e.key === '>' ? 1 : e.code === 'Comma' || e.key === ',' || e.key === '<' ? -1 : 0;
     if (rot) {
       if (e.shiftKey) this.stepRotate(id, rot as 1 | -1);
-      else this.composition.rotatePiece(id, rot);
+      else this.coalesced(`rot1:${id}`, () => this.composition.rotatePiece(id, rot));
       e.preventDefault();
       return;
     }
@@ -628,10 +839,10 @@ export class FridgeFace extends HTMLElement {
       case 'Backspace': this.runAction('delete', id); break;
       case ']': this.runAction('forward', id); break;
       case '[': this.runAction('backward', id); break;
-      case 'ArrowLeft': this.composition.movePiece(id, piece.x - step, piece.y); break;
-      case 'ArrowRight': this.composition.movePiece(id, piece.x + step, piece.y); break;
-      case 'ArrowUp': this.composition.movePiece(id, piece.x, piece.y - step); break;
-      case 'ArrowDown': this.composition.movePiece(id, piece.x, piece.y + step); break;
+      case 'ArrowLeft': this.nudge(id, piece.x - step, piece.y); break;
+      case 'ArrowRight': this.nudge(id, piece.x + step, piece.y); break;
+      case 'ArrowUp': this.nudge(id, piece.x, piece.y - step); break;
+      case 'ArrowDown': this.nudge(id, piece.x, piece.y + step); break;
       default: return;
     }
     e.preventDefault();
@@ -678,6 +889,16 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
+  private renderHistoryUi() {
+    if (!this.historyEl) return;
+    const q = (n: string) => this.historyEl.querySelector<HTMLButtonElement>(`[data-history=${n}]`)!;
+    q('undo').disabled = !this.history.canUndo;
+    q('redo').disabled = !this.history.canRedo;
+    const empty = this.composition.pieces.length === 0;
+    q('clear').disabled = empty;
+    if (empty && this.confirming()) this.showConfirm(false);
+  }
+
   private render() {
     const pieces = this.composition.pieces;
     if (this.selectedId && !this.composition.getPiece(this.selectedId)) this.selectedId = null;
@@ -705,6 +926,7 @@ export class FridgeFace extends HTMLElement {
     }
 
     this.renderOverlay();
+    this.renderHistoryUi();
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
     // Action bar.
     this.actions.hidden = !sel;
@@ -718,3 +940,10 @@ export class FridgeFace extends HTMLElement {
 }
 
 if (!customElements.get('fridge-face')) customElements.define('fridge-face', FridgeFace);
+
+function sameSnapshot(a: readonly Piece[], b: readonly Piece[]): boolean {
+  return a === b || (a.length === b.length && a.every((p, i) => {
+    const q = b[i];
+    return p === q || (p.id === q.id && p.shapeId === q.shapeId && p.x === q.x && p.y === q.y && p.rotation === q.rotation);
+  }));
+}

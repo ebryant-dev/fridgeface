@@ -79,4 +79,19 @@ describe('Composition', () => {
     c.addPiece('wedge', 0, 0);
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it('clear empties the board once; replace assigns fresh ids in order; restore puts a snapshot back', () => {
+    const { c } = three();
+    const snap = c.pieces;
+    expect(c.clear()).toBe(true);
+    expect(c.clear()).toBe(false);
+    expect(c.pieces).toEqual([]);
+    c.restore(snap);
+    expect(c.pieces).toBe(snap);
+    c.replace([{ shapeId: 'wedge', x: 1, y: 2, rotation: 190 }, { shapeId: 'positive-stem', x: 3, y: 4, rotation: 0 }]);
+    expect(c.pieces.map((p) => p.shapeId)).toEqual(['wedge', 'positive-stem']);
+    expect(c.pieces[0].rotation).toBe(-170);
+    expect(new Set(c.pieces.map((p) => p.id)).size).toBe(2);
+    expect(snap.map((p) => p.id)).not.toContain(c.pieces[0].id);
+  });
 });

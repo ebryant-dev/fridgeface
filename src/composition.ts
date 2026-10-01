@@ -107,6 +107,23 @@ export class Composition {
     return true;
   }
 
+  /** Remove every piece. No-op (false) if already empty. */
+  clear(): boolean {
+    if (!this.list.length) return false;
+    this.set([]);
+    return true;
+  }
+
+  /** Replace everything with new pieces (fresh ids), in the given stacking order. */
+  replace(items: readonly { shapeId: string; x: number; y: number; rotation: number }[]) {
+    this.set(items.map((it) => ({ id: `p${this.nextId++}`, shapeId: it.shapeId, x: it.x, y: it.y, rotation: normalise(it.rotation) })));
+  }
+
+  /** Put back a snapshot previously read from `pieces` (same ids), as undo/redo does. */
+  restore(snapshot: readonly Piece[]) {
+    this.set(snapshot);
+  }
+
   private set(next: readonly Piece[]) {
     this.list = next;
     for (const fn of [...this.listeners]) fn(this.list);
