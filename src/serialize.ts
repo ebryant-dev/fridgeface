@@ -1,4 +1,4 @@
-import { normalise } from './rotation';
+import { normalise } from './rotation.ts';
 
 /**
  * Composition wire format (pure, no DOM). Compact and stable: chunk 6 builds share links on it.

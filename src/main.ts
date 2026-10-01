@@ -5,6 +5,9 @@ import { History } from './history';
 import { deserialize, serialize, serializeToString, type SerializedComposition, type DeserializeResult } from './serialize';
 import { buildShareUrl, decode, encode, encodedFromHash } from './share';
 import { exportFilename, pngSize, renderCompositionSvg } from './export';
+import { centreOn, groupByChar, type Suggestion } from './suggestions';
+import { suggestionStore } from './suggestion-store';
+import { introPieces, introSchedule, introWanted } from './intro';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
 import { fridgeTexture, type FridgeTexture } from './texture';
 import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
@@ -12,7 +15,7 @@ import { FONT_STACK, registerFont } from './font';
 import { icon } from './icons';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceSnap, announceZoom, pieceCount,
+  announceSelected, announceSnap, announceZoom, announceSuggestion, announceIntro, pieceCount,
 } from './announce';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -33,6 +36,9 @@ const PAN_KEY_PX = 60; // CSS px per arrow-key pan step (x4 with Shift)
 const ANNOUNCE_BATCH_MS = 60; // announcements arriving within this window are read as one
 const ANNOUNCE_SETTLE_MS = 450; // rapid keypresses (rotate, nudge, zoom) are summarised once they pause
 const SHARE_PRECOMPUTE_MS = 250;
+const THUMB_HEIGHT = 88; // CSS px, suggestion thumbnails
+const SUGGESTION_NOTE = "One way to build it. There's no right way — make your own.";
+const INTRO_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
 
@@ -91,9 +97,11 @@ button.b {
   background: var(--paper); color: var(--ink); border: 2px solid var(--ink); border-radius: 0; cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
+button.b[hidden] { display: none; }
 button.b .ic { display: none; width: 22px; height: 22px; flex: none; }
 button.b:hover:not(:disabled) { background: #e8e8e8; }
 button.b[aria-pressed="true"], button.b[aria-expanded="true"] { background: var(--ink); color: var(--paper); }
+button.b[aria-pressed="true"]:hover, button.b[aria-expanded="true"]:hover { background: var(--ink); }
 button.b:disabled { color: #767676; border-color: #767676; cursor: default; background: var(--paper); }
 /* Focus: an inset ring in the button's own text colour (black on white, white on black: 21:1), so it never
    merges with the panel border; tray shapes get an outside ring on the grey band (>= 9:1). */
@@ -120,6 +128,30 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
   flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 16px - var(--sal) - var(--sar)); box-sizing: border-box;
 }
 .actions[hidden] { display: none; }
+
+/* ---- letter suggestions: a panel on desktop, a bottom sheet in the compact layout ---- */
+.sugg {
+  position: absolute; z-index: 5; display: flex; flex-direction: column; box-sizing: border-box; min-height: 0;
+  right: calc(10px + var(--sar)); bottom: calc(var(--dock-h, 66px) + 18px);
+  width: min(360px, calc(100% - 20px - var(--sal) - var(--sar)));
+  max-height: calc(100% - var(--dock-h, 66px) - 90px - var(--sat));
+  background: var(--paper); border: 2px solid var(--ink); box-shadow: 4px 6px 0 rgb(0 0 0 / 0.25); --sheet: 0;
+}
+.sugg[hidden] { display: none; }
+.sghead { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 4px 14px; border-bottom: 2px solid var(--ink); }
+.sghead h2 { margin: 0; font: 700 15px/1.2 var(--font); letter-spacing: 0.1em; text-transform: uppercase; }
+.sgnote { flex: none; margin: 0; padding: 10px 14px; font: 500 12px/1.4 var(--font); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 1px solid #d0d0d0; }
+.sgbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 14px 14px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.sgchars, .sgvars { display: flex; flex-wrap: wrap; gap: 6px; }
+.sgchars button.b { text-transform: none; letter-spacing: 0; font: 700 22px/1 var(--font); padding: 0; }
+.sgh { margin: 14px 0 8px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.sgh .ch { text-transform: none; }
+.sgvars { gap: 8px; }
+.sgvars button.b { flex-direction: column; gap: 4px; min-width: 72px; padding: 6px 8px 5px; }
+.sgvars img { display: block; height: ${THUMB_HEIGHT}px; width: auto; max-width: 100%; pointer-events: none; }
+.sgvars .vn { font: 700 11px/1 var(--font); letter-spacing: 0.1em; }
+.help li.sg-only { display: none; }
+.help.has-sugg li.sg-only { display: flex; }
 
 /* ---- tray: a slightly darker band of the same fridge door ---- */
 .tray {
@@ -177,6 +209,8 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
   .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
   .actions { top: calc(8px + var(--sat)); }
   .msg { font-size: 12px; }
+  /* Bottom sheet: full width, over the dock, no taller than most of the board. */
+  .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
 }
 @container (max-height: 520px) {
   .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab)); }
@@ -212,7 +246,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 `;
 
 /** Every keyboard shortcut, in the order the help dialog lists them. Each entry is a list of alternative key combos. */
-const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (readonly string[])[]; text: string }[] }[] = [
+const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (readonly string[])[]; text: string; when?: string }[] }[] = [
   { title: 'Add and choose', items: [
     { keys: [['1'], ['2'], ['3'], ['4'], ['5']], text: 'Add a piece (tray order)' },
     { keys: [['N'], ['P']], text: 'Next or previous piece in the stacking order' },
@@ -239,6 +273,7 @@ const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (rea
     { keys: [['Ctrl', 'Shift', 'Z'], ['Ctrl', 'Y']], text: 'Redo' },
     { keys: [['C']], text: 'Copy the share link' },
     { keys: [['E']], text: 'Open the export menu' },
+    { keys: [['L']], text: 'Show or hide letter suggestions', when: 'sg-only' },
   ] },
   { title: 'Everything else', items: [
     { keys: [['Tab'], ['Shift', 'Tab']], text: 'Move to the next or previous control' },
@@ -257,7 +292,7 @@ function shortcutsHtml(): string {
     (sec) =>
       `<h3>${sec.title}</h3><ul>` +
       sec.items
-        .map((it) => `<li><span>${it.text}</span><span class="keys">${it.keys.map(combo).join('<span class="or">or</span>')}</span></li>`)
+        .map((it) => `<li${it.when ? ` class="${it.when}"` : ''}><span>${it.text}</span><span class="keys">${it.keys.map(combo).join('<span class="or">or</span>')}</span></li>`)
         .join('') +
       `</ul>`,
   ).join('');
@@ -321,6 +356,16 @@ export class FridgeFace extends HTMLElement {
   private helpEl!: HTMLElement;
   private insetProbe!: HTMLElement;
   private helpOpener: HTMLElement | SVGElement | null = null;
+  private suggEl!: HTMLElement;
+  private suggBtn!: HTMLButtonElement;
+  private dockEl!: HTMLElement;
+  private suggOpener: HTMLElement | SVGElement | null = null;
+  private suggChar: string | null = null;
+  private unsubSuggestions: (() => void) | null = null;
+  private thumbs = new WeakMap<Suggestion, string>();
+  private viewListeners = new Set<() => void>();
+  private introAnims: Animation[] = [];
+  private introQueued = false;
   private insets = '';
   private sayQueue: string[] = [];
   private sayTimer = 0;
@@ -373,6 +418,7 @@ export class FridgeFace extends HTMLElement {
   private readonly onWindowKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') this.setSpace(false); };
   private readonly onWindowBlur = () => this.setSpace(false);
   private readonly onWindowResize = () => this.syncInsets();
+  private readonly onIntroInput = () => this.finishIntro();
 
   connectedCallback() {
     window.addEventListener('keyup', this.onWindowKeyUp);
@@ -381,6 +427,7 @@ export class FridgeFace extends HTMLElement {
     window.addEventListener('hashchange', this.onHashChange);
     window.addEventListener('resize', this.onWindowResize);
     window.addEventListener('orientationchange', this.onWindowResize);
+    this.unsubSuggestions ??= suggestionStore.subscribe(() => this.syncSuggestions());
     if (this.shadowRoot) return;
     // A landmark for the whole toy (the host page can override either attribute).
     if (!this.hasAttribute('role')) this.setAttribute('role', 'region');
@@ -437,7 +484,17 @@ export class FridgeFace extends HTMLElement {
             ${btn('data-view="out" aria-label="Zoom out"', '&minus;', 'zoom-out')}
             ${btn('data-view="fit" aria-label="Frame all pieces"', 'Fit', 'fit')}
             ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
+            ${btn('data-view="suggest" aria-label="Letter suggestions" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="L" hidden', 'Letters', 'letters')}
             ${btn('data-view="help" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
+          </div>
+        </div>
+        <div class="sugg" role="dialog" aria-labelledby="ff-sugg-title" hidden>
+          <div class="sghead"><h2 id="ff-sugg-title">Suggestions</h2>${btn('data-sugg="close" aria-label="Close suggestions"', 'Close', 'close')}</div>
+          <p class="sgnote">${SUGGESTION_NOTE}</p>
+          <div class="sgbody" data-scroll>
+            <div class="sgchars" role="group" aria-label="Characters"></div>
+            <h3 class="sgh" id="ff-sugg-vh"></h3>
+            <div class="sgvars" role="group" aria-labelledby="ff-sugg-vh"></div>
           </div>
         </div>
       </div>
@@ -472,6 +529,9 @@ export class FridgeFace extends HTMLElement {
     this.shareEl = wrap.querySelector('.share')!;
     this.noticeEl = wrap.querySelector('.notice .msg')!;
     this.linkboxEl = wrap.querySelector('.linkbox')!;
+    this.suggEl = wrap.querySelector('.sugg')!;
+    this.suggBtn = wrap.querySelector('[data-view=suggest]')!;
+    this.dockEl = wrap.querySelector('.dock')!;
     this.trayEl.style.setProperty('--tex', `url("${tex.href}")`);
 
     for (const s of SHAPES) {
@@ -516,7 +576,10 @@ export class FridgeFace extends HTMLElement {
       else if (v === 'out') this.zoomBy(1 / BUTTON_ZOOM);
       else if (v === 'fit') this.frameAll();
       else if (v === 'help') this.openHelp(e.target as HTMLElement);
+      else if (v === 'suggest') this.toggleSuggestions(e.target as HTMLElement);
     });
+    this.suggEl.addEventListener('click', (e) => this.onSuggestionsClick(e));
+    new ResizeObserver(() => this.rootEl.style.setProperty('--dock-h', `${Math.round(this.dockEl.getBoundingClientRect().height)}px`)).observe(this.dockEl);
     this.helpEl.addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
       if (t === this.helpEl || t.closest('[data-help=close]')) this.closeHelp();
@@ -552,6 +615,7 @@ export class FridgeFace extends HTMLElement {
       }
       this.applyView(); // the texture rect follows the viewport size
       this.render();
+      if (this.introQueued && this.boardEl.clientWidth) this.startIntroAnimation(); // the board was not laid out yet when the intro began
     }).observe(this.boardEl);
     this.syncViewBox();
     this.syncInsets();
@@ -560,9 +624,33 @@ export class FridgeFace extends HTMLElement {
       this.view = this.defaultView();
     }
     this.applyView();
-    this.restoreSaved();
+    const hadSaved = this.restoreSaved();
     this.render();
+    this.syncSuggestions();
+    const authoring = import.meta.env.DEV && new URLSearchParams(location.search).has('author');
+    this.maybeIntro(hadSaved, authoring);
     void this.consumeHash();
+    if (import.meta.env.DEV && authoring) {
+      // Dev-only author mode: the whole module is dropped from production builds.
+      void import('./author').then(({ mountAuthor }) =>
+        mountAuthor({
+          boardEl: this.boardEl, cameraEl: this.cameraEl, piecesLayer: this.piecesLayer, root: this.shadowRoot!,
+          scale: () => this.k,
+          view: () => this.getView(),
+          onView: (fn) => void this.viewListeners.add(fn),
+          pieces: () => this.composition.pieces.map(({ shapeId, x, y, rotation }) => ({ shapeId, x, y, rotation })),
+          loadPieces: (pieces) => {
+            this.selectedId = null;
+            this.composition.replace(pieces);
+            this.say(announceLoaded(this.composition.pieces.length));
+          },
+          showBaseline: () => this.setView(this.originView()),
+          say: (t) => this.say(t),
+          shapeOf: (id) => SHAPE_BY_ID.get(id),
+          store: suggestionStore,
+        }),
+      );
+    }
   }
 
   disconnectedCallback() {
@@ -572,6 +660,9 @@ export class FridgeFace extends HTMLElement {
     window.removeEventListener('hashchange', this.onHashChange);
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('orientationchange', this.onWindowResize);
+    this.unsubSuggestions?.();
+    this.unsubSuggestions = null;
+    this.finishIntro();
     this.flushSave();
   }
 
@@ -594,6 +685,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private applyLoaded(pieces: Parameters<Composition['replace']>[0], undoable: boolean) {
+    this.finishIntro();
     this.selectedId = null;
     this.coalesceKey = null;
     this.applying = !undoable;
@@ -611,23 +703,26 @@ export class FridgeFace extends HTMLElement {
     else this.pendingFit = true;
   }
 
-  private restoreSaved() {
+  /** Read the auto-save back. Returns whether a VALID saved composition existed (even an empty one). */
+  private restoreSaved(): boolean {
     let raw: string | null = null;
     try {
       raw = localStorage.getItem(STORAGE_KEY);
     } catch {
-      return; // storage unavailable: the toy simply works unsaved
+      return false; // storage unavailable: the toy simply works unsaved
     }
-    if (raw === null) return;
+    if (raw === null) return false;
     const r = deserialize(raw);
     if (!r.ok) {
       console.warn(`fridgeface: ignoring saved composition (${r.error})`);
-      return;
+      return false;
     }
     if (r.pieces.length) this.applyLoaded(r.pieces, false);
+    return true;
   }
 
   private onCompositionChange(pieces: readonly Piece[]) {
+    if (this.introAnims.length) this.finishIntro();
     if (!this.applying && !this.inGesture) this.history.record(pieces, this.coalesceKey);
     if (!this.restoring) this.scheduleSave(); // restoring what is already saved needs no write-back
     this.scheduleShareUrl();
@@ -1008,6 +1103,7 @@ export class FridgeFace extends HTMLElement {
       this.cameraEl.style.setProperty('--px', `${1 / (this.k * zoom)}px`);
     }
     if (zoom !== this.overlayZoom) this.renderOverlay();
+    for (const fn of this.viewListeners) fn();
   }
 
   /** The zoom at which a positive stem is COMFORT_STEM of the board's shorter visible side. */
@@ -1020,6 +1116,12 @@ export class FridgeFace extends HTMLElement {
   /** The default view: comfortable scale, board origin at the top-left. */
   private defaultView(): Camera {
     return { x: 0, y: 0, zoom: this.comfortZoom() };
+  }
+
+  /** A view with the board origin (x = 0, the baseline y = 0) comfortably in sight, left of centre and below the middle. */
+  private originView(): Camera {
+    const vp = this.viewport();
+    return { x: vp.width * 0.3, y: vp.height * 0.62, zoom: this.comfortZoom() };
   }
 
   private zoomBy(factor: number) {
@@ -1187,6 +1289,7 @@ export class FridgeFace extends HTMLElement {
 
   private onWheel(e: WheelEvent) {
     if (e.ctrlKey || e.metaKey) e.preventDefault(); // pinch arrives as ctrl+wheel: the page must never zoom
+    if (e.composedPath().some((n) => n instanceof HTMLElement && n.hasAttribute('data-scroll'))) return; // a scrolling panel keeps its wheel
     if (!this.overBoard(e.clientX, e.clientY)) return;
     e.preventDefault();
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.boardEl.clientHeight : 1;
@@ -1556,6 +1659,9 @@ export class FridgeFace extends HTMLElement {
       } else if (!this.linkboxEl.hidden) {
         this.hideLinkBox();
         e.preventDefault();
+      } else if (this.suggOpen) {
+        this.closeSuggestions();
+        e.preventDefault();
       } else if (this.selectedId) {
         this.select(null);
         this.say('Selection cleared.');
@@ -1565,6 +1671,7 @@ export class FridgeFace extends HTMLElement {
     }
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
     if (plain) {
+      const inPanel = this.suggOpen && !!origin && this.suggEl.contains(origin);
       if (e.code === 'Space') {
         if (!origin?.closest?.('button')) {
           this.setSpace(true);
@@ -1573,6 +1680,8 @@ export class FridgeFace extends HTMLElement {
         return;
       }
       if (e.key === '?') { this.openHelp(); e.preventDefault(); return; }
+      if (e.key.toLowerCase() === 'l' && suggestionStore.size) { this.toggleSuggestions(); e.preventDefault(); return; }
+      if (inPanel) return; // the panel's own buttons: only Tab, Enter and Space (the browser's) apply
       if (e.key === '+' || e.key === '=') { this.zoomBy(BUTTON_ZOOM); e.preventDefault(); return; }
       if (e.key === '-' || e.key === '_') { this.zoomBy(1 / BUTTON_ZOOM); e.preventDefault(); return; }
       if (e.shiftKey && e.code === 'Digit1') { this.frameAll(); e.preventDefault(); return; }
@@ -1633,6 +1742,211 @@ export class FridgeFace extends HTMLElement {
       default: return;
     }
     e.preventDefault();
+  }
+
+
+  // ---- letter suggestions ---------------------------------------------------------------
+
+  private get suggOpen(): boolean {
+    return !!this.suggEl && !this.suggEl.hidden;
+  }
+
+  /** The dock button exists only while there is at least one suggestion; the panel follows the store. */
+  private syncSuggestions() {
+    if (!this.suggEl) return;
+    const has = suggestionStore.size > 0;
+    this.suggBtn.hidden = !has;
+    this.helpEl.classList.toggle('has-sugg', has);
+    if (!has && this.suggOpen) this.closeSuggestions();
+    else if (this.suggOpen) this.renderSuggestions();
+  }
+
+  private toggleSuggestions(opener?: HTMLElement | null) {
+    if (this.suggOpen) this.closeSuggestions();
+    else this.openSuggestions(opener);
+  }
+
+  private openSuggestions(opener?: HTMLElement | null) {
+    if (this.suggOpen || !suggestionStore.size) return;
+    this.suggOpener = opener?.closest?.('button') ?? (this.shadowRoot!.activeElement as HTMLElement | null) ?? this.surface;
+    this.showExportMenu(false);
+    this.suggEl.hidden = false;
+    this.suggBtn.setAttribute('aria-expanded', 'true');
+    this.renderSuggestions();
+    this.suggEl.querySelector<HTMLElement>('.sgchars button[aria-pressed=true]')?.focus();
+  }
+
+  private closeSuggestions() {
+    if (!this.suggOpen) return;
+    const hadFocus = this.suggEl.contains(this.shadowRoot!.activeElement);
+    this.suggEl.hidden = true;
+    this.suggBtn.setAttribute('aria-expanded', 'false');
+    const o = this.suggOpener;
+    this.suggOpener = null;
+    if (!hadFocus) return; // focus was already elsewhere (the board, say): leave it there
+    const back: HTMLElement | SVGElement = o && o.isConnected && !(o as HTMLButtonElement).disabled && !(o as HTMLElement).hidden ? o : this.surface;
+    back.focus();
+  }
+
+  /** Characters (rebuilt when the set changes) and the selected character's variants. */
+  private renderSuggestions() {
+    const groups = groupByChar(suggestionStore.list);
+    if (!this.suggChar || !groups.has(this.suggChar)) this.suggChar = groups.keys().next().value ?? null;
+    const chars = this.suggEl.querySelector<HTMLElement>('.sgchars')!;
+    const had = chars.contains(this.shadowRoot!.activeElement) ? (this.shadowRoot!.activeElement as HTMLElement).dataset.char : undefined;
+    const sig = [...groups].map(([ch, v]) => `${ch}${v.length}`).join('|');
+    if (chars.dataset.sig !== sig) {
+      chars.dataset.sig = sig;
+      chars.replaceChildren(
+        ...[...groups].map(([ch, v]) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'b';
+          b.dataset.char = ch;
+          b.textContent = ch;
+          b.setAttribute('aria-label', `${ch}, ${v.length === 1 ? '1 way' : `${v.length} ways`} to build it`);
+          return b;
+        }),
+      );
+    }
+    for (const b of chars.querySelectorAll<HTMLElement>('button')) b.setAttribute('aria-pressed', String(b.dataset.char === this.suggChar));
+    if (had) chars.querySelector<HTMLElement>(`[data-char="${CSS.escape(had)}"]`)?.focus();
+    this.renderVariants(groups.get(this.suggChar ?? '') ?? []);
+  }
+
+  private renderVariants(list: readonly Suggestion[]) {
+    const head = this.suggEl.querySelector<HTMLElement>('.sgh')!;
+    const box = this.suggEl.querySelector<HTMLElement>('.sgvars')!;
+    head.replaceChildren('Ways to build ');
+    if (this.suggChar) {
+      const ch = document.createElement('span');
+      ch.className = 'ch';
+      ch.textContent = this.suggChar;
+      head.append(ch);
+    }
+    box.replaceChildren(
+      ...list.map((s) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'b';
+        b.dataset.file = s.filename;
+        b.setAttribute('aria-label', `Place ${s.char}, variant ${s.variant}, on the board`);
+        const img = document.createElement('img');
+        img.alt = '';
+        img.src = this.thumbnail(s);
+        const n = document.createElement('span');
+        n.className = 'vn';
+        n.textContent = String(s.variant);
+        b.append(img, n);
+        return b;
+      }),
+    );
+  }
+
+  /** A suggestion rendered by the export renderer (same shapes and shadows, no texture), as an image URL. */
+  private thumbnail(s: Suggestion): string {
+    let url = this.thumbs.get(s);
+    if (!url) {
+      url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(renderCompositionSvg(s.pieces, (id) => SHAPE_BY_ID.get(id)).svg)}`;
+      this.thumbs.set(s, url);
+    }
+    return url;
+  }
+
+  private onSuggestionsClick(e: MouseEvent) {
+    const t = e.target as HTMLElement;
+    if (t.closest('[data-sugg=close]')) {
+      this.closeSuggestions();
+      return;
+    }
+    const ch = t.closest<HTMLElement>('button[data-char]')?.dataset.char;
+    if (ch) {
+      this.suggChar = ch;
+      this.renderSuggestions();
+      return;
+    }
+    const file = t.closest<HTMLElement>('button[data-file]')?.dataset.file;
+    const s = file ? suggestionStore.list.find((x) => x.filename === file) : undefined;
+    if (s) this.placeSuggestion(s);
+  }
+
+  /** Add a suggestion's pieces on top of whatever is on the board, centred in the current view: ONE undo step. */
+  private placeSuggestion(s: Suggestion) {
+    const r = this.boardEl.getBoundingClientRect();
+    const c = this.toBoard(r.left + r.width / 2, r.top + r.height / 2);
+    const items = centreOn(s.pieces, (id) => SHAPE_BY_ID.get(id), c).map((p) => ({ ...p, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 }));
+    this.selectedId = null;
+    const added = this.composition.addPieces(items);
+    this.say(announceSuggestion(s.char, s.variant, added.length, this.composition.pieces.length));
+    // On a phone the sheet would hide what was just placed: close it and hand focus back.
+    if (getComputedStyle(this.suggEl).getPropertyValue('--sheet').trim() === '1') this.closeSuggestions();
+  }
+
+  // ---- the "play" intro ----------------------------------------------------------------
+
+  /** First visit only: no saved composition, no share link, `no-intro` unset, and the letters p, l, a, y all exist. */
+  private maybeIntro(hadSaved: boolean, authoring: boolean) {
+    const want = introWanted({ hasSavedComposition: hadSaved, hasShareLink: encodedFromHash(location.hash) !== null, disabled: this.hasAttribute('no-intro'), skip: authoring });
+    if (!want) return;
+    const pieces = introPieces(suggestionStore.list, (id) => SHAPE_BY_ID.get(id));
+    if (!pieces) return;
+    // The word is a normal composition and the starting state: not in undo history, auto-saved as usual.
+    this.applyLoaded(pieces, false);
+    this.scheduleSave();
+    this.say(announceIntro(this.composition.pieces.length));
+    if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return; // the pieces simply appear
+    if (this.boardEl.clientWidth) this.startIntroAnimation();
+    else this.introQueued = true;
+  }
+
+  /** Slide every piece in from the tray, staggered, in transforms only. Any pointer or key input finishes it at once. */
+  private startIntroAnimation() {
+    this.introQueued = false;
+    this.render();
+    const pieces = this.composition.pieces;
+    const sched = introSchedule(pieces.length);
+    const board = this.boardEl.getBoundingClientRect();
+    const bottom = this.toBoard(0, board.bottom).y;
+    this.introAnims = [];
+    pieces.forEach((p, i) => {
+      const g = this.els.get(p.id)?.g;
+      const s = SHAPE_BY_ID.get(p.shapeId);
+      if (!g || !s || typeof g.animate !== 'function') return;
+      const tray = this.trayEl.querySelector(`[data-shape="${p.shapeId}"]`)?.getBoundingClientRect();
+      const from = tray && tray.width ? this.toBoard(tray.left + tray.width / 2, tray.top + tray.height / 2) : this.toBoard(board.left + board.width / 2, board.bottom + 80);
+      const y0 = Math.max(from.y, bottom + Math.hypot(s.bbox.w, s.bbox.h) / 2 + 6); // start fully below the board's edge
+      this.introAnims.push(
+        g.animate(
+          [{ transform: `translate(${n3(from.x)}px, ${n3(y0)}px)` }, { transform: `translate(${n3(p.x)}px, ${n3(p.y)}px)` }],
+          { duration: sched.duration, delay: sched.delays[i], easing: INTRO_EASE, fill: 'backwards' },
+        ),
+      );
+    });
+    if (!this.introAnims.length) return;
+    for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(t, this.onIntroInput, { capture: true, passive: true });
+    const mine = this.introAnims;
+    void Promise.all(mine.map((a) => a.finished)).then(() => this.endIntro(mine), () => this.endIntro(mine));
+  }
+
+  /** Complete the intro instantly (no-op when it is not running). */
+  private finishIntro() {
+    this.introQueued = false;
+    const anims = this.introAnims;
+    if (!anims.length) return;
+    for (const a of anims) {
+      try {
+        a.finish();
+      } catch {
+        a.cancel();
+      }
+    }
+    this.endIntro(anims);
+  }
+
+  private endIntro(anims: Animation[]) {
+    if (this.introAnims !== anims) return;
+    this.introAnims = [];
+    for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) window.removeEventListener(t, this.onIntroInput, { capture: true });
   }
 
   // ---- rendering ----------------------------------------------------------

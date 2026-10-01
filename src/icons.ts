@@ -20,6 +20,7 @@ const ICONS: Record<string, string> = {
   'zoom-in': P('M5 12h14M12 5v14'),
   fit: P('M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5'),
   close: P('M6 6l12 12M18 6L6 18'),
+  letters: P('M4 20L10 5l6 15M6.5 15h7') + P('M16 20V10M16 13a3 3 0 0 1 5 1v6'),
   help: P('M8 9a4 4 0 1 1 6 3.5c-1.5 1-2 1.5-2 3') + P('M12 19v2'),
 };
 

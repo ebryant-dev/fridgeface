@@ -46,3 +46,8 @@ export const announceLoaded = (total: number): string => `Composition opened. ${
 function capitalise(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+export const announceSuggestion = (char: string, variant: number, added: number, total: number): string =>
+  `Suggestion for ${char}, variant ${variant}, placed. ${added === 1 ? '1 piece' : `${added} pieces`} added. ${pieceCount(total)}`;
+
+export const announceIntro = (total: number): string => `A starting composition, the word play, is on the board. ${pieceCount(total)}`;

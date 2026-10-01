@@ -49,6 +49,13 @@ export class Composition {
     return piece;
   }
 
+  /** Add several pieces on top, in the given order, as ONE change (one undo step). Returns them. */
+  addPieces(items: readonly { shapeId: string; x: number; y: number; rotation: number }[]): Piece[] {
+    const added = items.map((it) => ({ id: `p${this.nextId++}`, shapeId: it.shapeId, x: it.x, y: it.y, rotation: normalise(it.rotation) }));
+    if (added.length) this.set([...this.list, ...added]);
+    return added;
+  }
+
   /** Move a piece to an absolute position. Never changes stacking order. */
   movePiece(id: string, x: number, y: number): boolean {
     const i = this.indexOf(id);

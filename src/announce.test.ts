@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceSnap, announceZoom, describeAngle, pieceCount,
+  announceSelected, announceSnap, announceZoom, announceSuggestion, announceIntro, describeAngle, pieceCount,
 } from './announce';
 
 describe('announcements', () => {
@@ -49,5 +49,11 @@ describe('announcements', () => {
     expect(announceSnap(false)).toBe('Snap off.');
     expect(announceZoom(1.2499)).toBe('Zoom 125 percent.');
     expect(announceLoaded(1)).toBe('Composition opened. 1 piece on the board.');
+  });
+
+  it('announces a placed suggestion and the intro', () => {
+    expect(announceSuggestion('a', 2, 5, 12)).toBe('Suggestion for a, variant 2, placed. 5 pieces added. 12 pieces on the board.');
+    expect(announceSuggestion('l', 1, 1, 1)).toBe('Suggestion for l, variant 1, placed. 1 piece added. 1 piece on the board.');
+    expect(announceIntro(9)).toBe('A starting composition, the word play, is on the board. 9 pieces on the board.');
   });
 });

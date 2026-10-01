@@ -94,4 +94,20 @@ describe('Composition', () => {
     expect(new Set(c.pieces.map((p) => p.id)).size).toBe(2);
     expect(snap.map((p) => p.id)).not.toContain(c.pieces[0].id);
   });
+
+  it('addPieces adds several on top as ONE change, in order, with fresh ids', () => {
+    const { c, a } = three();
+    const fn = vi.fn();
+    c.onChange(fn);
+    const added = c.addPieces([{ shapeId: 'wedge', x: 1, y: 2, rotation: 190 }, { shapeId: 'positive-stem', x: 3, y: 4, rotation: 0 }]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(c.pieces).toHaveLength(5);
+    expect(c.pieces.slice(3).map((p) => p.shapeId)).toEqual(['wedge', 'positive-stem']);
+    expect(c.pieces[3].rotation).toBe(-170);
+    expect(new Set(ids(c)).size).toBe(5);
+    expect(ids(c)[0]).toBe(a);
+    expect(added.map((p) => p.id)).toEqual(ids(c).slice(3));
+    expect(c.addPieces([])).toEqual([]);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });
