@@ -1,9 +1,12 @@
 import { SHAPES, type Shape } from './shapes';
 import { Composition, type Piece } from './composition';
+import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_THRESHOLD = 6; // px of pointer travel before a tray press becomes a drag
+const HANDLE_GAP = 40; // CSS px between a piece's top edge and the rotate handle's centre
+const HANDLE_HIT = 44; // CSS px, touch target diameter
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 
 const STYLES = `
@@ -22,8 +25,9 @@ const STYLES = `
 .board svg.surface [data-piece-id] { cursor: grab; }
 .actions {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px;
+  display: flex; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); box-sizing: border-box; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px;
 }
+.actions button[aria-pressed="true"] { background: #000; color: #fff; }
 .actions[hidden] { display: none; }
 .actions button {
   font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
@@ -78,9 +82,9 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
   return el;
 }
 
-/** Translation that puts the shape's centroid at the piece's (x, y). */
+/** Puts the shape's centroid at the piece's (x, y), then rotates about that centroid. */
 function pieceTransform(p: Piece, s: Shape): string {
-  return `translate(${p.x - s.centroid.x} ${p.y - s.centroid.y})`;
+  return `translate(${p.x - s.centroid.x} ${p.y - s.centroid.y}) rotate(${p.rotation} ${s.centroid.x} ${s.centroid.y})`;
 }
 
 export class FridgeFace extends HTMLElement {
@@ -95,6 +99,10 @@ export class FridgeFace extends HTMLElement {
   private trayEl!: HTMLElement;
   private els = new Map<string, SVGGElement>();
   private selectedId: string | null = null;
+  private snap = false;
+  private touches = new Map<number, { x: number; y: number }>();
+  private rotating: { pointerId: number; id: string; grab: number; startRot: number } | null = null;
+  private twist: { id: string; lastAngle: number; accum: number; startRot: number; startPos: { x: number; y: number }; startMid: { x: number; y: number } } | null = null;
 
   private moving: { pointerId: number; id: string; startPt: { x: number; y: number }; startX: number; startY: number } | null = null;
   private trayDrag: { pointerId: number; shape: Shape; startX: number; startY: number; active: boolean; preview?: HTMLElement } | null = null;
@@ -114,6 +122,9 @@ export class FridgeFace extends HTMLElement {
         </svg>
         <div class="actions" role="toolbar" aria-label="Piece actions" hidden>
           <button type="button" data-action="delete" aria-label="Delete piece">Delete</button>
+          <button type="button" data-action="rotate-left" aria-label="Rotate left 15°">&#8630; 15°</button>
+          <button type="button" data-action="rotate-right" aria-label="Rotate right 15°">15° &#8631;</button>
+          <button type="button" data-action="snap" aria-pressed="false">Snap 15°</button>
           <button type="button" data-action="forward" aria-label="Bring forward">Forward</button>
           <button type="button" data-action="backward" aria-label="Send backward">Back</button>
         </div>
@@ -158,7 +169,7 @@ export class FridgeFace extends HTMLElement {
     this.addEventListener('keydown', (e) => this.onKey(e));
 
     this.composition.onChange(() => this.render());
-    new ResizeObserver(() => this.syncViewBox()).observe(this.boardEl);
+    new ResizeObserver(() => { this.syncViewBox(); this.render(); }).observe(this.boardEl);
     this.syncViewBox();
     this.render();
   }
@@ -278,6 +289,22 @@ export class FridgeFace extends HTMLElement {
 
   private onBoardDown(e: PointerEvent) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.pointerType === 'touch') {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touches.size >= 2) {
+        if (this.touches.size === 2 && !this.twist && this.selectedId) this.startTwist(e);
+        return; // extra fingers never select or move anything
+      }
+    }
+    const handle = (e.target as Element).closest?.('[data-handle]');
+    const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
+    if (handle && sel) {
+      const pt = this.toBoard(e.clientX, e.clientY);
+      this.rotating = { pointerId: e.pointerId, id: sel.id, grab: this.angleTo(sel, pt), startRot: sel.rotation };
+      this.surface.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
     const id = (e.target as Element).closest?.('[data-piece-id]')?.getAttribute('data-piece-id') ?? null;
     if (!id) {
       this.select(null);
@@ -290,7 +317,60 @@ export class FridgeFace extends HTMLElement {
     this.surface.setPointerCapture(e.pointerId);
   }
 
+  private angleTo(p: Piece, pt: { x: number; y: number }): number {
+    return (Math.atan2(pt.y - p.y, pt.x - p.x) * 180) / Math.PI;
+  }
+
+  private offsetOf(p: Piece): number {
+    return SHAPE_BY_ID.get(p.shapeId)!.uprightOffsetDeg;
+  }
+
+  /** Apply a raw (unsnapped) rotation, snapping to the nearest step from upright when asked. */
+  private applyRaw(p: Piece, raw: number, snap: boolean) {
+    const off = this.offsetOf(p);
+    this.composition.setRotation(p.id, snap ? rotationFor(off, snapNearest(off + raw)) : raw);
+  }
+
+  private startTwist(e: PointerEvent) {
+    const sel = this.composition.getPiece(this.selectedId!);
+    const [a, b] = [...this.touches.values()];
+    if (!sel || !a || !b) return;
+    this.moving = null;
+    this.rotating = null;
+    this.surface.setPointerCapture(e.pointerId);
+    this.twist = {
+      id: sel.id,
+      lastAngle: (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI,
+      accum: 0,
+      startRot: sel.rotation,
+      startPos: { x: sel.x, y: sel.y },
+      startMid: this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2),
+    };
+  }
+
   private onBoardMove(e: PointerEvent) {
+    if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const t = this.twist;
+    if (t) {
+      const piece = this.composition.getPiece(t.id);
+      const [a, b] = [...this.touches.values()];
+      if (!piece || !a || !b) return;
+      const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+      t.accum += normalise(ang - t.lastAngle);
+      t.lastAngle = ang;
+      const mid = this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2);
+      this.composition.movePiece(t.id, t.startPos.x + (mid.x - t.startMid.x), t.startPos.y + (mid.y - t.startMid.y));
+      this.applyRaw(this.composition.getPiece(t.id)!, t.startRot + t.accum, this.snap);
+      return;
+    }
+    const r = this.rotating;
+    if (r && r.pointerId === e.pointerId) {
+      const piece = this.composition.getPiece(r.id);
+      if (!piece) return;
+      const ang = this.angleTo(piece, this.toBoard(e.clientX, e.clientY));
+      this.applyRaw(piece, r.startRot + (ang - r.grab), this.snap || e.shiftKey);
+      return;
+    }
     const m = this.moving;
     if (!m || m.pointerId !== e.pointerId) return;
     const pt = this.toBoard(e.clientX, e.clientY);
@@ -298,13 +378,37 @@ export class FridgeFace extends HTMLElement {
   }
 
   private onBoardUp(e: PointerEvent) {
+    this.touches.delete(e.pointerId);
+    if (this.twist && this.touches.size < 2) this.twist = null; // ends cleanly; the remaining finger does nothing
     if (this.moving && this.moving.pointerId === e.pointerId) this.moving = null;
+    if (this.rotating && this.rotating.pointerId === e.pointerId) this.rotating = null;
   }
 
   // ---- keyboard and actions -----------------------------------------------
 
+  /** Rotate-by-step: dir 1 = clockwise, -1 = anticlockwise. Off-step angles snap toward upright first. */
+  private stepRotate(id: string, dir: 1 | -1) {
+    const p = this.composition.getPiece(id);
+    if (!p) return;
+    const off = this.offsetOf(p);
+    this.composition.setRotation(id, rotationFor(off, stepFromUpright(fromUpright(off, p.rotation), dir)));
+  }
+
+  private setSnap(on: boolean) {
+    this.snap = on;
+    const p = on && this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
+    if (p) {
+      const off = this.offsetOf(p);
+      this.composition.setRotation(p.id, rotationFor(off, snapTowardUpright(fromUpright(off, p.rotation))));
+    }
+    this.render();
+  }
+
   private runAction(act: string, id: string) {
-    if (act === 'delete') this.composition.deletePiece(id);
+    if (act === 'rotate-left') this.stepRotate(id, -1);
+    else if (act === 'rotate-right') this.stepRotate(id, 1);
+    else if (act === 'snap') this.setSnap(!this.snap);
+    else if (act === 'delete') this.composition.deletePiece(id);
     else if (act === 'forward') this.composition.bringForward(id);
     else if (act === 'backward') this.composition.sendBackward(id);
   }
@@ -322,6 +426,14 @@ export class FridgeFace extends HTMLElement {
     const step = e.shiftKey ? 10 : 1;
     const piece = this.composition.getPiece(id);
     if (!piece) return;
+    // Shift+, and Shift+. produce < and > on US layouts, so match on the physical key too.
+    const rot = e.code === 'Period' || e.key === '.' || e.key === '>' ? 1 : e.code === 'Comma' || e.key === ',' || e.key === '<' ? -1 : 0;
+    if (rot) {
+      if (e.shiftKey) this.stepRotate(id, rot as 1 | -1);
+      else this.composition.rotatePiece(id, rot);
+      e.preventDefault();
+      return;
+    }
     switch (e.key) {
       case 'Delete':
       case 'Backspace': this.runAction('delete', id); break;
@@ -369,10 +481,14 @@ export class FridgeFace extends HTMLElement {
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
     if (sel) {
       const s = SHAPE_BY_ID.get(sel.shapeId)!;
-      this.overlay.appendChild(
+      const k = this.k;
+      const top = s.bbox.y - s.centroid.y; // top edge, in the piece's own frame (centroid at origin)
+      const hy = top - HANDLE_GAP / k;
+      const g = svgEl('g', { transform: `translate(${sel.x} ${sel.y}) rotate(${sel.rotation})` });
+      g.append(
         svgEl('rect', {
-          x: String(s.bbox.x - s.centroid.x + sel.x),
-          y: String(s.bbox.y - s.centroid.y + sel.y),
+          x: String(s.bbox.x - s.centroid.x),
+          y: String(top),
           width: String(s.bbox.w),
           height: String(s.bbox.h),
           fill: 'none',
@@ -382,13 +498,25 @@ export class FridgeFace extends HTMLElement {
           'vector-effect': 'non-scaling-stroke',
           'pointer-events': 'none',
         }),
+        svgEl('line', {
+          x1: '0', y1: String(top), x2: '0', y2: String(hy),
+          stroke: '#0a84ff', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'pointer-events': 'none',
+        }),
       );
+      const h = svgEl('g', { 'data-handle': '', style: 'cursor: grab' });
+      h.append(
+        svgEl('circle', { cx: '0', cy: String(hy), r: String(HANDLE_HIT / 2 / k), fill: 'transparent' }),
+        svgEl('circle', { cx: '0', cy: String(hy), r: String(8 / k), fill: '#fff', stroke: '#0a84ff', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke', 'pointer-events': 'none' }),
+      );
+      g.append(h);
+      this.overlay.appendChild(g);
     }
 
     // Action bar.
     this.actions.hidden = !sel;
     if (sel) {
       const i = this.composition.indexOf(sel.id);
+      (this.actions.querySelector('[data-action=snap]') as HTMLButtonElement).setAttribute('aria-pressed', String(this.snap));
       (this.actions.querySelector('[data-action=forward]') as HTMLButtonElement).disabled = i === pieces.length - 1;
       (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = i === 0;
     }

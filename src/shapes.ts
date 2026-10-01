@@ -115,6 +115,7 @@ function build(id: string, name: string, polarity: Polarity, svg: string, uprigh
     const a = principalAxis(pts);
     off = fromVertical(a.dx, a.dy);
   } else {
+    // Wedge "upright" = longest edge horizontal, on the side nearest its rest pose (apex down).
     const e = longestEdge(pts);
     off = fromHorizontal(e.dx, e.dy);
   }

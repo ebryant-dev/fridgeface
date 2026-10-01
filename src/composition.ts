@@ -1,9 +1,11 @@
+import { normalise } from './rotation';
+
 /**
  * Composition model: the pieces on the board and their stacking order.
  * No DOM code. Units are board units (= source SVG units).
  *
  * A piece's (x, y) is where the shape's area centroid sits on the board;
- * `rotation` is degrees relative to the rest pose (always 0 until rotation ships).
+ * `rotation` is degrees relative to the rest pose (clockwise, normalised to (-180, 180]; new pieces start at 0).
  * The ARRAY ORDER IS the stacking order: last = top.
  */
 export interface Piece {
@@ -57,6 +59,25 @@ export class Composition {
     next[i] = { ...cur, x, y };
     this.set(next);
     return true;
+  }
+
+  /** Set a piece's rotation (degrees clockwise from the rest pose). Never changes position or stacking order. */
+  setRotation(id: string, rotation: number): boolean {
+    const i = this.indexOf(id);
+    if (i < 0) return false;
+    const r = normalise(rotation);
+    const cur = this.list[i];
+    if (cur.rotation === r) return false;
+    const next = this.list.slice();
+    next[i] = { ...cur, rotation: r };
+    this.set(next);
+    return true;
+  }
+
+  /** Rotate by a relative amount (degrees clockwise). */
+  rotatePiece(id: string, deltaDeg: number): boolean {
+    const cur = this.getPiece(id);
+    return cur ? this.setRotation(id, cur.rotation + deltaDeg) : false;
   }
 
   deletePiece(id: string): boolean {
