@@ -3,6 +3,8 @@ import { Composition, type Piece } from './composition';
 import { DEFAULT_CAMERA, fitTo, panBy, rotatedBounds, screenToBoard, zoomAt, type Camera } from './camera';
 import { History } from './history';
 import { deserialize, serialize, serializeToString, type SerializedComposition, type DeserializeResult } from './serialize';
+import { buildShareUrl, decode, encode, encodedFromHash } from './share';
+import { exportFilename, pngSize, renderCompositionSvg } from './export';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -16,6 +18,7 @@ const FIT_MARGIN = 64; // CSS px kept clear around the composition by Frame all
 const FIT_MAX_ZOOM = 2; // framing a lone piece never zooms past this
 const STORAGE_KEY = 'fridgeface:composition:v1';
 const SAVE_DEBOUNCE_MS = 400;
+const NOTICE_MS = 3500;
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 
 const STYLES = `
@@ -45,6 +48,20 @@ const STYLES = `
   background: #fff; border: 2px solid #000; border-radius: 10px;
 }
 .view { margin-left: auto; }
+.share { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px; }
+.share button, .linkbox button {
+  font: 600 14px/1 system-ui, sans-serif; min-width: 44px; min-height: 44px; padding: 0 12px;
+  background: #fff; color: #000; border: 2px solid #000; border-radius: 6px; cursor: pointer;
+}
+.share button:disabled { opacity: 0.35; cursor: default; }
+.share button[aria-pressed="true"], .share button[aria-expanded="true"] { background: #000; color: #fff; }
+.share button:focus-visible, .linkbox button:focus-visible { outline: 3px solid #0a84ff; outline-offset: 2px; }
+.exportmenu { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.exportmenu[hidden], .linkbox[hidden], .notice [hidden] { display: none; }
+.notice { flex: 0 0 100%; display: flex; pointer-events: none; }
+.notice .msg { font: 600 14px/1.2 system-ui, sans-serif; color: #fff; background: #000; padding: 10px 14px; border-radius: 8px; }
+.linkbox { flex: 0 0 100%; box-sizing: border-box; display: flex; gap: 6px; align-items: center; padding: 6px; background: #fff; border: 2px solid #000; border-radius: 10px; }
+.linkbox input { flex: 1 1 auto; min-width: 0; min-height: 40px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid #000; border-radius: 6px; }
 .history .main, .history .confirm { display: contents; }
 .history [hidden] { display: none; }
 .history .msg { font: 600 14px/1.2 system-ui, sans-serif; color: #000; padding: 0 6px; }
@@ -148,6 +165,11 @@ export class FridgeFace extends HTMLElement {
   private saveTimer = 0;
   private pendingFit = false;
   private historyEl!: HTMLElement;
+  private shareEl!: HTMLElement;
+  private noticeEl!: HTMLElement;
+  private linkboxEl!: HTMLElement;
+  private noticeTimer = 0;
+  private readonly onHashChange = () => void this.consumeHash();
   private readonly onPageHide = () => this.flushSave();
 
   // Camera (view) state. Changes only touch the <g data-camera> transform, batched per animation frame.
@@ -164,6 +186,7 @@ export class FridgeFace extends HTMLElement {
     window.addEventListener('keyup', this.onWindowKeyUp);
     window.addEventListener('blur', this.onWindowBlur);
     window.addEventListener('pagehide', this.onPageHide);
+    window.addEventListener('hashchange', this.onHashChange);
     if (this.shadowRoot) return;
     const root = this.attachShadow({ mode: 'open' });
     const style = document.createElement('style');
@@ -184,6 +207,11 @@ export class FridgeFace extends HTMLElement {
           <button type="button" data-action="backward" aria-label="Send backward">Back</button>
         </div>
         <div class="dock">
+          <div class="notice" role="status" aria-live="polite"><span class="msg" hidden></span></div>
+          <div class="linkbox" role="group" aria-label="Share link" hidden>
+            <input type="text" readonly aria-label="Share link (copy it from here)" />
+            <button type="button" data-share="close" aria-label="Close share link">Close</button>
+          </div>
           <div class="history" role="group" aria-label="History">
             <span class="main" role="group" aria-label="Undo, redo and clear">
               <button type="button" data-history="undo" aria-label="Undo" disabled>Undo</button>
@@ -195,6 +223,14 @@ export class FridgeFace extends HTMLElement {
               <button type="button" data-history="clear-yes" aria-label="Confirm clear board">Clear</button>
               <button type="button" data-history="clear-no" aria-label="Cancel clear board">Cancel</button>
             </span>
+          </div>
+          <div class="share" role="group" aria-label="Share and export">
+            <button type="button" data-share="copy" aria-label="Copy share link" disabled>Share</button>
+            <button type="button" data-share="export" aria-label="Export" aria-haspopup="true" aria-expanded="false" disabled>Export</button>
+            <div class="exportmenu" role="group" aria-label="Export as" hidden>
+              <button type="button" data-export="png">Download PNG</button>
+              <button type="button" data-export="svg">Download SVG</button>
+            </div>
           </div>
           <div class="view" role="group" aria-label="View">
             <button type="button" data-view="out" aria-label="Zoom out">&minus;</button>
@@ -212,6 +248,9 @@ export class FridgeFace extends HTMLElement {
     this.overlay = wrap.querySelector('[data-overlay]')!;
     this.actions = wrap.querySelector('.actions')!;
     this.historyEl = wrap.querySelector('.history')!;
+    this.shareEl = wrap.querySelector('.share')!;
+    this.noticeEl = wrap.querySelector('.notice .msg')!;
+    this.linkboxEl = wrap.querySelector('.linkbox')!;
 
     for (const s of SHAPES) {
       const b = document.createElement('button');
@@ -253,6 +292,13 @@ export class FridgeFace extends HTMLElement {
     });
 
     this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
+    this.shareEl.addEventListener('click', (e) => this.onShareClick(e));
+    this.linkboxEl.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('button')) this.hideLinkBox();
+    });
+    this.shadowRoot!.addEventListener('pointerdown', (e) => {
+      if (!(e as PointerEvent).composedPath().includes(this.shareEl)) this.showExportMenu(false);
+    });
 
     this.composition.onChange((pieces) => this.onCompositionChange(pieces));
     new ResizeObserver(() => {
@@ -267,12 +313,14 @@ export class FridgeFace extends HTMLElement {
     this.applyView();
     this.restoreSaved();
     this.render();
+    void this.consumeHash();
   }
 
   disconnectedCallback() {
     window.removeEventListener('keyup', this.onWindowKeyUp);
     window.removeEventListener('blur', this.onWindowBlur);
     window.removeEventListener('pagehide', this.onPageHide);
+    window.removeEventListener('hashchange', this.onHashChange);
     this.flushSave();
   }
 
@@ -417,6 +465,149 @@ export class FridgeFace extends HTMLElement {
       this.surface.focus();
     }
     if (b.disabled) this.surface.focus(); // keep keyboard focus alive when the pressed button turns off
+  }
+
+  // ---- share and export -------------------------------------------------------
+
+  /** Share URL for the current composition: `<share-base>#c=<encoded>`. The base is the `share-base` attribute, else this page without its hash. */
+  async getShareUrl(): Promise<string> {
+    let base = this.getAttribute('share-base') || location.href;
+    try {
+      base = new URL(base, location.href).href;
+    } catch {
+      base = location.href;
+    }
+    return buildShareUrl(base, await encode(this.getComposition()));
+  }
+
+  /** The composition as a standalone SVG string (the same renderer the PNG uses). */
+  exportSVG(): string {
+    return renderCompositionSvg(this.composition.pieces, (id) => SHAPE_BY_ID.get(id)).svg;
+  }
+
+  /** The composition rasterised at 2x (longest side capped at 4096 px). */
+  async exportPNG(): Promise<Blob> {
+    const r = renderCompositionSvg(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
+    const { width, height } = pngSize(r.width, r.height);
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('could not rasterise the composition'));
+      img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(r.svg)}`;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
+    return new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG encoding failed'))), 'image/png'));
+  }
+
+  private notice(text: string) {
+    this.noticeEl.textContent = text;
+    this.noticeEl.hidden = false;
+    clearTimeout(this.noticeTimer);
+    this.noticeTimer = window.setTimeout(() => {
+      this.noticeEl.hidden = true;
+      this.noticeEl.textContent = '';
+    }, NOTICE_MS);
+  }
+
+  private showExportMenu(on: boolean) {
+    this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden = !on;
+    this.shareEl.querySelector('[data-share=export]')!.setAttribute('aria-expanded', String(on));
+  }
+
+  private showLinkBox(url: string) {
+    this.linkboxEl.hidden = false;
+    const input = this.linkboxEl.querySelector<HTMLInputElement>('input')!;
+    input.value = url;
+    input.focus();
+    input.select();
+  }
+
+  private hideLinkBox() {
+    this.linkboxEl.hidden = true;
+    this.shareEl.querySelector<HTMLButtonElement>('[data-share=copy]')!.focus();
+  }
+
+  private onShareClick(e: MouseEvent) {
+    const b = (e.target as HTMLElement).closest('button');
+    if (!b || b.disabled) return;
+    if (b.dataset.share === 'copy') void this.copyShareLink();
+    else if (b.dataset.share === 'export') this.showExportMenu(!!this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden);
+    else if (b.dataset.export === 'png' || b.dataset.export === 'svg') {
+      this.showExportMenu(false);
+      void this.download(b.dataset.export);
+    }
+  }
+
+  private async copyShareLink() {
+    const url = await this.getShareUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+      this.hideLinkBoxQuietly();
+      this.notice('Link copied');
+    } catch {
+      this.showLinkBox(url); // clipboard unavailable or refused: let the visitor copy it by hand
+    }
+  }
+
+  private hideLinkBoxQuietly() {
+    this.linkboxEl.hidden = true;
+  }
+
+  private async download(kind: 'png' | 'svg') {
+    try {
+      const name = exportFilename(kind);
+      const blob = kind === 'png' ? await this.exportPNG() : new Blob([this.exportSVG()], { type: 'image/svg+xml' });
+      const file = new File([blob], name, { type: blob.type });
+      const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      if (touch && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file] });
+          return;
+        } catch (err) {
+          if ((err as DOMException)?.name === 'AbortError') return; // the visitor closed the share sheet
+          // otherwise fall through to a plain download
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      console.warn('fridgeface: export failed', err);
+      this.notice("Couldn't export that");
+    }
+  }
+
+  /** Apply `#c=` from the location, if present: one undoable load, framed, then the hash is removed. */
+  private async consumeHash() {
+    const enc = encodedFromHash(location.hash);
+    if (enc === null) return;
+    try {
+      history.replaceState(history.state, '', location.pathname + location.search); // a reload then uses auto-save
+    } catch {
+      /* some sandboxes forbid it: harmless */
+    }
+    const r = await decode(enc);
+    if (!r.ok || (r.pieces.length === 0 && r.dropped > 0)) {
+      this.notice("That link couldn't be opened");
+      return;
+    }
+    this.applyLoaded(r.pieces, true);
+  }
+
+  private renderShareUi() {
+    if (!this.shareEl) return;
+    const empty = this.composition.pieces.length === 0;
+    for (const sel of ['[data-share=copy]', '[data-share=export]']) this.shareEl.querySelector<HTMLButtonElement>(sel)!.disabled = empty;
+    if (empty) this.showExportMenu(false);
   }
 
   // ---- geometry helpers -------------------------------------------------
@@ -796,6 +987,12 @@ export class FridgeFace extends HTMLElement {
       if (k === 'z') { if (e.shiftKey) this.redo(); else this.undo(); e.preventDefault(); return; }
       if (k === 'y' && e.ctrlKey) { this.redo(); e.preventDefault(); return; }
     }
+    if (e.key === 'Escape' && !this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden) {
+      this.showExportMenu(false);
+      this.shareEl.querySelector<HTMLButtonElement>('[data-share=export]')!.focus();
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape' && this.confirming()) {
       this.showConfirm(false);
       e.preventDefault();
@@ -927,6 +1124,7 @@ export class FridgeFace extends HTMLElement {
 
     this.renderOverlay();
     this.renderHistoryUi();
+    this.renderShareUi();
     const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
     // Action bar.
     this.actions.hidden = !sel;
