@@ -1,7 +1,7 @@
 {
   "v": 1,
   "text": "play",
-  "variant": 1,
+  "variant": 2,
   "pieces": [
     {
       "s": "positive-round",
@@ -71,51 +71,9 @@
     },
     {
       "s": "wedge",
-      "x": 955,
-      "y": 77.2,
+      "x": 965.5,
+      "y": 75.8,
       "r": -45.84
-    },
-    {
-      "s": "positive-round",
-      "x": 1317,
-      "y": -301.7,
-      "r": 0
-    },
-    {
-      "s": "positive-round",
-      "x": 1179.1,
-      "y": -190.1,
-      "r": -31.77
-    },
-    {
-      "s": "positive-round",
-      "x": 1463.5,
-      "y": -177.9,
-      "r": -119.7
-    },
-    {
-      "s": "positive-round",
-      "x": 1440.8,
-      "y": -1.6,
-      "r": -15.73
-    },
-    {
-      "s": "positive-round",
-      "x": 1240.2,
-      "y": -5.1,
-      "r": 24.72
-    },
-    {
-      "s": "negative-round",
-      "x": 1329.2,
-      "y": -151.7,
-      "r": 0
-    },
-    {
-      "s": "positive-stem",
-      "x": 1310,
-      "y": 219.9,
-      "r": 0
     }
   ],
   "baseline": 0
