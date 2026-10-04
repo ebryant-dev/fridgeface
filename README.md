@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.3.1"
+npm install "github:ebryant-dev/fridgeface#v0.4.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.3.1"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.4.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
@@ -68,7 +68,7 @@ npm run test:browsers  # real-browser checks (Playwright) in Chromium AND WebKit
 
 ### Browser tests
 
-`npm run test:browsers` runs `tests/browsers/*.pw.ts` with Playwright against the Vite dev server (it starts one on port 5199), in Chromium and WebKit, each at 1440 x 900, an iPhone 15 in portrait and an iPhone 15 in landscape (touch, mobile). It checks: phones get the compact layout (icon buttons, compact tray scale, tray at most 22% of the screen height in portrait) and desktops the desktop one; no overlaps between the tray, the docks and the action bar; no page scroll; a tap (or click) on the tray adds a piece; the suggestions panel with letters and words; the intro rules; axe with the panel open (Chromium); zero console errors. Screenshots go to `.playwright-mcp/` (gitignored). First time only: `npx playwright install webkit chromium`.
+`npm run test:browsers` runs `tests/browsers/*.pw.ts` with Playwright against the Vite dev server (it starts one on port 5199), in Chromium and WebKit, each at 1440 x 900, an iPhone 15 in portrait and an iPhone 15 in landscape (touch, mobile). It checks: phones get the compact layout (icon buttons, compact tray scale, tray at most 22% of the screen height in portrait; in landscape a vertical tray on the left with all five shapes, and every control to its right) and desktops the desktop one; no overlaps between the tray, the docks and the action bar in any state; no snap or 15 degree controls; free 1 degree key rotation; no page scroll; a tap (or click) on the tray adds a piece, and a touch drag from the landscape tray drops one where the finger lifts; the suggestions panel with letters and words; the intro rules; axe with the panel open (Chromium); zero console errors. Screenshots go to `.playwright-mcp/` (gitignored). First time only: `npx playwright install webkit chromium`.
 
 The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside the shadow root).
 
@@ -79,7 +79,7 @@ The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside 
 
 ## Look
 
-- **Fridge texture** (`src/texture.ts`): a seamless tile generated once per page (tileable Worley creases + value noise, embossed), used as an SVG pattern in board space so it pans and zooms with the board.
+- **Fridge texture** (`src/texture.ts`): a seamless tile generated once per page (tileable Worley creases + value noise, embossed), used as an SVG pattern in board space so it pans and zooms with the board. The board's tone is rgb(216,215,212) (v0.4.0; lighter, so the white negative shapes, #e6e7e8, contrast a little less); the tray uses the same tile in its original, darker tone, rgb(208,206,203).
 - **Magnet shadows** (`src/shadow.ts`): no SVG or CSS filters anywhere. Each piece is drawn as [shadow, shape]; the shadow is offset copies of the geometry with round-join strokes of growing width and falling opacity. Sizes are in screen px (counter-scaled on zoom). The piece being dragged, rotated or twisted lifts.
 
 ## Suggestions (letters and words)
@@ -117,8 +117,7 @@ The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work whi
 | `N` / `P` | Select the next / previous piece in the stacking order (wraps; pans if it is off screen) |
 | Arrows, `Shift`+Arrows | Move the selected piece 1 / 10 units. With nothing selected they pan the board |
 | `Alt`+Arrows | Pan the board (`Shift` for bigger steps), even with a piece selected |
-| `,` / `.` | Rotate 1 degree anticlockwise / clockwise. `Shift` + them: one 15 degree step |
-| `S` | Snap on / off |
+| `,` / `.` | Rotate 1 degree anticlockwise / clockwise (rotation is free: there is no snapping) |
 | `]` / `[` | Bring forward / send backward |
 | `Delete`, `Backspace` | Delete the piece |
 | `+` / `-`, `F` or `Shift`+`1` | Zoom, frame all pieces |
@@ -133,7 +132,7 @@ Screen readers: the board is `role="application"` with a name and description, a
 
 ## Embedding
 
-- Give `<fridge-face>` a definite size (a fixed or percentage height inside a sized parent); it has size containment, so it does not grow to fit its content. The compact layout (icon controls, small tray; also used for phones in landscape) follows the element's own box, not the window: a ResizeObserver on the element applies it when the element is at most 600 px wide or at most 520 px tall (not CSS container queries, which a real iPhone did not apply inside the shadow root).
+- Give `<fridge-face>` a definite size (a fixed or percentage height inside a sized parent); it has size containment, so it does not grow to fit its content. The compact layout (icon controls, small tray; also used for phones in landscape) follows the element's own box, not the window: a ResizeObserver on the element applies it when the element is at most 600 px wide or at most 520 px tall (not CSS container queries, which a real iPhone did not apply inside the shadow root). When the element is at most 520 px tall AND wider than tall (`layoutState` in `src/layout.ts`), the tray docks vertically along the left edge, its shapes scaled to fit the height, and the board and all its controls take the rest. The optional `--ff-bottom-reserve` custom property adds room under the tray's shapes (the standalone page puts its credit there).
 - It does not need to be full viewport. `embed.html` (dev only: `npm run dev`, open `/embed.html`) shows a 900 x 600 box in a scrolling page. Wheel, pinch and touch drags that start on the board never scroll the page; the page scrolls normally everywhere else, and keys such as Space, PageDown and arrows are consumed only while the board has focus. Leave room around the element on touch devices: a swipe that starts inside it will not scroll the page.
 - `share-base` sets the page that share links open (default: the current URL without its hash). The link is precomputed shortly after every change so Share can write the clipboard synchronously inside the click, which Safari requires; if it is not ready yet, or the clipboard refuses, the selectable link field appears instead.
 - On notched phones add `viewport-fit=cover` to the page's viewport meta (as `index.html` does). Safe-area insets are applied only where the element actually touches a screen edge. The view stays centred on the same board point when the element resizes (window resize, rotation, the iOS URL bar).

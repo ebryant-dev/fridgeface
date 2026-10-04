@@ -70,13 +70,19 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
   const errors = collectErrors(page);
   await open(page);
   const portrait = isMobile && page.viewportSize()!.height > page.viewportSize()!.width;
+  const landscape = isMobile && !portrait;
 
   // 1. The right layout for the device.
   const m = await measure(page);
   if (isMobile) {
     expect.soft(m.iconShown, 'phone: icon buttons are showing').toBe(true);
     expect.soft(m.textShown, 'phone: button text is hidden').toBe(false);
-    expect.soft(m.tk, 'phone: compact tray scale').toBeCloseTo(0.17, 3);
+    if (portrait) expect.soft(m.tk, 'phone portrait: compact tray scale').toBeCloseTo(0.17, 3);
+    else {
+      // Landscape: the tray scale shrinks (never grows) so all five shapes fit the height of the vertical tray.
+      expect.soft(m.tk, 'phone landscape: tray scale at most the compact one').toBeLessThanOrEqual(0.17);
+      expect.soft(m.tk, 'phone landscape: tray scale still comfortable').toBeGreaterThan(0.13);
+    }
     expect.soft(m.k, 'phone: compact board scale').toBeCloseTo(0.17, 3);
     if (portrait) expect.soft(m.tray.height / m.vh, 'phone portrait: tray height / viewport height').toBeLessThanOrEqual(0.22);
   } else {
@@ -107,9 +113,17 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
     }
   }
 
-  // 3b. Phones: docks at the TOP, action bar at the BOTTOM just above the tray. Desktop: the reverse (unchanged).
+  // 3b. Phones: docks at the TOP, action bar at the BOTTOM just above the tray (portrait) or at the bottom of the board, right
+  // of the vertical tray (landscape). Desktop: the reverse (unchanged).
   const dockTop = Math.min(...after.dock.map((d) => d.r.y));
-  if (isMobile && after.actions) {
+  if (landscape && after.actions) {
+    expect.soft(after.tray.x, 'landscape: tray on the left edge').toBeLessThan(0.5);
+    expect.soft(after.tray.height, 'landscape: tray runs the full height').toBeGreaterThanOrEqual(after.vh - 0.5);
+    expect.soft(after.tray.width, 'landscape: tray is a vertical column').toBeLessThan(after.tray.height);
+    expect.soft(dockTop, 'landscape: docks sit at the top of the board').toBeLessThan(20);
+    for (const b of [...after.dock.map((d) => d.r), after.actions]) expect.soft(b.x, "landscape: board controls start right of the tray").toBeGreaterThanOrEqual(after.tray.x + after.tray.width - 0.5);
+    expect.soft(after.actions.y + after.actions.height, 'landscape: action bar at the bottom of the board').toBeGreaterThan(after.vh - 20);
+  } else if (isMobile && after.actions) {
     expect.soft(dockTop, 'phone: docks sit at the top of the board').toBeLessThan(20);
     expect.soft(dockTop, "phone: docks' top < action bar's top").toBeLessThan(after.actions.y);
     expect.soft(after.actions.y + after.actions.height, "phone: action bar's bottom <= tray's top").toBeLessThanOrEqual(after.tray.y + 0.5);
@@ -151,4 +165,46 @@ test('the layout state is set synchronously on connect (no flash of the desktop 
     return out;
   });
   expect(r).toEqual({ compact: true, tk: 0.17, text: 'none' });
+});
+
+test('rotation snapping is gone: no snap or 15 degree buttons on any layout; the action bar is Delete, Bring forward, Send backward', async ({ page, isMobile }) => {
+  await open(page);
+  const wedge = page.locator('fridge-face .tray button[data-shape="wedge"]');
+  if (isMobile) await wedge.tap();
+  else await wedge.click();
+  await expect(page.locator('fridge-face .actions')).toBeVisible();
+  for (const sel of ['[data-action=snap]', '[data-action=rotate-left]', '[data-action=rotate-right]']) await expect(page.locator(`fridge-face ${sel}`)).toHaveCount(0);
+  const labels = await page.locator('fridge-face .actions button').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
+  expect(labels).toEqual(['Delete piece', 'Bring forward', 'Send backward']);
+  // Nothing about snapping or 15 degree steps anywhere in the toy, including the keyboard shortcuts dialog.
+  const text = await page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.innerHTML);
+  expect(text).not.toMatch(/snap|15\u00b0|15°|15 degree/i);
+});
+
+test('free rotation: , and . turn 1 degree (coalesced into one undo step); Shift + them, < > and S do nothing; any rotation loads unchanged', async ({ page }) => {
+  await page.goto('/?n=rot');
+  await page.waitForFunction(() => !!document.querySelector('fridge-face')?.shadowRoot?.querySelector('.tray button[data-shape]'));
+  await page.keyboard.press('Shift');
+  type FF = HTMLElement & { loadComposition(d: unknown): { ok: boolean }; getComposition(): { pieces: { s: string; x: number; y: number; r: number }[] }; undo(): void };
+  // Old share links and saves may hold any rotation, including former 15 degree steps and odd angles: they load as they are.
+  const loaded = await page.evaluate(() => {
+    const ff = document.querySelector('fridge-face') as FF;
+    ff.loadComposition({ v: 1, pieces: [{ s: 'wedge', x: 0, y: 0, r: 7.33 }, { s: 'positive-stem', x: 200, y: 0, r: -45 }, { s: 'negative-round', x: 400, y: 0, r: 172.5 }] });
+    return ff.getComposition().pieces.map((p) => p.r);
+  });
+  expect(loaded).toEqual([7.33, -45, 172.5]);
+  await page.locator('fridge-face .board svg.surface').focus();
+  await page.keyboard.press('n'); // select the wedge (bottom of the stack)
+  const r = () => page.evaluate(() => (document.querySelector('fridge-face') as FF).getComposition().pieces[0].r);
+  for (let i = 0; i < 5; i++) await page.keyboard.press('.');
+  expect(await r()).toBeCloseTo(12.33, 6);
+  await page.keyboard.press(',');
+  expect(await r()).toBeCloseTo(11.33, 6);
+  for (const k of ['Shift+Period', 'Shift+Comma', '<', '>', 's', 'S']) await page.keyboard.press(k);
+  expect(await r(), 'no step rotation and no snap key').toBeCloseTo(11.33, 6);
+  await expect(page.locator('fridge-face #ff-live')).toContainText('Wedge rotated to', { timeout: 2000 });
+  await expect(page.locator('fridge-face #ff-live')).not.toContainText(/snap/i);
+  // The 1 degree key presses were one undo step.
+  await page.evaluate(() => (document.querySelector('fridge-face') as FF).undo());
+  expect(await r()).toBeCloseTo(7.33, 6);
 });

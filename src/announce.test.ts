@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceSnap, announceZoom, announceSuggestion, announceIntro, describeAngle, pieceCount,
+  announceSelected, announceZoom, announceSuggestion, announceIntro, describeAngle, pieceCount,
 } from './announce';
 
 describe('announcements', () => {
@@ -40,13 +40,11 @@ describe('announcements', () => {
     expect(announceRestacked('backward', false, 0, 4)).toBe('Already at the bottom.');
   });
 
-  it('covers history, snap, zoom and loading', () => {
+  it('covers history, zoom and loading', () => {
     expect(announceHistory('undo', true)).toBe('Undone.');
     expect(announceHistory('redo', true)).toBe('Redone.');
     expect(announceHistory('undo', false)).toBe('Nothing to undo.');
     expect(announceHistory('redo', false)).toBe('Nothing to redo.');
-    expect(announceSnap(true)).toBe('Snap on. Rotation steps by 15 degrees.');
-    expect(announceSnap(false)).toBe('Snap off.');
     expect(announceZoom(1.2499)).toBe('Zoom 125 percent.');
     expect(announceLoaded(1)).toBe('Composition opened. 1 piece on the board.');
   });

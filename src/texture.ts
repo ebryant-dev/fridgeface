@@ -1,6 +1,6 @@
 /**
  * The fridge-door texture: a light warm-grey, finely pebbled / leathery surface, generated
- * procedurally ONCE at startup and used as a seamless tile.
+ * procedurally ONCE at startup and used as a seamless tile, in two tones: the board's and the tray's (darker).
  *
  * `texturePixels` is pure (no DOM): tileable Worley creases (two octaves) plus a soft value-noise
  * undulation form a height field, which is embossed with a light from the top-left. The canvas
@@ -8,8 +8,13 @@
  * and the exports both use. No SVG filters anywhere.
  */
 
-/** Base tone sampled from the reference diagrams (mean of empty texture, ~rgb(197,195,192)). */
-export const TEXTURE_BASE: readonly [number, number, number] = [208, 206, 203];
+/**
+ * The BOARD's base tone. v0.4.0 lightened it from rgb(208,206,203) to roughly halve the gap to the negative shapes
+ * (#e6e7e8), so they read as white magnets on a light door with less (but still clearly visible) contrast.
+ */
+export const TEXTURE_BASE: readonly [number, number, number] = [216, 215, 212];
+/** The TRAY's base tone: the original reference tone (mean of empty texture, ~rgb(197,195,192)), unchanged in v0.4.0. */
+export const TRAY_TEXTURE_BASE: readonly [number, number, number] = [208, 206, 203];
 /** Texels per tile side. */
 export const TEXTURE_PX = 640;
 /** Board units one tile covers (1 board unit = 1 source-SVG unit; a positive stem is ~439 long). */
@@ -95,8 +100,13 @@ function valueField(n: number, g: number, seed: number): Float32Array {
   return out;
 }
 
-/** RGBA pixels of one seamless tile, `size` x `size`. */
-export function texturePixels(o: TextureOptions = DEFAULT_TEXTURE): Uint8ClampedArray {
+/** RGBA pixels of one seamless tile, `size` x `size`, around the given base tone. */
+export function texturePixels(o: TextureOptions = DEFAULT_TEXTURE, base: readonly [number, number, number] = TEXTURE_BASE): Uint8ClampedArray {
+  return colourise(textureShade(o), base);
+}
+
+/** The tile's luminance offsets (one per texel, mean ~0): the texture's character, independent of its base tone. */
+export function textureShade(o: TextureOptions = DEFAULT_TEXTURE): Float32Array {
   const n = o.size;
   const h = new Float32Array(n * n);
   const [cx, cy] = o.coarse, [fx, fy] = o.fine;
@@ -131,11 +141,20 @@ export function texturePixels(o: TextureOptions = DEFAULT_TEXTURE): Uint8Clamped
   const mean = sum / (n * n);
   const sd = Math.sqrt(Math.max(1e-9, sum2 / (n * n) - mean * mean));
   const gain = o.contrast / sd;
-  const out = new Uint8ClampedArray(n * n * 4);
-  const [r, g, b] = TEXTURE_BASE;
+  const out = new Float32Array(n * n);
   for (let i = 0; i < n * n; i++) {
     const grain = (hash(i, 3, o.seed + 29) - 0.5) * 2.2;
-    const d = (s[i] - mean) * gain + grain;
+    out[i] = (s[i] - mean) * gain + grain;
+  }
+  return out;
+}
+
+/** RGBA pixels from luminance offsets around a base tone. */
+function colourise(shade: Float32Array, base: readonly [number, number, number]): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(shade.length * 4);
+  const [r, g, b] = base;
+  for (let i = 0; i < shade.length; i++) {
+    const d = shade[i];
     out[i * 4] = r + d;
     out[i * 4 + 1] = g + d;
     out[i * 4 + 2] = b + d;
@@ -145,8 +164,10 @@ export function texturePixels(o: TextureOptions = DEFAULT_TEXTURE): Uint8Clamped
 }
 
 export interface FridgeTexture {
-  /** JPEG data URL of one seamless tile. */
+  /** JPEG data URL of one seamless tile (the board's tone; also used by the exports). */
   href: string;
+  /** The same tile in the tray's (darker, unchanged) tone. */
+  trayHref: string;
   /** Texels per side. */
   px: number;
   /** Board units per tile side. */
@@ -164,11 +185,15 @@ export function fridgeTexture(): FridgeTexture {
   if (cached) return cached;
   const t0 = performance.now();
   const px = DEFAULT_TEXTURE.size;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = px;
-  const ctx = canvas.getContext('2d')!;
-  ctx.putImageData(new ImageData(texturePixels(DEFAULT_TEXTURE) as Uint8ClampedArray<ArrayBuffer>, px, px), 0, 0);
-  const href = canvas.toDataURL('image/jpeg', 0.82);
-  cached = { href, px, units: TEXTURE_UNITS, ms: performance.now() - t0, canvas };
+  const shade = textureShade(DEFAULT_TEXTURE); // the expensive part, shared by both tones
+  const tile = (base: readonly [number, number, number]) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = px;
+    canvas.getContext('2d')!.putImageData(new ImageData(colourise(shade, base) as Uint8ClampedArray<ArrayBuffer>, px, px), 0, 0);
+    return { canvas, href: canvas.toDataURL('image/jpeg', 0.82) };
+  };
+  const board = tile(TEXTURE_BASE);
+  const tray = tile(TRAY_TEXTURE_BASE);
+  cached = { href: board.href, trayHref: tray.href, px, units: TEXTURE_UNITS, ms: performance.now() - t0, canvas: board.canvas };
   return cached;
 }

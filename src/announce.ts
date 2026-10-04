@@ -34,8 +34,6 @@ export function announceRestacked(dir: 'forward' | 'backward', moved: boolean, i
 
 export const announceDeleted = (remaining: number): string => `Piece deleted. ${pieceCount(remaining)}`;
 
-export const announceSnap = (on: boolean): string => (on ? 'Snap on. Rotation steps by 15 degrees.' : 'Snap off.');
-
 export const announceZoom = (zoomRatio: number): string => `Zoom ${Math.round(zoomRatio * 100)} percent.`;
 
 export const announceHistory = (kind: 'undo' | 'redo', did: boolean): string =>

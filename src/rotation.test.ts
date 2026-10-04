@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Composition } from './composition';
-import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright, uprightBounds } from './rotation';
+import { fromUpright, normalise, uprightBounds } from './rotation';
 
 // Rest-pose angles from upright, as measured in src/shapes.ts (shapes.ts needs a DOM, which unit tests lack;
 // the browser check confirms these live values).
@@ -20,65 +20,18 @@ describe('normalise', () => {
   });
 });
 
-describe('rest poses under truncate-toward-upright', () => {
-  const expected: Record<string, number> = {
-    'positive-stem': 0, 'positive-round': 0, 'negative-stem': 0, 'negative-round': 0, wedge: -15,
-  };
-  for (const [id, want] of Object.entries(expected)) {
-    it(`${id} rest pose -> ${want}`, () => {
-      const fu = fromUpright(offset(id), 0);
-      expect(snapTowardUpright(fu)).toBe(want);
-      expect(fromUpright(offset(id), rotationFor(offset(id), want))).toBeCloseTo(want, 9);
-    });
-  }
-});
-
-describe('snapTowardUpright', () => {
-  it('truncates toward 0 for positive and negative angles', () => {
-    expect(snapTowardUpright(14.9)).toBe(0);
-    expect(snapTowardUpright(29.9)).toBe(15);
-    expect(snapTowardUpright(-14.9)).toBe(0);
-    expect(snapTowardUpright(-29.9)).toBe(-15);
-    expect(snapTowardUpright(-22.1)).toBe(-15);
+describe('fromUpright', () => {
+  it('rest poses read as their offset from upright; rotation adds to it, normalised', () => {
+    for (const id of Object.keys(OFFSETS)) expect(fromUpright(offset(id), 0)).toBeCloseTo(offset(id), 9);
+    expect(fromUpright(offset('wedge'), 22.1)).toBeCloseTo(0, 9);
+    expect(fromUpright(offset('positive-stem'), -8.38)).toBeCloseTo(0, 9);
+    expect(fromUpright(10, 175)).toBe(-175);
+    expect(fromUpright(-10, -175)).toBe(175);
   });
-  it('wraps near +-180 (truncation goes toward 0, i.e. away from 180)', () => {
-    expect(snapTowardUpright(179)).toBe(165);
-    expect(snapTowardUpright(-179)).toBe(-165);
-    expect(snapTowardUpright(181)).toBe(-165);
-    expect(snapTowardUpright(180)).toBe(180);
-    expect(snapTowardUpright(-180)).toBe(180);
-  });
-  it('leaves on-step angles alone', () => {
-    expect(snapTowardUpright(45)).toBe(45);
-    expect(snapTowardUpright(45 + 1e-9)).toBe(45);
-  });
-});
-
-describe('snapNearest', () => {
-  it('rounds to the nearest multiple', () => {
-    expect(snapNearest(7)).toBe(0);
-    expect(snapNearest(8)).toBe(15);
-    expect(snapNearest(-8)).toBe(-15);
-    expect(snapNearest(178)).toBe(180);
-    expect(snapNearest(-178)).toBe(180);
-    expect(snapNearest(188)).toBe(-165);
-  });
-});
-
-describe('stepFromUpright', () => {
-  it('steps from on-step angles', () => {
-    expect(stepFromUpright(0, 1)).toBe(15);
-    expect(stepFromUpright(0, -1)).toBe(-15);
-    expect(stepFromUpright(-15, 1)).toBe(0);
-    expect(stepFromUpright(165, 1)).toBe(180);
-    expect(stepFromUpright(180, 1)).toBe(-165);
-    expect(stepFromUpright(-165, -1)).toBe(180);
-  });
-  it('snaps toward upright first when off-step, in either direction', () => {
-    expect(stepFromUpright(20, 1)).toBe(15);
-    expect(stepFromUpright(20, -1)).toBe(15);
-    expect(stepFromUpright(-20, 1)).toBe(-15);
-    expect(stepFromUpright(8.38, 1)).toBe(0);
+  it('keeps any angle as it is: no snapping', () => {
+    expect(fromUpright(0, 7)).toBe(7);
+    expect(fromUpright(0, 14.9)).toBeCloseTo(14.9, 9);
+    expect(fromUpright(0, -22.1)).toBeCloseTo(-22.1, 9);
   });
 });
 

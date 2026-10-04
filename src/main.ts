@@ -8,15 +8,15 @@ import { exportFilename, pngSize, renderCompositionSvg } from './export';
 import { centreOn, groupByChar, groupByWord, isWord, splitSuggestions, type AnySuggestion, type Suggestion, type WordSuggestion } from './suggestions';
 import { suggestionStore } from './suggestion-store';
 import { introPieces, introSchedule, introWanted } from './intro';
-import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
+import { fromUpright, normalise } from './rotation';
 import { fridgeTexture, type FridgeTexture } from './texture';
 import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
 import { FONT_STACK, registerFont } from './font';
 import { icon } from './icons';
-import { layoutState } from './layout';
+import { columnTrayScale, layoutState } from './layout';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceSnap, announceZoom, announceSuggestion, announceWord, announceIntro, pieceCount,
+  announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro, pieceCount,
 } from './announce';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -41,6 +41,12 @@ const THUMB_HEIGHT = 88; // CSS px, suggestion thumbnails
 const SUGGESTION_NOTE = "One way to build it. There's no right way — make your own.";
 const INTRO_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
+const COMPACT_TK = 0.17; // the compact tray scale (CSS --tk under data-compact)
+const TRAY_COLUMN_GAP = 8; // CSS px, minimum space between shapes in the landscape tray column
+const TRAY_COLUMN_MIN_W = 76; // CSS px, minimum width of the landscape tray column's content (touch targets; the standalone page's credit sits under it)
+/** Landscape tray column: the widest shape's width and all five shapes' heights, in source units (with the per-shape padding). */
+const TRAY_COLUMN_W = Math.max(...SHAPES.map((s) => s.bbox.w + 2 * PAD));
+const TRAY_COLUMN_H = SHAPES.reduce((n, s) => n + s.bbox.h + 2 * PAD, 0);
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
 
 const STYLES = `
@@ -77,7 +83,7 @@ const STYLES = `
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .probe { position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none;
   padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
-.board { position: relative; flex: 1 1 auto; min-height: 0; background: rgb(197 195 192); }
+.board { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; background: rgb(205 204 201); } /* under the (lighter) board texture */
 .board svg.surface { display: block; width: 100%; height: 100%; touch-action: none; outline: none; user-select: none; -webkit-user-select: none; }
 .board svg.surface:focus-visible { outline: 3px solid var(--ink); outline-offset: -6px; }
 .board svg.surface [data-piece-id] { cursor: grab; }
@@ -204,7 +210,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 
 /* Compact layout (phones, either orientation): the element is narrow OR short (data-compact, set from JS on .root
    and .help). Icon controls, a small tray. */
-.root[data-compact] { --k: 0.17; --tk: 0.17; }
+.root[data-compact] { --k: 0.17; --tk: ${COMPACT_TK}; }
 /* --ff-bottom-reserve: optional extra room under the tray shapes that a host can set (the standalone page puts its credit line there on phones). */
 [data-compact] .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab) + var(--ff-bottom-reserve, 0px)) calc(10px + var(--sal)); }
 [data-compact] .tray .grp { display: contents; }
@@ -241,8 +247,25 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .root[data-short] .menu .sub { grid-column: 1 / -1; order: 5; padding-left: 0; }
 /* Bottom sheet: full width, over the dock, no taller than most of the board. */
 [data-compact] .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
-/* Short (phones in landscape): a thinner tray band. */
+/* Short: a thinner tray band. */
 [data-short] .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab) + var(--ff-bottom-reserve, 0px)); }
+/* Landscape compact (short AND wider than tall: phones in landscape; data-landscape, see src/layout.ts): the tray docks
+   VERTICALLY along the LEFT edge, the five shapes stacked top to bottom in tray order, and the board takes the rest, to its
+   right. Every control lives inside the board, so nothing can overlap the tray. The tray takes the left (notch-side) inset
+   and the top/bottom insets; the board's controls keep only the right and bottom ones. --tk is set from JS so all five
+   shapes fit the height (syncTrayScale); each shape's button spans the column's full width, a comfortable touch target. */
+.root[data-landscape] { flex-direction: row; }
+[data-landscape] .tray {
+  order: -1; flex-direction: column; flex-wrap: nowrap; align-items: center; justify-content: space-evenly; gap: ${TRAY_COLUMN_GAP}px;
+  padding: calc(8px + var(--sat)) 10px calc(8px + var(--sab) + var(--ff-bottom-reserve, 0px)) calc(10px + var(--sal));
+  box-shadow: inset -2px 0 0 rgb(0 0 0 / 0.12);
+}
+[data-landscape] .tray button { width: max(calc(var(--tray-col) * var(--tk) * 1px), ${TRAY_COLUMN_MIN_W}px); }
+[data-landscape] .tray button::after { inset: -${TRAY_COLUMN_GAP / 2}px -10px; }
+[data-landscape] .dock { left: 8px; }
+[data-landscape] .actions { bottom: calc(8px + var(--sab)); max-width: calc(100% - 16px - var(--sar)); }
+[data-landscape] .sugg { padding-bottom: var(--sab); }
+.root[data-landscape] .menu:not([hidden]) { width: min(520px, calc(100% - 16px - var(--sar))); }
 
 /* ---- keyboard shortcuts dialog ---- */
 .help {
@@ -283,8 +306,6 @@ const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (rea
   { title: 'Move and rotate the selected piece', items: [
     { keys: [['Arrows'], ['Shift', 'Arrows']], text: 'Move 1 unit, or 10' },
     { keys: [[','], ['.']], text: 'Rotate 1 degree anticlockwise or clockwise' },
-    { keys: [['Shift', ','], ['Shift', '.']], text: 'Rotate one 15 degree step' },
-    { keys: [['S']], text: 'Turn snap on or off' },
   ] },
   { title: 'Stack and delete', items: [
     { keys: [[']'], ['[']], text: 'Bring forward, send backward' },
@@ -419,7 +440,6 @@ export class FridgeFace extends HTMLElement {
   private kCache = 0;
   private vpCache: { width: number; height: number } | null = null;
   private selectedId: string | null = null;
-  private snap = false;
   private touches = new Map<number, { x: number; y: number }>();
   private rotating: { pointerId: number; id: string; grab: number; startRot: number } | null = null;
   private twist: { id: string; lastAngle: number; accum: number; startRot: number; startPos: { x: number; y: number }; startMid: { x: number; y: number } } | null = null;
@@ -483,9 +503,6 @@ export class FridgeFace extends HTMLElement {
         </svg>
         <div class="actions panel" role="toolbar" aria-label="Piece actions" hidden>
           ${btn('data-action="delete" aria-label="Delete piece"', 'Delete', 'delete')}
-          ${btn('data-action="rotate-left" aria-label="Rotate left 15°"', '&#8630; 15°', 'rotate-left')}
-          ${btn('data-action="rotate-right" aria-label="Rotate right 15°"', '15° &#8631;', 'rotate-right')}
-          ${btn('data-action="snap" aria-label="Snap 15°" aria-pressed="false"', 'Snap 15°', 'snap')}
           ${btn('data-action="forward" aria-label="Bring forward"', 'Forward', 'forward')}
           ${btn('data-action="backward" aria-label="Send backward"', 'Back', 'backward')}
         </div>
@@ -587,7 +604,8 @@ export class FridgeFace extends HTMLElement {
     this.dockEl = wrap.querySelector('.dock')!;
     this.menuEl = wrap.querySelector('.menu')!;
     this.menuBtn = wrap.querySelector('[data-view=menu]')!;
-    this.trayEl.style.setProperty('--tex', `url("${tex.href}")`);
+    wrap.style.setProperty('--tray-col', String(TRAY_COLUMN_W));
+    this.trayEl.style.setProperty('--tex', `url("${tex.trayHref}")`); // the tray keeps its own (darker, unchanged) tone
 
     for (const s of SHAPES) {
       const b = document.createElement('button');
@@ -1141,13 +1159,13 @@ export class FridgeFace extends HTMLElement {
   /** Anchor the menu to its button (the docks are at the top on phones): right edges aligned, opening DOWNWARD, always inside the board and clear of the piece action bar. */
   private positionMenu() {
     const m = this.menuEl;
-    const host = this.getBoundingClientRect();
+    const board = this.boardEl.getBoundingClientRect(); // the menu is positioned inside the board (right of the tray in landscape)
     const b = this.menuBtn.getBoundingClientRect();
     const gap = 6;
     const edge = 8;
     const px = (v: string) => parseFloat(v) || 0;
     const cs = getComputedStyle(this.rootEl);
-    let bottom = this.boardEl.getBoundingClientRect().bottom - edge;
+    let bottom = board.bottom - edge;
     if (!this.actions.hidden && getComputedStyle(this.actions).visibility !== 'hidden') bottom = Math.min(bottom, this.actions.getBoundingClientRect().top - gap); // never over the piece action bar
     m.style.maxHeight = '';
     m.style.top = '0px';
@@ -1157,10 +1175,10 @@ export class FridgeFace extends HTMLElement {
     const top = b.bottom + gap;
     const h = Math.min(mh, Math.max(0, bottom - top));
     m.style.maxHeight = `${h}px`;
-    const minLeft = edge + px(cs.getPropertyValue('--sal'));
-    const maxLeft = host.width - mw - edge - px(cs.getPropertyValue('--sar'));
-    m.style.left = `${Math.round(Math.max(minLeft, Math.min(b.right - host.left - mw, maxLeft)))}px`;
-    m.style.top = `${Math.round(top - host.top)}px`;
+    const minLeft = edge + (this.isLandscape ? 0 : px(cs.getPropertyValue('--sal'))); // in landscape the tray takes the left inset
+    const maxLeft = board.width - mw - edge - px(cs.getPropertyValue('--sar'));
+    m.style.left = `${Math.round(Math.max(minLeft, Math.min(b.right - board.left - mw, maxLeft)))}px`;
+    m.style.top = `${Math.round(top - board.top)}px`;
   }
 
   private onMenuClick(e: MouseEvent) {
@@ -1406,15 +1424,34 @@ export class FridgeFace extends HTMLElement {
    */
   private syncLayout() {
     if (!this.rootEl) return;
-    const { compact, short } = layoutState(this.clientWidth, this.clientHeight); // the host's own (untransformed) box
+    const { compact, short, landscape } = layoutState(this.clientWidth, this.clientHeight); // the host's own (untransformed) box
     for (const el of [this.rootEl, this.helpEl]) {
       el.toggleAttribute('data-compact', compact);
       el.toggleAttribute('data-short', short);
+      el.toggleAttribute('data-landscape', landscape);
     }
+    this.syncTrayScale();
     if (this.menuEl) {
       if (!compact) this.closeMenu(false);
       else if (this.menuOpen) this.positionMenu();
     }
+  }
+
+  private get isLandscape(): boolean {
+    return !!this.rootEl && this.rootEl.hasAttribute('data-landscape');
+  }
+
+  /** Landscape compact: the tray scale that fits all five shapes, stacked, into the element's height (inside the tray's padding). */
+  private syncTrayScale() {
+    if (!this.rootEl || !this.trayEl) return;
+    if (!this.isLandscape) {
+      this.rootEl.style.removeProperty('--tk');
+      return;
+    }
+    const cs = getComputedStyle(this.trayEl);
+    const avail = this.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+    const tk = columnTrayScale(avail, TRAY_COLUMN_H, (SHAPES.length - 1) * TRAY_COLUMN_GAP, COMPACT_TK);
+    this.rootEl.style.setProperty('--tk', String(Math.floor(tk * 10000) / 10000));
   }
 
   // ---- insets ------------------------------------------------------------------------
@@ -1442,6 +1479,7 @@ export class FridgeFace extends HTMLElement {
       st.setProperty('--sab', `${b}px`);
       st.setProperty('--sal', `${l}px`);
     }
+    this.syncTrayScale(); // the insets pad the landscape tray column
   }
 
   // ---- keyboard shortcuts dialog -------------------------------------------------------
@@ -1701,12 +1739,6 @@ export class FridgeFace extends HTMLElement {
     return SHAPE_BY_ID.get(p.shapeId)!.uprightOffsetDeg;
   }
 
-  /** Apply a raw (unsnapped) rotation, snapping to the nearest step from upright when asked. */
-  private applyRaw(p: Piece, raw: number, snap: boolean) {
-    const off = this.offsetOf(p);
-    this.composition.setRotation(p.id, snap ? rotationFor(off, snapNearest(off + raw)) : raw);
-  }
-
   private startTwist(e: PointerEvent) {
     const sel = this.composition.getPiece(this.selectedId!);
     const [a, b] = [...this.touches.values()];
@@ -1759,7 +1791,7 @@ export class FridgeFace extends HTMLElement {
       t.lastAngle = ang;
       const mid = this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2);
       this.composition.movePiece(t.id, t.startPos.x + (mid.x - t.startMid.x), t.startPos.y + (mid.y - t.startMid.y));
-      this.applyRaw(this.composition.getPiece(t.id)!, t.startRot + t.accum, this.snap);
+      this.composition.setRotation(t.id, t.startRot + t.accum); // free rotation: a magnet turns freely by hand
       return;
     }
     const r = this.rotating;
@@ -1767,7 +1799,7 @@ export class FridgeFace extends HTMLElement {
       const piece = this.composition.getPiece(r.id);
       if (!piece) return;
       const ang = this.angleTo(piece, this.toBoard(e.clientX, e.clientY));
-      this.applyRaw(piece, r.startRot + (ang - r.grab), this.snap || e.shiftKey);
+      this.composition.setRotation(piece.id, r.startRot + (ang - r.grab));
       return;
     }
     const m = this.moving;
@@ -1812,31 +1844,8 @@ export class FridgeFace extends HTMLElement {
 
   // ---- keyboard and actions -----------------------------------------------
 
-  /** Rotate-by-step: dir 1 = clockwise, -1 = anticlockwise. Off-step angles snap toward upright first. */
-  private stepRotate(id: string, dir: 1 | -1) {
-    const p = this.composition.getPiece(id);
-    if (!p) return;
-    const off = this.offsetOf(p);
-    this.composition.setRotation(id, rotationFor(off, stepFromUpright(fromUpright(off, p.rotation), dir)));
-  }
-
-  private setSnap(on: boolean) {
-    this.snap = on;
-    const p = on && this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
-    this.say(announceSnap(on));
-    if (p) {
-      const off = this.offsetOf(p);
-      if (this.composition.setRotation(p.id, rotationFor(off, snapTowardUpright(fromUpright(off, p.rotation))))) this.sayRotation(p.id);
-    }
-    this.render();
-  }
-
   private runAction(act: string, id: string) {
-    if (act === 'rotate-left' || act === 'rotate-right') {
-      this.stepRotate(id, act === 'rotate-left' ? -1 : 1);
-      this.sayRotation(id);
-    } else if (act === 'snap') this.setSnap(!this.snap);
-    else if (act === 'delete') {
+    if (act === 'delete') {
       if (this.composition.deletePiece(id)) this.say(announceDeleted(this.composition.pieces.length));
     } else if (act === 'forward' || act === 'backward') {
       const dir = act === 'forward' ? 'forward' : 'backward';
@@ -1946,11 +1955,10 @@ export class FridgeFace extends HTMLElement {
     if (!id || e.metaKey || e.ctrlKey || e.altKey) return;
     const piece = this.composition.getPiece(id);
     if (!piece) return;
-    // Shift+, and Shift+. produce < and > on US layouts, so match on the physical key too.
-    const rot = e.code === 'Period' || e.key === '.' || e.key === '>' ? 1 : e.code === 'Comma' || e.key === ',' || e.key === '<' ? -1 : 0;
+    // , and . rotate 1 degree (free rotation, no steps; Shift + them does nothing).
+    const rot = e.shiftKey ? 0 : e.code === 'Period' || e.key === '.' ? 1 : e.code === 'Comma' || e.key === ',' ? -1 : 0;
     if (rot) {
-      if (e.shiftKey) this.stepRotate(id, rot as 1 | -1);
-      else this.coalesced(`rot1:${id}`, () => this.composition.rotatePiece(id, rot));
+      this.coalesced(`rot1:${id}`, () => this.composition.rotatePiece(id, rot));
       this.sayRotation(id);
       e.preventDefault();
       return;
@@ -1960,8 +1968,6 @@ export class FridgeFace extends HTMLElement {
       case 'Backspace': this.runAction('delete', id); break;
       case ']': this.runAction('forward', id); break;
       case '[': this.runAction('backward', id); break;
-      case 's':
-      case 'S': this.runAction('snap', id); break;
       default: return;
     }
     e.preventDefault();
@@ -2170,6 +2176,7 @@ export class FridgeFace extends HTMLElement {
     const sched = introSchedule(pieces.length);
     const board = this.boardEl.getBoundingClientRect();
     const bottom = this.toBoard(0, board.bottom).y;
+    const left = this.toBoard(board.left, 0).x;
     this.introAnims = [];
     pieces.forEach((p, i) => {
       const g = this.els.get(p.id)?.g;
@@ -2177,10 +2184,13 @@ export class FridgeFace extends HTMLElement {
       if (!g || !s || typeof g.animate !== 'function') return;
       const tray = this.trayEl.querySelector(`[data-shape="${p.shapeId}"]`)?.getBoundingClientRect();
       const from = tray && tray.width ? this.toBoard(tray.left + tray.width / 2, tray.top + tray.height / 2) : this.toBoard(board.left + board.width / 2, board.bottom + 80);
-      const y0 = Math.max(from.y, bottom + Math.hypot(s.bbox.w, s.bbox.h) / 2 + 6); // start fully below the board's edge
+      const half = Math.hypot(s.bbox.w, s.bbox.h) / 2 + 6;
+      // Start fully outside the board, on the tray's side: below it, or (landscape, tray on the left) left of it.
+      const x0 = this.isLandscape ? Math.min(from.x, left - half) : from.x;
+      const y0 = this.isLandscape ? from.y : Math.max(from.y, bottom + half);
       this.introAnims.push(
         g.animate(
-          [{ transform: `translate(${n3(from.x)}px, ${n3(y0)}px)` }, { transform: `translate(${n3(p.x)}px, ${n3(p.y)}px)` }],
+          [{ transform: `translate(${n3(x0)}px, ${n3(y0)}px)` }, { transform: `translate(${n3(p.x)}px, ${n3(p.y)}px)` }],
           { duration: sched.duration, delay: sched.delays[i], easing: INTRO_EASE, fill: 'backwards' },
         ),
       );
@@ -2325,7 +2335,6 @@ export class FridgeFace extends HTMLElement {
     this.actions.hidden = !sel;
     if (sel) {
       const i = this.composition.indexOf(sel.id);
-      (this.actions.querySelector('[data-action=snap]') as HTMLButtonElement).setAttribute('aria-pressed', String(this.snap));
       (this.actions.querySelector('[data-action=forward]') as HTMLButtonElement).disabled = i === pieces.length - 1;
       (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = i === 0;
     }

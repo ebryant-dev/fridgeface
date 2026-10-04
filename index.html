@@ -25,6 +25,12 @@
         fridge-face { --ff-bottom-reserve: 16px; }
         .credit { top: auto; bottom: calc(env(safe-area-inset-bottom) + 3px); left: max(10px, env(safe-area-inset-left)); }
       }
+      /* Phones in landscape (the toy's landscape compact layout: at most 520px tall AND wider than tall): the tray is a narrow
+         column on the left, so the credit wraps onto two lines inside the column's width, in a taller reserved strip under the shapes. */
+      @media (max-height: 520px) and (orientation: landscape) {
+        fridge-face { --ff-bottom-reserve: 30px; }
+        .credit { max-width: 72px; line-height: 1.2; }
+      }
       .credit:hover, .credit:focus-visible { color: #000; text-decoration: underline; }
     </style>
   </head>
