@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "char": "i",
+  "variant": 1,
+  "pieces": [
+    {
+      "s": "positive-stem",
+      "x": 190.6,
+      "y": -216.8,
+      "r": 173.01
+    },
+    {
+      "s": "negative-stem",
+      "x": 222.7,
+      "y": -333.4,
+      "r": 86.36
+    }
+  ],
+  "baseline": 0
+}

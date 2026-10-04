@@ -57,7 +57,7 @@ const CSS = `
 .author .abody { overflow: auto; padding: 8px 10px 10px; touch-action: pan-y; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
 .author[data-collapsed] .abody { display: none; }
 .author label { display: flex; flex-direction: column; gap: 3px; font: 700 11px/1 var(--font); letter-spacing: 0.1em; text-transform: uppercase; }
-.author input { -webkit-user-select: text; user-select: text; box-sizing: border-box; min-height: 40px; font: 500 18px/1 var(--font); padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); }
+.author input { -webkit-user-select: text; user-select: text; box-sizing: border-box; min-height: 40px; font: 500 18px/1 var(--font); padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); text-transform: none; letter-spacing: normal; }
 .author input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .author p { margin: 0; font: 500 12px/1.35 var(--font); }
 .author .astatus { min-height: 1.35em; font-weight: 700; }
@@ -69,6 +69,10 @@ const CSS = `
 .author li .name { flex: 1 1 100%; font-family: ui-monospace, monospace; }
 .author li button.b, .author .arow button.b { min-height: 36px; min-width: 36px; padding: 0 8px; font-size: 11px; }
 `;
+
+/** Spell out the case so a capital can't be saved by accident unnoticed. */
+const caseLabel = (ch: string): string =>
+  /[a-z]/.test(ch) ? `lowercase ${ch}` : /[A-Z]/.test(ch) ? `capital ${ch}` : `"${ch}"`;
 
 export function mountAuthor(host: AuthorHost): void {
   const { store, boardEl } = host;
@@ -184,12 +188,16 @@ export function mountAuthor(host: AuthorHost): void {
       if (r.status !== 200) return say(`Not saved: ${r.body.error ?? r.status}`);
       pending = null;
       showReplace(false);
+      // Clear the fields BEFORE updating the list: the list update re-suggests a variant for whatever
+      // character is still typed, which flashed the next number (e.g. 2) for the letter just saved.
+      const what = `${caseLabel(ch)}, variant ${variant} (${filename})`;
+      charIn.value = '';
+      varIn.value = '';
+      variantTouched = false;
       const v = validateSuggestion(file, filename);
       if (v.ok) store.set(v.value); // shown at once; the dev server's hot reload then re-reads the file
-      variantTouched = false;
-      say(`Saved ${filename}.`);
-      host.say(`Saved ${filename}.`);
-      varIn.value = String(nextVariant(store.list, ch));
+      say(`Saved ${what}.`);
+      host.say(`Saved ${what}.`);
       renderList();
     } catch {
       say('Not saved: the dev server did not answer.');

@@ -1,0 +1,26 @@
+{
+  "v": 1,
+  "char": "p",
+  "variant": 1,
+  "pieces": [
+    {
+      "s": "positive-round",
+      "x": 160.7,
+      "y": -149.7,
+      "r": 5.69
+    },
+    {
+      "s": "negative-round",
+      "x": 163.7,
+      "y": -145,
+      "r": 0
+    },
+    {
+      "s": "positive-stem",
+      "x": 57.5,
+      "y": -71.7,
+      "r": 0
+    }
+  ],
+  "baseline": 0
+}
