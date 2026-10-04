@@ -1,7 +1,10 @@
-import { layoutWord, type ShapeLookup, type Suggestion } from './suggestions';
+import { isWord, layoutWord, type AnySuggestion, type ShapeLookup } from './suggestions';
 import type { PlacedPiece } from './serialize';
 
-/** The first-visit intro spells this word from variant 1 of each letter. */
+/**
+ * The first-visit intro shows this word: the word composition `word-play-1.json` as it was built, when it exists;
+ * otherwise variant 1 of each letter, set side by side (the fallback).
+ */
 export const INTRO_WORD = 'play';
 export const INTRO_VARIANT = 1;
 /** One piece's slide, ms. */
@@ -25,19 +28,30 @@ export function introWanted(c: IntroConditions): boolean {
   return !c.hasSavedComposition && !c.hasShareLink && !c.disabled && !c.skip;
 }
 
-/** Variant 1 of every letter of the word, or null when any is missing (then there is no intro). */
-export function introConstructions(suggestions: readonly Suggestion[]): PlacedPiece[][] | null {
+/** The word composition for the intro word (variant 1), if there is one. */
+export function introWordComposition(suggestions: readonly AnySuggestion[]): PlacedPiece[] | null {
+  const w = suggestions.find((x) => isWord(x) && x.text === INTRO_WORD && x.variant === INTRO_VARIANT);
+  return w && w.pieces.length ? w.pieces : null;
+}
+
+/** Variant 1 of every letter of the word, or null when any is missing. */
+export function introConstructions(suggestions: readonly AnySuggestion[]): PlacedPiece[][] | null {
   const out: PlacedPiece[][] = [];
   for (const ch of INTRO_WORD) {
-    const s = suggestions.find((x) => x.char === ch && x.variant === INTRO_VARIANT);
+    const s = suggestions.find((x) => !isWord(x) && x.char === ch && x.variant === INTRO_VARIANT);
     if (!s) return null;
     out.push(s.pieces);
   }
   return out;
 }
 
-/** The word, laid out on one baseline from x = 0, or null when a letter is missing. */
-export function introPieces(suggestions: readonly Suggestion[], shapeOf: ShapeLookup): PlacedPiece[] | null {
+/**
+ * The intro's pieces: the word composition as-is when it exists, else the letters laid out on one baseline from x = 0;
+ * null when neither is available (then there is no intro). The component frames the result, so either is centred.
+ */
+export function introPieces(suggestions: readonly AnySuggestion[], shapeOf: ShapeLookup): PlacedPiece[] | null {
+  const word = introWordComposition(suggestions);
+  if (word) return word.map((p) => ({ ...p }));
   const parts = introConstructions(suggestions);
   if (!parts) return null;
   const { pieces } = layoutWord(parts, shapeOf);

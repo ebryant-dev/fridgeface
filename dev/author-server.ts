@@ -2,17 +2,17 @@ import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { AUTHOR_ROUTE } from './route.ts';
-import { isSafeSuggestionFilename, suggestionFilename, validateSuggestion } from '../src/suggestions.ts';
+import { filenameFor, isSafeSuggestionFilename, isWord, suggestionText, validateSuggestion } from '../src/suggestions.ts';
 
 /**
- * Dev-server middleware for the author mode: writes and deletes `src/suggestions/<name>.json`.
+ * Dev-server middleware for the author mode: writes and deletes `src/suggestions/<name>.json` (letters and word compositions).
  * Only ever registered by `vite` (serve), never by `vite build`, so nothing here is in `dist/`.
  *
  *   POST   /__fridgeface/suggestion   { filename, data, overwrite? }  -> 200 { ok: true, filename } | 200 { ok: false, error: 'exists' } (nothing written) | 4xx
  *   DELETE /__fridgeface/suggestion   { filename }                    -> 200 { ok } | 404 | 4xx
  *
- * Safety: the file name must be exactly what `suggestionFilename` produces (no separators, dots or case tricks),
- * the data must be a valid suggestion whose char and variant match that name, a write never replaces an existing
+ * Safety: the file name must be exactly what `suggestionFilename` or `wordFilename` produces (no separators, dots or
+ * case tricks), the data must be a valid suggestion whose char (or word text) and variant match that name, a write never replaces an existing
  * file unless `overwrite` is true, a delete touches only that one file, and the request must be same-origin JSON.
  */
 const MAX_BODY = 64 * 1024;
@@ -112,10 +112,11 @@ export function authorServer(): Plugin {
 
           const v = validateSuggestion(body.data);
           if (!v.ok) return sendJson(res, 400, { error: `not a valid suggestion: ${v.error}` });
-          if (suggestionFilename(v.value.char, v.value.variant) !== filename) return sendJson(res, 400, { error: 'file name does not match the character and variant' });
-          const data = body.data as { v: number; char: string; variant: number; pieces: unknown[]; baseline: number };
-          // Write only the known fields, in a fixed order, pretty-printed.
-          const json = JSON.stringify({ v: data.v, char: data.char, variant: data.variant, pieces: data.pieces, baseline: data.baseline }, null, 2) + '\n';
+          if (filenameFor(suggestionText(v.value), v.value.variant) !== filename) return sendJson(res, 400, { error: 'file name does not match the text and variant' });
+          const data = body.data as { v: number; char?: string; text?: string; variant: number; pieces: unknown[]; baseline: number };
+          // Write only the known fields, in a fixed order, pretty-printed. Letters keep their format exactly.
+          const head = isWord(v.value) ? { v: data.v, text: data.text } : { v: data.v, char: data.char };
+          const json = JSON.stringify({ ...head, variant: data.variant, pieces: data.pieces, baseline: data.baseline }, null, 2) + '\n';
           await mkdir(dir, { recursive: true });
           try {
             // 'wx' creates the file only if it does not exist: the refusal to overwrite is atomic, not a check-then-write.

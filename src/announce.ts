@@ -50,4 +50,7 @@ function capitalise(s: string): string {
 export const announceSuggestion = (char: string, variant: number, added: number, total: number): string =>
   `Suggestion for ${char}, variant ${variant}, placed. ${added === 1 ? '1 piece' : `${added} pieces`} added. ${pieceCount(total)}`;
 
+export const announceWord = (text: string, variant: number, added: number, total: number): string =>
+  `Word composition ${text}, variant ${variant}, placed. ${added === 1 ? '1 piece' : `${added} pieces`} added. ${pieceCount(total)}`;
+
 export const announceIntro = (total: number): string => `A starting composition, the word play, is on the board. ${pieceCount(total)}`;

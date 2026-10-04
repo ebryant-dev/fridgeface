@@ -1,15 +1,16 @@
 /**
  * DEV-ONLY author mode (`/?author` on the dev server). Imported dynamically behind `import.meta.env.DEV`, so it is
  * not part of any production build. It adds a baseline guide to the board and a panel for saving, loading and
- * deleting letter suggestions through the dev-server middleware (dev/author-server.ts).
+ * deleting suggestions (letters, and word compositions) through the dev-server middleware (dev/author-server.ts).
+ * One character in Text saves a letter; 2 to 24 save a word composition. The baseline guide is the same for both.
  */
 import { AUTHOR_ROUTE } from '../dev/route';
 import type { Camera } from './camera';
 import type { PlacedPiece } from './serialize';
 import { SHAPES } from './shapes';
 import {
-  groupByChar, isSuggestionChar, isVariant, nextVariant, normaliseForSave, suggestionFilename, toSuggestionFile, validateSuggestion,
-  type ShapeLookup, type SuggestionStore,
+  filenameFor, groupByChar, groupByWord, isSuggestionChar, isVariant, isWordText, nextVariant, normaliseForSave, splitSuggestions,
+  suggestionText, toFileFor, validateSuggestion, WORD_MAX, WORD_MIN, type ShapeLookup, type SuggestionStore,
 } from './suggestions';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -74,6 +75,12 @@ const CSS = `
 const caseLabel = (ch: string): string =>
   /[a-z]/.test(ch) ? `lowercase ${ch}` : /[A-Z]/.test(ch) ? `capital ${ch}` : `"${ch}"`;
 
+/** "lowercase s" for a letter, `word "play"` for a word composition. */
+const whatLabel = (text: string): string => ([...text].length === 1 ? caseLabel(text) : `word "${text}"`);
+
+/** One character (a letter) or 2 to 24 (a word composition). */
+const isAuthorText = (t: string): boolean => isSuggestionChar(t) || isWordText(t);
+
 export function mountAuthor(host: AuthorHost): void {
   const { store, boardEl } = host;
 
@@ -119,8 +126,8 @@ export function mountAuthor(host: AuthorHost): void {
   panel.innerHTML = `
     <div class="ahead"><h2>Author mode</h2><button type="button" class="b" data-a="toggle" aria-expanded="true" aria-label="Collapse author panel">&minus;</button></div>
     <div class="abody" data-scroll>
-      <p>Build one letter on the baseline, type its character, Save. Each save is one way to build it.</p>
-      <label>Character<input data-a="char" maxlength="4" autocomplete="off" spellcheck="false" aria-describedby="a-status"></label>
+      <p>Build one letter, or a whole word as one composition, on the baseline. Type it in Text, Save. Each save is one way to build it.</p>
+      <label>Text<input data-a="char" maxlength="48" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="a-status"></label>
       <label>Variant<input data-a="variant" type="number" min="1" max="999" step="1" inputmode="numeric"></label>
       <button type="button" class="b" data-a="save">Save suggestion</button>
       <div class="arow" data-a="replace" role="group" aria-label="Replace the existing file" hidden>
@@ -144,7 +151,7 @@ export function mountAuthor(host: AuthorHost): void {
 
   let variantTouched = false;
   const suggestVariant = () => {
-    if (variantTouched || !isSuggestionChar(charIn.value)) return;
+    if (variantTouched || !isAuthorText(charIn.value)) return;
     varIn.value = String(nextVariant(store.list, charIn.value));
   };
   charIn.addEventListener('input', () => {
@@ -158,7 +165,7 @@ export function mountAuthor(host: AuthorHost): void {
     return { status: r.status, body: await r.json().catch(() => ({})) };
   };
 
-  let pending: { filename: string; file: ReturnType<typeof toSuggestionFile> } | null = null;
+  let pending: { filename: string; file: ReturnType<typeof toFileFor> } | null = null;
   const showReplace = (on: boolean) => {
     q('replace').hidden = !on;
     if (on) q<HTMLButtonElement>('replace-yes').focus();
@@ -167,15 +174,15 @@ export function mountAuthor(host: AuthorHost): void {
   const save = async (overwrite: boolean) => {
     const ch = charIn.value;
     const variant = Number(varIn.value);
-    if (!isSuggestionChar(ch)) return say('Type exactly one character (a letter, digit or symbol).');
+    if (!isAuthorText(ch)) return say(`Type one character for a letter (a letter, digit or symbol), or ${WORD_MIN} to ${WORD_MAX} for a word.`);
     if (!isVariant(variant)) return say('Variant must be a whole number from 1 to 999.');
     let file = pending?.file;
     let filename = pending?.filename ?? '';
     if (!overwrite || !pending) {
       const pieces = host.pieces();
-      if (!pieces.length) return say('The board is empty: build the letter first.');
-      file = toSuggestionFile(ch, variant, normaliseForSave(pieces, host.shapeOf));
-      filename = suggestionFilename(ch, variant);
+      if (!pieces.length) return say('The board is empty: build the letter or word first.');
+      file = toFileFor(ch, variant, normaliseForSave(pieces, host.shapeOf));
+      filename = filenameFor(ch, variant);
     }
     try {
       const r = await post('POST', { filename, data: file, overwrite });
@@ -190,7 +197,7 @@ export function mountAuthor(host: AuthorHost): void {
       showReplace(false);
       // Clear the fields BEFORE updating the list: the list update re-suggests a variant for whatever
       // character is still typed, which flashed the next number (e.g. 2) for the letter just saved.
-      const what = `${caseLabel(ch)}, variant ${variant} (${filename})`;
+      const what = `${whatLabel(ch)}, variant ${variant} (${filename})`;
       charIn.value = '';
       varIn.value = '';
       variantTouched = false;
@@ -224,7 +231,8 @@ export function mountAuthor(host: AuthorHost): void {
   // ---- existing suggestions ----
   const listEl = q('list');
   const renderList = () => {
-    const rows = [...groupByChar(store.list).values()].flat();
+    const { letters, words } = splitSuggestions(store.list);
+    const rows = [...[...groupByChar(letters).values()].flat(), ...[...groupByWord(words).values()].flat()];
     q('count').textContent = `(${rows.length})`;
     listEl.replaceChildren();
     if (!rows.length) {
@@ -259,7 +267,7 @@ export function mountAuthor(host: AuthorHost): void {
       const s = store.list.find((x) => x.filename === filename);
       if (!s) return;
       host.loadPieces(s.pieces);
-      charIn.value = s.char;
+      charIn.value = suggestionText(s);
       varIn.value = String(s.variant);
       variantTouched = true;
       say(`Loaded ${filename}. Edit it, then Save and choose Replace.`);

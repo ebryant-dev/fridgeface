@@ -5,7 +5,7 @@ import { History } from './history';
 import { deserialize, serialize, serializeToString, type SerializedComposition, type DeserializeResult } from './serialize';
 import { buildShareUrl, decode, encode, encodedFromHash } from './share';
 import { exportFilename, pngSize, renderCompositionSvg } from './export';
-import { centreOn, groupByChar, type Suggestion } from './suggestions';
+import { centreOn, groupByChar, groupByWord, isWord, splitSuggestions, type AnySuggestion, type Suggestion, type WordSuggestion } from './suggestions';
 import { suggestionStore } from './suggestion-store';
 import { introPieces, introSchedule, introWanted } from './intro';
 import { fromUpright, normalise, rotationFor, snapNearest, snapTowardUpright, stepFromUpright } from './rotation';
@@ -13,9 +13,10 @@ import { fridgeTexture, type FridgeTexture } from './texture';
 import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
 import { FONT_STACK, registerFont } from './font';
 import { icon } from './icons';
+import { layoutState } from './layout';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceSnap, announceZoom, announceSuggestion, announceIntro, pieceCount,
+  announceSelected, announceSnap, announceZoom, announceSuggestion, announceWord, announceIntro, pieceCount,
 } from './announce';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
@@ -43,7 +44,9 @@ const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
 
 const STYLES = `
-/* The host is a size container so the compact layouts follow the element's own box, not the window's. */
+/* The compact layouts follow the element's own box, not the window's: a ResizeObserver on the host sets
+   data-compact / data-short on the top elements (see syncLayout). Not @container queries: with them, Edward's iPhone
+   showed the desktop layout (2026-10-04; not reproduced in desktop WebKit, so the exact cause is unconfirmed). Size containment keeps the host's size independent of its content, as before. */
 :host {
   --ink: #000;
   --paper: #fff;
@@ -53,8 +56,7 @@ const STYLES = `
   width: 100%;
   height: 100%;
   overflow: hidden;
-  contain: layout paint;
-  container-type: size;
+  contain: strict; /* size layout paint style */
   touch-action: none;
   /* No iOS long-press callout, text selection, tap flash or double-tap zoom on the board, tray or controls. */
   -webkit-touch-callout: none;
@@ -129,7 +131,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 }
 .actions[hidden] { display: none; }
 
-/* ---- letter suggestions: a panel on desktop, a bottom sheet in the compact layout ---- */
+/* ---- suggestions (letters and words): a panel on desktop, a bottom sheet in the compact layout ---- */
 .sugg {
   position: absolute; z-index: 5; display: flex; flex-direction: column; box-sizing: border-box; min-height: 0;
   right: calc(10px + var(--sar)); bottom: calc(var(--dock-h, 66px) + 18px);
@@ -144,12 +146,19 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .sgbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 14px 14px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .sgchars, .sgvars { display: flex; flex-wrap: wrap; gap: 6px; }
 .sgchars button.b { text-transform: none; letter-spacing: 0; font: 700 22px/1 var(--font); padding: 0; }
+.sgsec[hidden] { display: none; }
+.sgsec:not([hidden]) ~ .sgsec { margin-top: 18px; padding-top: 14px; border-top: 1px solid #d0d0d0; }
+.sgs { margin: 0 0 10px; font: 700 13px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
 .sgh { margin: 14px 0 8px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
 .sgh .ch { text-transform: none; }
 .sgvars { gap: 8px; }
 .sgvars button.b { flex-direction: column; gap: 4px; min-width: 72px; padding: 6px 8px 5px; }
 .sgvars img { display: block; height: ${THUMB_HEIGHT}px; width: auto; max-width: 100%; pointer-events: none; }
 .sgvars .vn { font: 700 11px/1 var(--font); letter-spacing: 0.1em; }
+.sgwords { display: flex; flex-direction: column; gap: 8px; }
+.sgwords button.b { flex-direction: column; gap: 6px; width: 100%; padding: 8px 8px 6px; text-transform: none; letter-spacing: 0; }
+.sgwords img { display: block; width: auto; height: auto; max-width: 100%; max-height: ${THUMB_HEIGHT}px; pointer-events: none; }
+.sgwords .vn { font: 700 12px/1 var(--font); letter-spacing: 0.04em; }
 .help li.sg-only { display: none; }
 .help.has-sugg li.sg-only { display: flex; }
 
@@ -193,28 +202,26 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .preview { position: fixed; z-index: 10; pointer-events: none; line-height: 0; opacity: 0.9; }
 .preview svg { display: block; width: 100%; height: 100%; overflow: visible; }
 
-/* Compact layout (phones, either orientation): the element is narrow OR short. Icon controls, a small tray. */
-@container (max-width: 600px), (max-height: 520px) {
-  .root { --k: 0.17; --tk: 0.17; }
-  .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab)) calc(10px + var(--sal)); }
-  .tray .grp { display: contents; }
-  .tray .shapes { display: contents; }
-  .tray .bracket { display: none; }
-  .tray button { position: relative; }
-  .tray button::after { content: ""; position: absolute; inset: -6px -9px; } /* thin stems get a larger touch target */
-  button.b.i { padding: 0; width: 44px; }
-  button.b.i .ic { display: block; }
-  button.b.i .tx { display: none; }
-  .panel { gap: 3px; padding: 3px; }
-  .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
-  .actions { top: calc(8px + var(--sat)); }
-  .msg { font-size: 12px; }
-  /* Bottom sheet: full width, over the dock, no taller than most of the board. */
-  .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
-}
-@container (max-height: 520px) {
-  .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab)); }
-}
+/* Compact layout (phones, either orientation): the element is narrow OR short (data-compact, set from JS on .root
+   and .help). Icon controls, a small tray. */
+.root[data-compact] { --k: 0.17; --tk: 0.17; }
+[data-compact] .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab)) calc(10px + var(--sal)); }
+[data-compact] .tray .grp { display: contents; }
+[data-compact] .tray .shapes { display: contents; }
+[data-compact] .tray .bracket { display: none; }
+[data-compact] .tray button { position: relative; }
+[data-compact] .tray button::after { content: ""; position: absolute; inset: -6px -9px; } /* thin stems get a larger touch target */
+[data-compact] button.b.i { padding: 0; width: 44px; }
+[data-compact] button.b.i .ic { display: block; }
+[data-compact] button.b.i .tx { display: none; }
+[data-compact] .panel { gap: 3px; padding: 3px; }
+[data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
+[data-compact] .actions { top: calc(8px + var(--sat)); }
+[data-compact] .msg { font-size: 12px; }
+/* Bottom sheet: full width, over the dock, no taller than most of the board. */
+[data-compact] .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
+/* Short (phones in landscape): a thinner tray band. */
+[data-short] .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab)); }
 
 /* ---- keyboard shortcuts dialog ---- */
 .help {
@@ -362,7 +369,7 @@ export class FridgeFace extends HTMLElement {
   private suggOpener: HTMLElement | SVGElement | null = null;
   private suggChar: string | null = null;
   private unsubSuggestions: (() => void) | null = null;
-  private thumbs = new WeakMap<Suggestion, string>();
+  private thumbs = new WeakMap<AnySuggestion, string>();
   private viewListeners = new Set<() => void>();
   private introAnims: Animation[] = [];
   private introQueued = false;
@@ -492,9 +499,16 @@ export class FridgeFace extends HTMLElement {
           <div class="sghead"><h2 id="ff-sugg-title">Suggestions</h2>${btn('data-sugg="close" aria-label="Close suggestions"', 'Close', 'close')}</div>
           <p class="sgnote">${SUGGESTION_NOTE}</p>
           <div class="sgbody" data-scroll>
-            <div class="sgchars" role="group" aria-label="Characters"></div>
-            <h3 class="sgh" id="ff-sugg-vh"></h3>
-            <div class="sgvars" role="group" aria-labelledby="ff-sugg-vh"></div>
+            <section class="sgsec" data-sec="letters" aria-labelledby="ff-sugg-lt">
+              <h3 class="sgs" id="ff-sugg-lt">Letters</h3>
+              <div class="sgchars" role="group" aria-label="Characters"></div>
+              <h4 class="sgh" id="ff-sugg-vh"></h4>
+              <div class="sgvars" role="group" aria-labelledby="ff-sugg-vh"></div>
+            </section>
+            <section class="sgsec" data-sec="words" aria-labelledby="ff-sugg-wd" hidden>
+              <h3 class="sgs" id="ff-sugg-wd">Words</h3>
+              <div class="sgwords" role="group" aria-labelledby="ff-sugg-wd"></div>
+            </section>
           </div>
         </div>
       </div>
@@ -546,6 +560,9 @@ export class FridgeFace extends HTMLElement {
       wrap.querySelector(`.tray [data-polarity=${s.polarity}]`)!.appendChild(b);
     }
     root.append(style, wrap, ...outer.children);
+    // Layout state first, synchronously, so the very first frame already has the right layout (no desktop flash).
+    this.syncLayout();
+    new ResizeObserver(() => this.syncLayout()).observe(this);
 
     this.trayEl.addEventListener('pointerdown', (e) => this.onTrayDown(e));
     this.trayEl.addEventListener('pointermove', (e) => this.onTrayMove(e));
@@ -1202,6 +1219,21 @@ export class FridgeFace extends HTMLElement {
     this.sayLater(`move:${id}`, () => this.movedText(id));
   }
 
+  // ---- layout state ------------------------------------------------------------------
+
+  /**
+   * data-compact (narrow OR short) and data-short (short) on the shadow root's top elements, from the host's own size.
+   * Replaces @container queries, under which a real iPhone showed the desktop layout (cause unconfirmed).
+   */
+  private syncLayout() {
+    if (!this.rootEl) return;
+    const { compact, short } = layoutState(this.clientWidth, this.clientHeight); // the host's own (untransformed) box
+    for (const el of [this.rootEl, this.helpEl]) {
+      el.toggleAttribute('data-compact', compact);
+      el.toggleAttribute('data-short', short);
+    }
+  }
+
   // ---- insets ------------------------------------------------------------------------
 
   /** Safe-area insets, but only the part that overlaps THIS element (an embedded box mid-page needs none). */
@@ -1773,7 +1805,7 @@ export class FridgeFace extends HTMLElement {
     this.suggEl.hidden = false;
     this.suggBtn.setAttribute('aria-expanded', 'true');
     this.renderSuggestions();
-    this.suggEl.querySelector<HTMLElement>('.sgchars button[aria-pressed=true]')?.focus();
+    this.suggEl.querySelector<HTMLElement>('.sgchars button[aria-pressed=true], .sgwords button')?.focus();
   }
 
   private closeSuggestions() {
@@ -1788,9 +1820,12 @@ export class FridgeFace extends HTMLElement {
     back.focus();
   }
 
-  /** Characters (rebuilt when the set changes) and the selected character's variants. */
+  /** Letters: characters (rebuilt when the set changes) and the selected character's variants. Then the words. */
   private renderSuggestions() {
-    const groups = groupByChar(suggestionStore.list);
+    const { letters, words } = splitSuggestions(suggestionStore.list);
+    this.suggEl.querySelector<HTMLElement>('[data-sec=letters]')!.hidden = !letters.length;
+    this.renderWords(words);
+    const groups = groupByChar(letters);
     if (!this.suggChar || !groups.has(this.suggChar)) this.suggChar = groups.keys().next().value ?? null;
     const chars = this.suggEl.querySelector<HTMLElement>('.sgchars')!;
     const had = chars.contains(this.shadowRoot!.activeElement) ? (this.shadowRoot!.activeElement as HTMLElement).dataset.char : undefined;
@@ -1843,8 +1878,38 @@ export class FridgeFace extends HTMLElement {
     );
   }
 
+  /** Word compositions: one thumbnail button per variant (only shown when at least one exists). */
+  private renderWords(words: readonly WordSuggestion[]) {
+    const sec = this.suggEl.querySelector<HTMLElement>('[data-sec=words]')!;
+    const box = sec.querySelector<HTMLElement>('.sgwords')!;
+    sec.hidden = !words.length;
+    const list = [...groupByWord(words).values()].flat();
+    const sig = list.map((w) => w.filename).join('|');
+    if (box.dataset.sig === sig) return; // unchanged: keep the buttons (and focus)
+    const had = box.contains(this.shadowRoot!.activeElement) ? (this.shadowRoot!.activeElement as HTMLElement).dataset.file : undefined;
+    box.dataset.sig = sig;
+    box.replaceChildren(
+      ...list.map((w) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'b';
+        b.dataset.file = w.filename;
+        b.setAttribute('aria-label', `Place the word ${w.text}, variant ${w.variant}, on the board`);
+        const img = document.createElement('img');
+        img.alt = '';
+        img.src = this.thumbnail(w);
+        const n = document.createElement('span');
+        n.className = 'vn';
+        n.textContent = `${w.text} \u00b7 ${w.variant}`;
+        b.append(img, n);
+        return b;
+      }),
+    );
+    if (had) box.querySelector<HTMLElement>(`[data-file="${CSS.escape(had)}"]`)?.focus();
+  }
+
   /** A suggestion rendered by the export renderer (same shapes and shadows, no texture), as an image URL. */
-  private thumbnail(s: Suggestion): string {
+  private thumbnail(s: AnySuggestion): string {
     let url = this.thumbs.get(s);
     if (!url) {
       url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(renderCompositionSvg(s.pieces, (id) => SHAPE_BY_ID.get(id)).svg)}`;
@@ -1870,21 +1935,22 @@ export class FridgeFace extends HTMLElement {
     if (s) this.placeSuggestion(s);
   }
 
-  /** Add a suggestion's pieces on top of whatever is on the board, centred in the current view: ONE undo step. */
-  private placeSuggestion(s: Suggestion) {
+  /** Add a letter's or a word's pieces on top of whatever is on the board, centred in the current view: ONE undo step. */
+  private placeSuggestion(s: AnySuggestion) {
     const r = this.boardEl.getBoundingClientRect();
     const c = this.toBoard(r.left + r.width / 2, r.top + r.height / 2);
     const items = centreOn(s.pieces, (id) => SHAPE_BY_ID.get(id), c).map((p) => ({ ...p, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 }));
     this.selectedId = null;
     const added = this.composition.addPieces(items);
-    this.say(announceSuggestion(s.char, s.variant, added.length, this.composition.pieces.length));
+    const total = this.composition.pieces.length;
+    this.say(isWord(s) ? announceWord(s.text, s.variant, added.length, total) : announceSuggestion(s.char, s.variant, added.length, total));
     // On a phone the sheet would hide what was just placed: close it and hand focus back.
     if (getComputedStyle(this.suggEl).getPropertyValue('--sheet').trim() === '1') this.closeSuggestions();
   }
 
   // ---- the "play" intro ----------------------------------------------------------------
 
-  /** First visit only: no saved composition, no share link, `no-intro` unset, and the letters p, l, a, y all exist. */
+  /** First visit only: no saved composition, no share link, `no-intro` unset, and the word play exists (as a word composition, or as the letters p, l, a, y). */
   private maybeIntro(hadSaved: boolean, authoring: boolean) {
     const want = introWanted({ hasSavedComposition: hadSaved, hasShareLink: encodedFromHash(location.hash) !== null, disabled: this.hasAttribute('no-intro'), skip: authoring });
     if (!want) return;

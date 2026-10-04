@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.1.0 (first release). Built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.1.0"
+npm install "github:ebryant-dev/fridgeface#v0.2.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.1.0"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.2.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
@@ -63,7 +63,12 @@ npm run dev     # serve the demo page (index.html) with hot reload
 npm test        # run the unit tests (Vitest)
 npm run build   # type-check, then build the ES module to dist/fridgeface.js
 npm run build:site  # build the standalone site to site-dist/
+npm run test:browsers  # real-browser checks (Playwright) in Chromium AND WebKit
 ```
+
+### Browser tests
+
+`npm run test:browsers` runs `tests/browsers/*.pw.ts` with Playwright against the Vite dev server (it starts one on port 5199), in Chromium and WebKit, each at 1440 x 900, an iPhone 15 in portrait and an iPhone 15 in landscape (touch, mobile). It checks: phones get the compact layout (icon buttons, compact tray scale, tray at most 22% of the screen height in portrait) and desktops the desktop one; no overlaps between the tray, the docks and the action bar; no page scroll; a tap (or click) on the tray adds a piece; the suggestions panel with letters and words; the intro rules; axe with the panel open (Chromium); zero console errors. Screenshots go to `.playwright-mcp/` (gitignored). First time only: `npx playwright install webkit chromium`.
 
 The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside the shadow root).
 
@@ -77,16 +82,17 @@ The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside 
 - **Fridge texture** (`src/texture.ts`): a seamless tile generated once per page (tileable Worley creases + value noise, embossed), used as an SVG pattern in board space so it pans and zooms with the board.
 - **Magnet shadows** (`src/shadow.ts`): no SVG or CSS filters anywhere. Each piece is drawn as [shadow, shape]; the shadow is offset copies of the geometry with round-join strokes of growing width and falling opacity. Sizes are in screen px (counter-scaled on zoom). The piece being dragged, rotated or twisted lifts.
 
-## Letter suggestions
+## Suggestions (letters and words)
 
-A **suggestion** is one way to build a character. There is never a single correct construction, so a character can have any number of numbered variants, and the panel always says so ("One way to build it. There's no right way — make your own.").
+A **suggestion** is one way to build a letter or a word. There is never a single correct construction, so a character can have any number of numbered variants, and the panel always says so ("One way to build it. There's no right way — make your own.").
 
-- Each suggestion is one JSON file in `src/suggestions/`, named by character and variant: `lower-a-1.json`, `upper-a-1.json`, `digit-7-1.json`, and `u0021-1.json` (code point in hex) for any other character. The names are safe on case-insensitive filesystems (macOS).
-- Format: `{ "v": 1, "char": "a", "variant": 1, "pieces": [{ "s", "x", "y", "r" }, ...], "baseline": 0 }`. Pieces use the composition wire format. Coordinates are relative to an origin ON THE BASELINE at the letter's LEFT edge: the leftmost rotated bound is at x = 0 and y = 0 is the baseline (ascenders have negative y, descenders positive).
+- Each suggestion is one JSON file in `src/suggestions/`. A letter is named by character and variant: `lower-a-1.json`, `upper-a-1.json`, `digit-7-1.json`, and `u0021-1.json` (code point in hex) for any other character.
+- A **word composition** (a whole word, 2 to 24 characters, built as ONE composition) is `word-<slug>-<variant>.json`. In the slug, lowercase a-z and 0-9 stay as they are and every other character becomes `_x` + four lowercase hex digits (UTF-16): `play` -> `word-play-1.json`, `Play` -> `word-_x0050lay-1.json`, `hi there` -> `word-hi_x0020there-1.json`. It is reversible, and names are all lowercase, so every name is safe on case-insensitive filesystems (macOS).
+- Letter format (unchanged): `{ "v": 1, "char": "a", "variant": 1, "pieces": [{ "s", "x", "y", "r" }, ...], "baseline": 0 }`. A word has `text` in place of `char`: `{ "v": 1, "text": "play", "variant": 1, "pieces": [...], "baseline": 0 }`. A file with both `char` and `text` is invalid. The letter format did not change, so v0.1.0 still reads every letter file and skips word files with a console warning. Pieces use the composition wire format. Coordinates are relative to an origin ON THE BASELINE at the letter's LEFT edge: the leftmost rotated bound is at x = 0 and y = 0 is the baseline (ascenders have negative y, descenders positive).
 - The files are bundled at build time (`import.meta.glob`) and checked with the same strict rules as share links; an invalid file is skipped with a console warning. With no files, the toy looks and works as before: there is no suggestions button and no intro. Files light up automatically as they appear.
-- **Panel:** the Letters button in the dock (or the `L` key) opens it. Pick a character, then a variant thumbnail: its pieces are added on top of the board, centred in the current view, as ONE undo step. On phones the panel is a bottom sheet that closes after you place a variant.
+- **Panel:** the Letters button in the dock (or the `L` key) opens it. It has two sections. **Letters**: pick a character, then a variant thumbnail. **Words** (only when at least one word composition exists): each thumbnail shows the whole word. Either way the pieces are added on top of the board, centred in the current view, as ONE undo step, and announced. On phones the panel is a bottom sheet that closes after you place something.
 - **Word layout** (`layoutWord` in `src/suggestions.ts`) puts constructions left to right on one baseline, each separated by the previous one's rotated bounds plus a gap of 60 board units (about one positive-stem width).
-- **"play" intro:** on a first visit only (no auto-saved composition, no share link), and only when `lower-p-1`, `lower-l-1`, `lower-a-1` and `lower-y-1` all exist, the word "play" slides in from the tray in about 1.3 seconds. It is a normal, editable composition, not in undo history, and auto-saved. Any pointer or key input finishes it at once; with reduced motion it just appears. Add the `no-intro` attribute to `<fridge-face>` to switch it off.
+- **"play" intro:** on a first visit only (no auto-saved composition, no share link), the word "play" slides in from the tray in at most 1.5 seconds. If `word-play-1.json` exists, that word composition is used exactly as built (centred); otherwise, when `lower-p-1`, `lower-l-1`, `lower-a-1` and `lower-y-1` all exist, those letters are set side by side (the fallback). With neither, there is no intro. It is a normal, editable composition, not in undo history, and auto-saved. Any pointer or key input finishes it at once; with reduced motion it just appears. Add the `no-intro` attribute to `<fridge-face>` to switch it off.
 
 ### Author workflow (for Edward, no coding needed)
 
@@ -94,9 +100,9 @@ Author mode exists only on the dev server and is not part of any build.
 
 1. In a terminal in this folder: `npm run dev`.
 2. Open the address it prints with `?author` on the end, e.g. `http://localhost:5173/?author`.
-3. Build the letter with the pieces, standing on the **baseline** (the solid line; the dashed line is the x-height guide, the height of one positive round standing upright, about two thirds of a stem). The small mark on the baseline is the origin. Stand the letter anywhere along the line: saving moves it so its left edge is at x = 0.
-4. In the Author mode panel, type the character in **Character**. **Variant** fills in the next free number (change it to make another way to build the same character).
-5. Click **Save suggestion**. The file appears in `src/suggestions/` (the page reloads, and your board comes back). If that file exists you are asked to **Replace** it; nothing is overwritten otherwise.
+3. Build the letter, or the whole word as one composition (pieces may be shared between letters, overlap or cross letter boundaries), with the pieces, standing on the **baseline** (the solid line; the dashed line is the x-height guide, the height of one positive round standing upright, about two thirds of a stem). The small mark on the baseline is the origin. Stand it anywhere along the line: saving moves it so its left edge is at x = 0. The guide is the same for letters and words.
+4. In the Author mode panel, type the letter or the word in **Text** (case matters: `play` and `Play` are different). One character saves a letter; 2 to 24 save a word composition. **Variant** fills in the next free number (change it to make another way to build the same letter or word).
+5. Click **Save suggestion**. The file appears in `src/suggestions/` (the page reloads, and your board comes back) and the status says what was saved, e.g. `Saved lowercase s, variant 1 (lower-s-1.json).` or `Saved word "play", variant 1 (word-play-1.json).` If that file exists you are asked to **Replace** it; nothing is overwritten otherwise. Save the word `play` as variant 1 to make it the intro.
 6. To change one, click **Load** beside it in the list (it replaces the board, undoable), edit, Save and choose Replace. **Delete** removes just that file after you confirm.
 
 The new files are ordinary source files: commit them like any other change.
@@ -127,7 +133,7 @@ Screen readers: the board is `role="application"` with a name and description, a
 
 ## Embedding
 
-- Give `<fridge-face>` a definite size (a fixed or percentage height inside a sized parent). It is a size container, so the compact layout (icon controls, small tray; also used for phones in landscape) follows the element's own box, not the window.
+- Give `<fridge-face>` a definite size (a fixed or percentage height inside a sized parent); it has size containment, so it does not grow to fit its content. The compact layout (icon controls, small tray; also used for phones in landscape) follows the element's own box, not the window: a ResizeObserver on the element applies it when the element is at most 600 px wide or at most 520 px tall (not CSS container queries, which a real iPhone did not apply inside the shadow root).
 - It does not need to be full viewport. `embed.html` (dev only: `npm run dev`, open `/embed.html`) shows a 900 x 600 box in a scrolling page. Wheel, pinch and touch drags that start on the board never scroll the page; the page scrolls normally everywhere else, and keys such as Space, PageDown and arrows are consumed only while the board has focus. Leave room around the element on touch devices: a swipe that starts inside it will not scroll the page.
 - `share-base` sets the page that share links open (default: the current URL without its hash). The link is precomputed shortly after every change so Share can write the clipboard synchronously inside the click, which Safari requires; if it is not ready yet, or the clipboard refuses, the selectable link field appears instead.
 - On notched phones add `viewport-fit=cover` to the page's viewport meta (as `index.html` does). Safe-area insets are applied only where the element actually touches a screen edge. The view stays centred on the same board point when the element resizes (window resize, rotation, the iOS URL bar).
