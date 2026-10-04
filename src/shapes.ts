@@ -4,6 +4,7 @@ import negativeStemSvg from './shapes/negative-stem.svg?raw';
 import negativeRoundSvg from './shapes/negative-round.svg?raw';
 import wedgeSvg from './shapes/wedge.svg?raw';
 import { uprightBounds } from './rotation';
+import { convexHull } from './selection';
 
 export type Polarity = 'positive' | 'negative';
 export type Pt = { x: number; y: number };
@@ -27,7 +28,15 @@ export interface Shape {
    * rotated by fromUpright hugs the shape at any rotation.
    */
   uprightBox: { x: number; y: number; w: number; h: number };
+  /**
+   * The convex outline, relative to the centroid, at the rest pose (every Fridgeface shape is convex). Polygons use their own
+   * vertices; the rounds use a hull of the arc-length samples, thinned to at most HULL_MAX points (inscribed, so it is at most
+   * a fraction of a board unit inside the true curve). Used for selection and overlap tests, never for drawing.
+   */
+  hull: Pt[];
 }
+
+const HULL_MAX = 120;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -111,6 +120,15 @@ function principalAxis(pts: Pt[]) {
   return { dx: Math.cos(theta), dy: Math.sin(theta) };
 }
 
+function hullOf(pts: Pt[], c: Pt): Pt[] {
+  let h = convexHull(pts);
+  if (h.length > HULL_MAX) {
+    const step = h.length / HULL_MAX;
+    h = Array.from({ length: HULL_MAX }, (_, i) => h[Math.floor(i * step)]);
+  }
+  return h.map((p) => ({ x: p.x - c.x, y: p.y - c.y }));
+}
+
 function build(id: string, name: string, polarity: Polarity, svg: string, upright: 'stem' | 'round' | 'wedge'): Shape {
   const { fill, geometry } = parse(svg);
   const { pts } = pointsOf(geometry);
@@ -135,6 +153,7 @@ function build(id: string, name: string, polarity: Polarity, svg: string, uprigh
     centroid,
     bbox: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y },
     uprightBox: uprightBounds(pts, centroid, off),
+    hull: hullOf(pts, centroid),
   };
 }
 

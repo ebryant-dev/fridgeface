@@ -45,24 +45,43 @@ describe('Composition', () => {
     expect(c.deletePiece(b)).toBe(false);
   });
 
-  it('brings forward one step', () => {
+  it('reorders the stacking order as one change, refusing anything but a permutation of the current ids', () => {
     const { c, a, b, d } = three();
-    expect(c.bringForward(a)).toBe(true);
+    const fn = vi.fn();
+    c.onChange(fn);
+    expect(c.reorder([b, a, d])).toBe(true);
     expect(ids(c)).toEqual([b, a, d]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(c.reorder([b, a, d])).toBe(false); // unchanged
+    expect(c.reorder([b, a])).toBe(false); // missing one
+    expect(c.reorder([b, a, a])).toBe(false); // duplicate
+    expect(c.reorder([b, a, 'nope'])).toBe(false);
+    expect(ids(c)).toEqual([b, a, d]);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('sends backward one step', () => {
+  it('deletes several pieces as one change', () => {
     const { c, a, b, d } = three();
-    expect(c.sendBackward(d)).toBe(true);
-    expect(ids(c)).toEqual([a, d, b]);
+    const fn = vi.fn();
+    c.onChange(fn);
+    expect(c.deletePieces([a, d, 'nope'])).toBe(2);
+    expect(ids(c)).toEqual([b]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(c.deletePieces([a])).toBe(0);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('does nothing at the edges', () => {
+  it('moves and rotates several pieces as one change, keeping stacking order', () => {
     const { c, a, b, d } = three();
-    expect(c.bringForward(d)).toBe(false);
-    expect(c.sendBackward(a)).toBe(false);
-    expect(c.bringForward('nope')).toBe(false);
+    const fn = vi.fn();
+    c.onChange(fn);
+    expect(c.setPlacements([{ id: a, x: 5, y: 6, rotation: 190 }, { id: d, x: 7, y: 8 }, { id: 'nope', x: 0, y: 0 }])).toBe(true);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(c.getPiece(a)).toMatchObject({ x: 5, y: 6, rotation: -170 });
+    expect(c.getPiece(d)).toMatchObject({ x: 7, y: 8, rotation: 0 });
     expect(ids(c)).toEqual([a, b, d]);
+    expect(c.setPlacements([{ id: a, x: 5, y: 6, rotation: -170 }])).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it('replaces the pieces array on change and notifies listeners only on real changes', () => {
@@ -70,9 +89,9 @@ describe('Composition', () => {
     const fn = vi.fn();
     const off = c.onChange(fn);
     const before = c.pieces;
-    c.bringForward(d); // no-op
+    c.reorder([...ids(c)]); // no-op
     expect(fn).not.toHaveBeenCalled();
-    c.bringForward(a);
+    c.reorder([d, ...ids(c).slice(0, 2)]);
     expect(fn).toHaveBeenCalledTimes(1);
     expect(c.pieces).not.toBe(before);
     off();

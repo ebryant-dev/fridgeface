@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
   announceSelected, announceZoom, announceSuggestion, announceIntro, describeAngle, pieceCount,
+  announceSelectionCount, announceGroupMoved, announceGroupRotated, announceGroupDeleted,
 } from './announce';
 
 describe('announcements', () => {
@@ -36,8 +37,21 @@ describe('announcements', () => {
   it('describes restacking, including the ends of the stack', () => {
     expect(announceRestacked('forward', true, 1, 4)).toBe('Moved forward. 2 of 4 in stacking order.');
     expect(announceRestacked('backward', true, 0, 4)).toBe('Moved backward. 1 of 4 in stacking order.');
-    expect(announceRestacked('forward', false, 3, 4)).toBe('Already on top.');
-    expect(announceRestacked('backward', false, 0, 4)).toBe('Already at the bottom.');
+    expect(announceRestacked('forward', false, 3, 4)).toBe('Nothing above overlaps it.');
+    expect(announceRestacked('backward', false, 0, 4)).toBe('Nothing below overlaps it.');
+    expect(announceRestacked('forward', true, 5, 6, 3)).toBe('3 pieces moved forward.');
+    expect(announceRestacked('backward', false, 0, 6, 3)).toBe('Nothing below overlaps them.');
+  });
+
+  it('keeps selection announcements short', () => {
+    expect(announceSelectionCount(3)).toBe('3 pieces selected.');
+    expect(announceSelectionCount(1)).toBe('1 piece selected.');
+    expect(announceSelectionCount(0)).toBe('Selection cleared.');
+    expect(announceGroupMoved(3)).toBe('3 pieces moved.');
+    expect(announceGroupRotated(3, 15)).toBe('3 pieces rotated to 15 degrees.');
+    expect(announceGroupRotated(2, -1)).toBe('2 pieces rotated to -1 degree.');
+    expect(announceGroupRotated(3, -0.01)).toBe('3 pieces rotated to 0 degrees.');
+    expect(announceGroupDeleted(3)).toBe('3 pieces deleted.');
   });
 
   it('covers history, zoom and loading', () => {

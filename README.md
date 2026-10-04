@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.5.0 (multi-select: a drag on the empty board draws a selection box with the mouse, Shift adds, Shift+click adds or removes one piece, Ctrl/Cmd+A selects all; on touch, one finger still pans, a long-press on the empty board then a drag draws the box, a long-press on a piece adds or removes it; a selection moves, rotates (handle, twist, `,` `.`), nudges and deletes as one rigid unit and one undo step; bring forward / send backward now pass the next piece the selection actually overlaps, for single pieces too). v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.4.0"
+npm install "github:ebryant-dev/fridgeface#v0.5.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.4.0"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.5.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
@@ -68,7 +68,7 @@ npm run test:browsers  # real-browser checks (Playwright) in Chromium AND WebKit
 
 ### Browser tests
 
-`npm run test:browsers` runs `tests/browsers/*.pw.ts` with Playwright against the Vite dev server (it starts one on port 5199), in Chromium and WebKit, each at 1440 x 900, an iPhone 15 in portrait and an iPhone 15 in landscape (touch, mobile). It checks: phones get the compact layout (icon buttons, compact tray scale, tray at most 22% of the screen height in portrait; in landscape a vertical tray on the left with all five shapes, and every control to its right) and desktops the desktop one; no overlaps between the tray, the docks and the action bar in any state; no snap or 15 degree controls; free 1 degree key rotation; no page scroll; a tap (or click) on the tray adds a piece, and a touch drag from the landscape tray drops one where the finger lifts; the suggestions panel with letters and words; the intro rules; axe with the panel open (Chromium); zero console errors. Screenshots go to `.playwright-mcp/` (gitignored). First time only: `npx playwright install webkit chromium`.
+`npm run test:browsers` runs `tests/browsers/*.pw.ts` with Playwright against the Vite dev server (it starts one on port 5199), in Chromium and WebKit, each at 1440 x 900, an iPhone 15 in portrait and an iPhone 15 in landscape (touch, mobile). It checks: phones get the compact layout (icon buttons, compact tray scale, tray at most 22% of the screen height in portrait; in landscape a vertical tray on the left with all five shapes, and every control to its right) and desktops the desktop one; no overlaps between the tray, the docks and the action bar in any state; no snap or 15 degree controls; free 1 degree key rotation; no page scroll; a tap (or click) on the tray adds a piece, and a touch drag from the landscape tray drops one where the finger lifts; the suggestions panel with letters and words; the intro rules; multi-select (`selection.pw.ts`: box selection by real geometry, Shift+box and Shift+click, group drag, rigid handle rotation and twist, overlap-aware restacking, group delete and undo, Ctrl+A, wheel and Space+drag panning; on phones one-finger pan, long-press box, long-press toggle and quick drag, using real CDP touch in Chromium and scripted touch pointer events in WebKit); axe with the panel open and with a multi-selection (Chromium); zero console errors. Screenshots go to `.playwright-mcp/` (gitignored). First time only: `npx playwright install webkit chromium`.
 
 The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside the shadow root).
 
@@ -114,21 +114,31 @@ The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work whi
 | Keys | Action |
 | --- | --- |
 | `1`-`5` | Add a piece (tray order: positive stem, positive round, negative stem, negative round, wedge) |
-| `N` / `P` | Select the next / previous piece in the stacking order (wraps; pans if it is off screen) |
-| Arrows, `Shift`+Arrows | Move the selected piece 1 / 10 units. With nothing selected they pan the board |
-| `Alt`+Arrows | Pan the board (`Shift` for bigger steps), even with a piece selected |
-| `,` / `.` | Rotate 1 degree anticlockwise / clockwise (rotation is free: there is no snapping) |
-| `]` / `[` | Bring forward / send backward |
-| `Delete`, `Backspace` | Delete the piece |
+| `N` / `P` | Select the next / previous piece in the stacking order (one piece; wraps; pans if it is off screen) |
+| `Ctrl`/`Cmd`+`A` | Select every piece |
+| Arrows, `Shift`+Arrows | Move the selection 1 / 10 units. With nothing selected they pan the board |
+| `Alt`+Arrows | Pan the board (`Shift` for bigger steps), even with a selection |
+| `,` / `.` | Rotate the selection 1 degree anticlockwise / clockwise (free rotation, no steps; several pieces turn as one unit about their centre) |
+| `]` / `[` | Bring forward / send backward, past the next piece the selection overlaps (nothing happens, and it is announced, when nothing above / below overlaps) |
+| `Delete`, `Backspace` | Delete the selected pieces |
 | `+` / `-`, `F` or `Shift`+`1` | Zoom, frame all pieces |
-| `Space` + drag | Pan with the pointer |
+| `Space` + drag, middle-button drag | Pan with the pointer |
 | `Ctrl`/`Cmd`+`Z`, `Ctrl`+`Shift`+`Z` or `Ctrl`+`Y` | Undo, redo |
 | `C`, `E` | Copy the share link, open the export menu |
 | `L` | Show or hide letter suggestions (only when suggestions exist) |
 | `?` | Keyboard shortcuts dialog (focus moves in, Tab stays inside, `Esc` closes and returns focus) |
 | `Esc` | Closes the innermost open thing first (export menu, clear confirm, share field), then deselects |
 
-Screen readers: the board is `role="application"` with a name and description, and one polite live region announces changes ("Positive stem added. 3 pieces on the board.", "Moved forward. 2 of 4 in stacking order."). Held or repeated keys (rotate, nudge, zoom) and pointer drags are summarised once, when they pause or end. Text comes from `src/announce.ts`.
+### Selecting with the pointer and touch
+
+A **selection** (see [CONTEXT.md](CONTEXT.md)) is temporary: it is not saved in history, compositions or share links. Several selected pieces move, rotate, restack and delete as ONE rigid unit, and every such action (a whole drag or rotation, or a run of 1 degree key presses) is one undo step.
+
+- **Mouse:** click a piece to select it; drag it (or any piece of the selection) to move the selection. A drag on the empty board draws a box that selects every piece whose real shape it touches (not just its bounding box); with `Shift` it adds to the selection. `Shift`+click adds a piece or removes it. A plain click on the empty board deselects; a plain click (no drag) on one piece of a selection selects just that piece. Pan with the wheel or trackpad, `Space` + drag, or a middle-button drag.
+- **Touch:** a tap selects a piece, a drag moves it (or the selection it belongs to; the drag starts once the finger has moved 8 px). One finger on the empty board pans, two pinch to zoom. Hold the empty board still for about 0.4 s (a ring appears around the finger), then drag to draw a selection box; lifting without dragging cancels it and leaves the selection as it was. Hold a piece still for about 0.4 s to add it to the selection or remove it. Two fingers, the first on the selection, twist it.
+- **Overlay:** one piece shows its box and round rotate handle; several show a thin outline each, one box around them all and one handle (a 44 px target). The handle sits below the box when the spot above it is off the board or under a control. Rotating several pieces turns them about the centre of their box, fixed for the whole gesture: positions orbit and rotations add, so their arrangement is kept exactly.
+- **Restacking:** bring forward moves the selection up past the next unselected piece above it that it actually overlaps (real geometry); send backward is the mirror image. The selection keeps its own stacking order and so do the other pieces. When nothing above (or below) overlaps, the button is disabled. The logic is pure and unit-tested in `src/selection.ts`.
+
+Screen readers: the board is `role="application"` with a name and description, and one polite live region announces changes ("Positive stem added. 3 pieces on the board.", "Moved forward. 2 of 4 in stacking order.", "3 pieces selected.", "3 pieces moved.", "3 pieces rotated to 15 degrees.", "3 pieces deleted.", "Nothing above overlaps it."). Held or repeated keys (rotate, nudge, zoom) and pointer drags are summarised once, when they pause or end. Text comes from `src/announce.ts`.
 
 ## Embedding
 

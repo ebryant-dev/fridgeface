@@ -16,8 +16,13 @@ import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
-  announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro, pieceCount,
+  announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro,
+  announceSelectionCount, announceGroupMoved, announceGroupRotated, announceGroupDeleted,
 } from './announce';
+import {
+  boxFromCorners, bringForwardOverlapping, convexIntersect, piecesInBox, placeOutline, rotateAbout, rotateRigid, selectAll, selectionFrame,
+  sendBackwardOverlapping, toggleInSelection, translateAll, type Box, type Pt,
+} from './selection';
 
 const PAD = 4; // source units of padding around each tray shape's bounding box
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -25,7 +30,10 @@ const DRAG_THRESHOLD = 6; // px of pointer travel before a tray press becomes a 
 const HANDLE_GAP = 36; // CSS px between the selection box's upright top and the rotate handle's centre
 const HANDLE_HIT = 44; // CSS px, touch target diameter
 const SELECT_PAD = 6; // CSS px between a shape and its selection box
-const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a pan
+const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a pan (touch) or a selection box (mouse)
+const LONG_PRESS_MS = 400; // touch: a press held this long (and still) is a long-press
+const LONG_PRESS_TOL = 8; // touch: px a finger may drift during a long-press; a piece only starts to drag beyond it
+const RING_MS = 450; // the long-press ring's brief showing after a long-press on a piece
 const BUTTON_ZOOM = 1.25; // factor per zoom button / key press
 const FIT_MARGIN = 64; // CSS px kept clear around the composition by Frame all
 const COMFORT_STEM = 0.25; // default view: a positive stem is this fraction of the board's shorter side
@@ -41,6 +49,7 @@ const THUMB_HEIGHT = 88; // CSS px, suggestion thumbnails
 const SUGGESTION_NOTE = "One way to build it. There's no right way — make your own.";
 const INTRO_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const SHAPE_BY_ID = new Map(SHAPES.map((s) => [s.id, s]));
+const hullOf = (id: string): readonly Pt[] | undefined => SHAPE_BY_ID.get(id)?.hull;
 const COMPACT_TK = 0.17; // the compact tray scale (CSS --tk under data-compact)
 const TRAY_COLUMN_GAP = 8; // CSS px, minimum space between shapes in the landscape tray column
 const TRAY_COLUMN_MIN_W = 76; // CSS px, minimum width of the landscape tray column's content (touch targets; the standalone page's credit sits under it)
@@ -89,6 +98,13 @@ const STYLES = `
 .board svg.surface [data-piece-id] { cursor: grab; }
 .board.space svg.surface, .board.space svg.surface [data-piece-id] { cursor: grab; }
 .board.panning svg.surface, .board.panning svg.surface [data-piece-id] { cursor: grabbing; }
+/* Touch long-press feedback: a ring around the finger (larger than a fingertip, so it shows), drawn in black and white. */
+.lp {
+  position: absolute; z-index: 4; width: 88px; height: 88px; margin: -44px 0 0 -44px; box-sizing: border-box; border-radius: 50%;
+  border: 3px solid var(--ink); box-shadow: 0 0 0 2px var(--paper), inset 0 0 0 2px var(--paper); pointer-events: none;
+  animation: ff-lp-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ff-lp-in { from { transform: scale(0.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 ${shadowCss()}
 
 /* ---- controls: flat black-and-white, Jost caps ---- */
@@ -300,22 +316,24 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (readonly string[])[]; text: string; when?: string }[] }[] = [
   { title: 'Add and choose', items: [
     { keys: [['1'], ['2'], ['3'], ['4'], ['5']], text: 'Add a piece (tray order)' },
-    { keys: [['N'], ['P']], text: 'Next or previous piece in the stacking order' },
+    { keys: [['N'], ['P']], text: 'Select the next or previous piece in the stacking order' },
+    { keys: [['Ctrl', 'A'], ['Cmd', 'A']], text: 'Select every piece' },
     { keys: [['Esc']], text: 'Close a menu, then deselect' },
   ] },
-  { title: 'Move and rotate the selected piece', items: [
+  { title: 'Move and rotate the selection', items: [
     { keys: [['Arrows'], ['Shift', 'Arrows']], text: 'Move 1 unit, or 10' },
-    { keys: [[','], ['.']], text: 'Rotate 1 degree anticlockwise or clockwise' },
+    { keys: [[','], ['.']], text: 'Rotate 1 degree anticlockwise or clockwise (several pieces turn as one, about their centre)' },
   ] },
   { title: 'Stack and delete', items: [
-    { keys: [[']'], ['[']], text: 'Bring forward, send backward' },
-    { keys: [['Delete'], ['Backspace']], text: 'Delete the piece' },
+    { keys: [[']'], ['[']], text: 'Bring forward or send backward, past the next piece it overlaps' },
+    { keys: [['Delete'], ['Backspace']], text: 'Delete the selected pieces' },
   ] },
   { title: 'View', items: [
-    { keys: [['Arrows'], ['Alt', 'Arrows']], text: 'Pan the board; Shift for bigger steps. With a piece selected, only Alt + Arrows pans' },
+    { keys: [['Arrows'], ['Alt', 'Arrows']], text: 'Pan the board; Shift for bigger steps. With a selection, only Alt + Arrows pans' },
     { keys: [['+'], ['\u2212']], text: 'Zoom in or out' },
     { keys: [['F'], ['Shift', '1']], text: 'Frame all pieces' },
-    { keys: [['Space', 'drag']], text: 'Pan with the pointer' },
+    { keys: [['Space', 'drag'], ['Middle', 'drag']], text: 'Pan with the pointer' },
+    { keys: [['Wheel'], ['Pinch']], text: 'Pan or zoom the board' },
   ] },
   { title: 'History, share and export', items: [
     { keys: [['Ctrl', 'Z'], ['Cmd', 'Z']], text: 'Undo' },
@@ -328,10 +346,18 @@ const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (rea
     { keys: [['Tab'], ['Shift', 'Tab']], text: 'Move to the next or previous control' },
     { keys: [['?']], text: 'Show or hide this list' },
   ] },
-  { title: 'Pointer and touch', items: [
-    { keys: [['Drag']], text: 'Drag a shape from the tray onto the board, or move a piece' },
-    { keys: [['Handle']], text: 'Drag the round handle above a piece to rotate it' },
-    { keys: [['Wheel'], ['Pinch']], text: 'Pan or zoom the board' },
+  { title: 'Mouse', items: [
+    { keys: [['Drag']], text: 'Drag a shape from the tray onto the board, or move the selection' },
+    { keys: [['Drag', 'empty board']], text: 'Select the pieces a box touches; with Shift, add them' },
+    { keys: [['Shift', 'click']], text: 'Add a piece to the selection, or remove it' },
+    { keys: [['Handle']], text: 'Drag the round handle to rotate the selection' },
+  ] },
+  { title: 'Touch', items: [
+    { keys: [['Drag']], text: 'Move a piece or the selection; on the empty board, pan' },
+    { keys: [['Hold', 'drag']], text: 'Hold the empty board, then drag: select the pieces a box touches' },
+    { keys: [['Hold']], text: 'Hold a piece: add it to the selection, or remove it' },
+    { keys: [['Twist']], text: 'Two fingers, the first on the selection: rotate it' },
+    { keys: [['Pinch']], text: 'Zoom the board' },
   ] },
 ];
 
@@ -433,18 +459,37 @@ export class FridgeFace extends HTMLElement {
   private els = new Map<string, PieceEls>();
   private texture!: FridgeTexture;
   private textureRect!: SVGRectElement;
-  private liftedId: string | null = null;
+  private liftedIds = new Set<string>();
   private liftTimer = 0;
   private viewReady = false;
   private pxZoom = NaN;
   private kCache = 0;
   private vpCache: { width: number; height: number } | null = null;
-  private selectedId: string | null = null;
+  /** The selection: ids of the pieces chosen to act on together (temporary: never saved, never in history). */
+  private selection: string[] = [];
+  /** The selection box's frame angle: it turns with a selection rotated as one unit; back to 0 whenever the selection changes. */
+  private groupAngle = 0;
+  private outlines = new WeakMap<Piece, Pt[]>();
+  private stackCache: { pieces: readonly Piece[]; key: string; fwd: boolean; back: boolean } | null = null;
   private touches = new Map<number, { x: number; y: number }>();
-  private rotating: { pointerId: number; id: string; grab: number; startRot: number } | null = null;
-  private twist: { id: string; lastAngle: number; accum: number; startRot: number; startPos: { x: number; y: number }; startMid: { x: number; y: number } } | null = null;
-
-  private moving: { pointerId: number; id: string; startPt: { x: number; y: number }; startX: number; startY: number; moved?: boolean } | null = null;
+  /** A selection turning as one unit (handle drag): `starts` are the pieces when it began, turned about the fixed `centre`. */
+  private rotating: { pointerId: number; ids: string[]; starts: Piece[]; centre: Pt; grab: number; startAngle: number } | null = null;
+  private twist: { ids: string[]; starts: Piece[]; centre: Pt; lastAngle: number; accum: number; startMid: Pt; startAngle: number } | null = null;
+  /**
+   * A press on a piece. `ids` move together (the selection, or the pressed piece alone). Touch presses are `pending` until the
+   * finger travels LONG_PRESS_TOL (then they drag) or holds LONG_PRESS_MS (then they toggle the piece in the selection).
+   * `onTap`: what a release without a drag does.
+   */
+  private moving: {
+    pointerId: number; anchor: string; ids: string[]; starts: Piece[]; startPt: Pt; startClient: Pt; moved: boolean; pending: boolean;
+    onTap: 'none' | 'select' | 'remove';
+  } | null = null;
+  /** A selection box (mouse: a drag on the empty board; touch: a long-press on it, then a drag). */
+  private boxSel: { pointerId: number; startClient: Pt; startBoard: Pt; active: boolean; additive: boolean; base: string[]; touch: boolean; box?: Box } | null = null;
+  private longPress: { pointerId: number; x: number; y: number; timer: number } | null = null;
+  private ringEl: HTMLElement | null = null;
+  private ringTimer = 0;
+  private lastPointerType = '';
   private trayDrag: { pointerId: number; shape: Shape; startX: number; startY: number; active: boolean; preview?: HTMLElement } | null = null;
   private suppressClick = false;
 
@@ -575,7 +620,7 @@ export class FridgeFace extends HTMLElement {
     wrap.insertAdjacentHTML('afterbegin', '<div class="probe" aria-hidden="true"></div>');
     const outer = document.createElement('div'); // siblings of .root: never made inert, so the live region keeps working
     outer.innerHTML = `
-      <div class="sr" id="ff-desc">Press 1 to 5 to add a piece. N and P choose a piece. Arrow keys move it, comma and period rotate it, the bracket keys restack it, Delete removes it. Press question mark for every shortcut.</div>
+      <div class="sr" id="ff-desc">Press 1 to 5 to add a piece. N and P choose a piece; Control or Command A selects every piece. Arrow keys move the selection, comma and period rotate it, the bracket keys restack it, Delete removes it. Press question mark for every shortcut.</div>
       <div class="sr" id="ff-live" role="status" aria-live="polite" aria-atomic="true"></div>
       <div class="help" hidden>
         <div class="helpbox" role="dialog" aria-modal="true" aria-labelledby="ff-help-title">
@@ -633,11 +678,15 @@ export class FridgeFace extends HTMLElement {
     this.surface.addEventListener('pointermove', (e) => this.onBoardMove(e));
     this.surface.addEventListener('pointerup', (e) => this.onBoardUp(e));
     this.surface.addEventListener('pointercancel', (e) => this.onBoardUp(e));
+    // A touch long-press must never open a context menu (Android) or a callout (iOS: -webkit-touch-callout on the host).
+    this.surface.addEventListener('contextmenu', (e) => {
+      if (this.lastPointerType === 'touch' || this.longPress || this.boxSel) e.preventDefault();
+    });
 
     this.actions.addEventListener('click', (e) => {
       const act = (e.target as HTMLElement).closest('button')?.dataset.action;
-      if (!act || !this.selectedId) return;
-      this.runAction(act, this.selectedId);
+      if (!act || !this.selection.length) return;
+      this.runAction(act);
       // The pressed button may now be disabled or gone (Delete hides the bar): keep keyboard focus on the board.
       const pressed = (e.target as HTMLElement).closest('button')!;
       if (this.actions.hidden || pressed.disabled) this.surface.focus();
@@ -718,7 +767,7 @@ export class FridgeFace extends HTMLElement {
           onView: (fn) => void this.viewListeners.add(fn),
           pieces: () => this.composition.pieces.map(({ shapeId, x, y, rotation }) => ({ shapeId, x, y, rotation })),
           loadPieces: (pieces) => {
-            this.selectedId = null;
+            this.selection = [];
             this.composition.replace(pieces);
             this.say(announceLoaded(this.composition.pieces.length));
           },
@@ -765,7 +814,7 @@ export class FridgeFace extends HTMLElement {
 
   private applyLoaded(pieces: Parameters<Composition['replace']>[0], undoable: boolean) {
     this.finishIntro();
-    this.selectedId = null;
+    this.selection = [];
     this.coalesceKey = null;
     this.applying = !undoable;
     this.restoring = !undoable;
@@ -857,8 +906,9 @@ export class FridgeFace extends HTMLElement {
     this.say(announceHistory(kind, !!snap));
     if (!snap) return;
     this.applying = true;
+    this.groupAngle = 0; // the selection box starts square again
     try {
-      this.composition.restore(snap); // render() drops the selection if that piece no longer exists
+      this.composition.restore(snap); // render() drops selected pieces that no longer exist
     } finally {
       this.applying = false;
     }
@@ -1403,17 +1453,20 @@ export class FridgeFace extends HTMLElement {
     return p ? announceRotated(this.nameOf(p), fromUpright(this.offsetOf(p), p.rotation)) : null;
   }
 
-  private movedText(id: string): string | null {
-    const p = this.composition.getPiece(id);
-    return p ? announceMoved(this.nameOf(p)) : null;
+  /** One piece: its name and angle from upright. Several: a count and the turn the selection has made as a unit. */
+  private rotatedText(ids: readonly string[]): string | null {
+    if (ids.length === 1) return this.rotationText(ids[0]);
+    const n = ids.filter((id) => this.composition.getPiece(id)).length;
+    return n ? announceGroupRotated(n, normalise(this.groupAngle)) : null;
   }
 
-  private sayRotation(id: string) {
-    this.sayLater(`rot:${id}`, () => this.rotationText(id));
-  }
-
-  private sayMoved(id: string) {
-    this.sayLater(`move:${id}`, () => this.movedText(id));
+  private movedText(ids: readonly string[]): string | null {
+    if (ids.length === 1) {
+      const p = this.composition.getPiece(ids[0]);
+      return p ? announceMoved(this.nameOf(p)) : null;
+    }
+    const n = ids.filter((id) => this.composition.getPiece(id)).length;
+    return n ? announceGroupMoved(n) : null;
   }
 
   // ---- layout state ------------------------------------------------------------------
@@ -1650,19 +1703,95 @@ export class FridgeFace extends HTMLElement {
 
   // ---- selecting and moving ----------------------------------------------
 
-  private select(id: string | null) {
-    this.selectedId = id;
+  /** Replace the selection (ids that no longer exist are dropped). The box starts square again whenever its members change. */
+  private setSelection(ids: readonly string[]) {
+    const live = ids.filter((id, i) => ids.indexOf(id) === i && !!this.composition.getPiece(id));
+    const same = live.length === this.selection.length && live.every((id) => this.selection.includes(id));
+    if (!same) this.groupAngle = 0;
+    this.selection = live;
     this.render();
   }
 
-  /** N / P: step the selection through the stacking order (bottom to top, wrapping). */
+  private select(id: string | null) {
+    this.setSelection(id ? [id] : []);
+  }
+
+  private isSelected(id: string): boolean {
+    return this.selection.includes(id);
+  }
+
+  /** The selected pieces, in stacking order. */
+  private selectedPieces(): Piece[] {
+    const s = new Set(this.selection);
+    return this.composition.pieces.filter((p) => s.has(p.id));
+  }
+
+  private get selKey(): string {
+    return [...this.selection].sort().join(',');
+  }
+
+  /** A piece's convex outline on the board (cached per immutable piece snapshot). */
+  private outlineOf(p: Piece): Pt[] {
+    let o = this.outlines.get(p);
+    if (!o) {
+      o = placeOutline(SHAPE_BY_ID.get(p.shapeId)?.hull ?? [], p);
+      this.outlines.set(p, o);
+    }
+    return o;
+  }
+
+  /** Real-geometry overlap between two pieces of the current composition, by id. */
+  private overlapFn(): (a: string, b: string) => boolean {
+    const by = new Map(this.composition.pieces.map((p) => [p.id, p]));
+    return (a, b) => {
+      const pa = by.get(a), pb = by.get(b);
+      return !!pa && !!pb && convexIntersect(this.outlineOf(pa), this.outlineOf(pb));
+    };
+  }
+
+  private selFrame(pieces: readonly Piece[]) {
+    return selectionFrame(pieces, hullOf, this.groupAngle);
+  }
+
+  /** What a selection turns about: one piece about its own centroid (as always); several about the centre of their box. */
+  private pivot(pieces: readonly Piece[]): Pt {
+    if (pieces.length === 1) return { x: pieces[0].x, y: pieces[0].y };
+    return this.selFrame(pieces)?.centre ?? { x: 0, y: 0 };
+  }
+
+  /** Whether bring forward / send backward would move anything (overlap-aware), cached per composition and selection. */
+  private stackState(): { fwd: boolean; back: boolean } {
+    const pieces = this.composition.pieces;
+    const key = this.selKey;
+    const c = this.stackCache;
+    if (c && c.key === key && (c.pieces === pieces || this.inGesture)) return c; // during a drag it is recomputed at the end
+    const order = pieces.map((p) => p.id);
+    const set = new Set(this.selection);
+    const ov = this.overlapFn();
+    const next = { pieces, key, fwd: !!bringForwardOverlapping(order, set, ov), back: !!sendBackwardOverlapping(order, set, ov) };
+    this.stackCache = next;
+    return next;
+  }
+
+  private selectAllPieces() {
+    const all = selectAll(this.composition.pieces);
+    if (!all.length) {
+      this.say('No pieces on the board.');
+      return;
+    }
+    this.setSelection(all);
+    this.say(announceSelectionCount(all.length));
+  }
+
+  /** N / P: select ONE piece, stepping through the stacking order (bottom to top, wrapping). */
   private cycleSelection(dir: 1 | -1) {
     const pieces = this.composition.pieces;
     if (!pieces.length) {
       this.say('No pieces on the board.');
       return;
     }
-    const cur = this.selectedId ? this.composition.indexOf(this.selectedId) : -1;
+    const idx = this.selection.map((id) => this.composition.indexOf(id)).filter((i) => i >= 0);
+    const cur = idx.length ? (dir === 1 ? Math.max(...idx) : Math.min(...idx)) : -1;
     const i = cur < 0 ? (dir === 1 ? 0 : pieces.length - 1) : (cur + dir + pieces.length) % pieces.length;
     const p = pieces[i];
     this.select(p.id);
@@ -1670,15 +1799,96 @@ export class FridgeFace extends HTMLElement {
     this.say(announceSelected(this.nameOf(p), i, pieces.length, fromUpright(this.offsetOf(p), p.rotation)));
   }
 
+  // ---- touch long-press ---------------------------------------------------
+
+  private startLongPress(e: PointerEvent, fire: () => void) {
+    this.cancelLongPress();
+    const lp = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, timer: 0 };
+    lp.timer = window.setTimeout(() => {
+      if (this.longPress !== lp) return;
+      this.longPress = null;
+      fire();
+    }, LONG_PRESS_MS);
+    this.longPress = lp;
+  }
+
+  private cancelLongPress() {
+    if (!this.longPress) return;
+    clearTimeout(this.longPress.timer);
+    this.longPress = null;
+  }
+
+  /** The long-press ring at a client point: held while a box is armed, or shown briefly. */
+  private showRing(clientX: number, clientY: number, hold: boolean) {
+    this.hideRing();
+    const r = document.createElement('div');
+    r.className = 'lp';
+    r.setAttribute('aria-hidden', 'true');
+    const b = this.boardEl.getBoundingClientRect();
+    r.style.left = `${clientX - b.left}px`;
+    r.style.top = `${clientY - b.top}px`;
+    this.boardEl.append(r);
+    this.ringEl = r;
+    if (!hold) this.ringTimer = window.setTimeout(() => this.hideRing(), RING_MS);
+  }
+
+  private hideRing() {
+    clearTimeout(this.ringTimer);
+    this.ringEl?.remove();
+    this.ringEl = null;
+  }
+
+  /** A long-press on the empty board: the pan stops (and is undone), and the next drag draws a selection box from there. */
+  private armBox(pointerId: number) {
+    const pa = this.pan;
+    if (!pa || pa.pointerId !== pointerId || this.touches.size > 1) return;
+    if (pa.active) this.setView(pa.startView);
+    this.pan = null;
+    this.boardEl.classList.remove('panning');
+    this.boxSel = {
+      pointerId, startClient: { x: pa.startX, y: pa.startY }, startBoard: screenToBoard(pa.startView, this.clientToScreen(pa.startX, pa.startY)),
+      active: false, additive: false, base: [...this.selection], touch: true,
+    };
+    this.showRing(pa.startX, pa.startY, true);
+  }
+
+  /** A long-press on a piece (held still): add it to the selection, or remove it. The press then does nothing more. */
+  private longPressPiece(id: string) {
+    const m = this.moving;
+    if (!m || m.anchor !== id || !m.pending) return;
+    this.moving = null;
+    const next = toggleInSelection(this.selection, id);
+    this.setSelection(next);
+    this.say(announceSelectionCount(this.selection.length));
+    this.showRing(m.startClient.x, m.startClient.y, false);
+  }
+
+  private cancelBox() {
+    const b = this.boxSel;
+    if (!b) return;
+    this.boxSel = null;
+    this.hideRing();
+    this.setSelection(b.base);
+  }
+
+  // ---- pointer gestures on the board ------------------------------------------
+
   private onBoardDown(e: PointerEvent) {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (e.pointerType === 'touch') {
+    this.lastPointerType = e.pointerType;
+    if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return;
+    const touch = e.pointerType === 'touch';
+    if (touch) {
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touches.size >= 2) {
+        this.cancelLongPress();
         if (this.touches.size === 2 && !this.twist && !this.pinch) {
-          // Twist rotates a piece only if the first finger landed on it (or its handle); otherwise two fingers pinch/pan the board.
-          if ((this.moving || this.rotating) && this.selectedId) this.startTwist(e);
-          else this.startPinch();
+          if (this.boxSel) this.cancelBox();
+          const m = this.moving;
+          // Twist turns the selection only if the first finger landed on a piece (or the handle); otherwise two fingers pinch/pan.
+          if (m || this.rotating) {
+            if (m && !this.isSelected(m.anchor)) this.select(m.anchor);
+            this.startTwist(e);
+          } else this.startPinch();
         }
         return; // extra fingers never select or move anything
       }
@@ -1689,10 +1899,11 @@ export class FridgeFace extends HTMLElement {
       return;
     }
     const handle = (e.target as Element).closest?.('[data-handle]');
-    const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
-    if (handle && sel) {
+    const sel = this.selectedPieces();
+    if (handle && sel.length) {
+      const centre = this.pivot(sel);
       const pt = this.toBoard(e.clientX, e.clientY);
-      this.rotating = { pointerId: e.pointerId, id: sel.id, grab: this.angleTo(sel, pt), startRot: sel.rotation };
+      this.rotating = { pointerId: e.pointerId, ids: sel.map((p) => p.id), starts: sel, centre, grab: this.angleAt(centre, pt), startAngle: this.groupAngle };
       this.surface.setPointerCapture(e.pointerId);
       this.syncLift();
       e.preventDefault();
@@ -1700,13 +1911,45 @@ export class FridgeFace extends HTMLElement {
     }
     const id = (e.target as Element).closest?.('[data-piece-id]')?.getAttribute('data-piece-id') ?? null;
     if (!id) {
-      this.startPan(e, false); // a click without movement deselects (on release)
+      if (touch) {
+        // One finger pans (a tap deselects, on release); held still, it arms a selection box instead.
+        this.startPan(e, false);
+        this.startLongPress(e, () => this.armBox(e.pointerId));
+      } else {
+        // Mouse and pen: a drag draws a selection box (Shift adds to the selection); a plain click deselects, on release.
+        this.boxSel = {
+          pointerId: e.pointerId, startClient: { x: e.clientX, y: e.clientY }, startBoard: this.toBoard(e.clientX, e.clientY),
+          active: false, additive: e.shiftKey, base: [...this.selection], touch: false,
+        };
+        this.surface.setPointerCapture(e.pointerId);
+      }
       return;
     }
-    const piece = this.composition.getPiece(id);
-    if (!piece) return;
-    this.select(id); // selecting never changes stacking order
-    this.moving = { pointerId: e.pointerId, id, startPt: this.toBoard(e.clientX, e.clientY), startX: piece.x, startY: piece.y };
+    if (!this.composition.getPiece(id)) return;
+    let onTap: 'none' | 'select' | 'remove' = 'none';
+    let pending = false;
+    if (touch) {
+      // Nothing changes until the finger drags (then it drags, as always) or holds (then it toggles the piece). A tap selects it alone.
+      pending = true;
+      onTap = 'select';
+      this.startLongPress(e, () => this.longPressPiece(id));
+    } else if (e.shiftKey) {
+      if (this.isSelected(id)) onTap = 'remove';
+      else {
+        this.setSelection([...this.selection, id]);
+        this.say(announceSelectionCount(this.selection.length));
+      }
+    } else if (this.isSelected(id) && this.selection.length > 1) {
+      onTap = 'select'; // a click without a drag collapses the selection to this piece, on release
+    } else {
+      this.select(id); // selecting never changes stacking order
+    }
+    const ids = this.isSelected(id) ? [...this.selection] : [id];
+    const starts = ids.map((i) => this.composition.getPiece(i)!).filter(Boolean);
+    this.moving = {
+      pointerId: e.pointerId, anchor: id, ids, starts, startPt: this.toBoard(e.clientX, e.clientY), startClient: { x: e.clientX, y: e.clientY },
+      moved: false, pending, onTap,
+    };
     this.surface.setPointerCapture(e.pointerId);
   }
 
@@ -1731,8 +1974,8 @@ export class FridgeFace extends HTMLElement {
     };
   }
 
-  private angleTo(p: Piece, pt: { x: number; y: number }): number {
-    return (Math.atan2(pt.y - p.y, pt.x - p.x) * 180) / Math.PI;
+  private angleAt(c: Pt, pt: Pt): number {
+    return (Math.atan2(pt.y - c.y, pt.x - c.x) * 180) / Math.PI;
   }
 
   private offsetOf(p: Piece): number {
@@ -1740,25 +1983,28 @@ export class FridgeFace extends HTMLElement {
   }
 
   private startTwist(e: PointerEvent) {
-    const sel = this.composition.getPiece(this.selectedId!);
+    const sel = this.selectedPieces();
     const [a, b] = [...this.touches.values()];
-    if (!sel || !a || !b) return;
+    if (!sel.length || !a || !b) return;
     this.moving = null;
     this.rotating = null;
     this.surface.setPointerCapture(e.pointerId);
     this.twist = {
-      id: sel.id,
+      ids: sel.map((p) => p.id),
+      starts: sel,
+      centre: this.pivot(sel), // held fixed for the whole gesture
       lastAngle: (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI,
       accum: 0,
-      startRot: sel.rotation,
-      startPos: { x: sel.x, y: sel.y },
       startMid: this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2),
+      startAngle: this.groupAngle,
     };
     this.syncLift();
   }
 
   private onBoardMove(e: PointerEvent) {
     if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const lp = this.longPress;
+    if (lp && lp.pointerId === e.pointerId && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > LONG_PRESS_TOL) this.cancelLongPress();
     const pn = this.pinch;
     if (pn) {
       if (!this.touches.has(pn.ids[0]) || !this.touches.has(pn.ids[1])) return;
@@ -1781,82 +2027,123 @@ export class FridgeFace extends HTMLElement {
       this.setView(panBy(pa.startView, (e.clientX - pa.startX) / k, (e.clientY - pa.startY) / k));
       return;
     }
+    const bs = this.boxSel;
+    if (bs && bs.pointerId === e.pointerId) {
+      if (!bs.active) {
+        if (Math.hypot(e.clientX - bs.startClient.x, e.clientY - bs.startClient.y) < PAN_THRESHOLD) return;
+        bs.active = true;
+        this.hideRing();
+      }
+      bs.box = boxFromCorners(bs.startBoard, this.toBoard(e.clientX, e.clientY));
+      const hits = piecesInBox(this.composition.pieces, hullOf, bs.box);
+      this.setSelection(bs.additive ? [...bs.base, ...hits.filter((h) => !bs.base.includes(h))] : hits);
+      return;
+    }
     const t = this.twist;
     if (t) {
-      const piece = this.composition.getPiece(t.id);
       const [a, b] = [...this.touches.values()];
-      if (!piece || !a || !b) return;
+      if (!a || !b) return;
       const ang = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
       t.accum += normalise(ang - t.lastAngle);
       t.lastAngle = ang;
       const mid = this.toBoard((a.x + b.x) / 2, (a.y + b.y) / 2);
-      this.composition.movePiece(t.id, t.startPos.x + (mid.x - t.startMid.x), t.startPos.y + (mid.y - t.startMid.y));
-      this.composition.setRotation(t.id, t.startRot + t.accum); // free rotation: a magnet turns freely by hand
+      this.groupAngle = t.startAngle + t.accum;
+      // Free rotation (a magnet turns freely by hand), as one rigid unit about the fixed centre, then carried with the fingers.
+      this.composition.setPlacements(translateAll(rotateRigid(t.starts, t.centre, t.accum), mid.x - t.startMid.x, mid.y - t.startMid.y));
       return;
     }
     const r = this.rotating;
     if (r && r.pointerId === e.pointerId) {
-      const piece = this.composition.getPiece(r.id);
-      if (!piece) return;
-      const ang = this.angleTo(piece, this.toBoard(e.clientX, e.clientY));
-      this.composition.setRotation(piece.id, r.startRot + (ang - r.grab));
+      const delta = this.angleAt(r.centre, this.toBoard(e.clientX, e.clientY)) - r.grab;
+      this.groupAngle = r.startAngle + delta;
+      this.composition.setPlacements(rotateRigid(r.starts, r.centre, delta));
       return;
     }
     const m = this.moving;
     if (!m || m.pointerId !== e.pointerId) return;
+    if (m.pending) {
+      if (Math.hypot(e.clientX - m.startClient.x, e.clientY - m.startClient.y) <= LONG_PRESS_TOL) return;
+      m.pending = false; // it is a drag, exactly as before: the piece (or the selection it belongs to) follows the finger
+      this.cancelLongPress();
+      if (!this.isSelected(m.anchor)) this.select(m.anchor);
+    }
     const pt = this.toBoard(e.clientX, e.clientY);
     if (!m.moved && pt.x === m.startPt.x && pt.y === m.startPt.y) return;
     m.moved = true;
-    this.composition.movePiece(m.id, m.startX + (pt.x - m.startPt.x), m.startY + (pt.y - m.startPt.y));
+    const dx = pt.x - m.startPt.x, dy = pt.y - m.startPt.y;
+    this.composition.setPlacements(m.starts.map((p) => ({ id: p.id, x: p.x + dx, y: p.y + dy })));
     this.syncLift();
   }
 
   private onBoardUp(e: PointerEvent) {
     this.touches.delete(e.pointerId);
+    if (this.longPress && this.longPress.pointerId === e.pointerId) this.cancelLongPress();
     if (this.pinch && this.touches.size < 2) this.pinch = null; // the remaining finger does nothing
     if (this.pan && this.pan.pointerId === e.pointerId) {
       if (!this.pan.active && e.type === 'pointerup') this.select(null);
       this.pan = null;
       this.boardEl.classList.remove('panning');
     }
+    const bs = this.boxSel;
+    if (bs && bs.pointerId === e.pointerId) {
+      this.boxSel = null;
+      this.hideRing();
+      if (bs.active) {
+        this.render(); // the box itself goes
+        this.say(announceSelectionCount(this.selection.length));
+      } else if (!bs.touch && !bs.additive && e.type === 'pointerup') {
+        this.select(null); // a plain click on the empty board deselects
+      }
+      // A touch box that was armed but never dragged is cancelled quietly: the selection stays as it was.
+    }
+    const wasGesture = this.inGesture;
     // One summary per gesture, never per pixel.
     let said: (() => string | null) | null = null;
     if (this.twist && this.touches.size < 2) {
-      const id = this.twist.id;
+      const ids = this.twist.ids;
       this.twist = null; // ends cleanly; the remaining finger does nothing
-      said = () => this.rotationText(id);
+      said = () => this.rotatedText(ids);
     }
-    if (this.moving && this.moving.pointerId === e.pointerId) {
-      const { id, moved } = this.moving;
+    const m = this.moving;
+    if (m && m.pointerId === e.pointerId) {
       this.moving = null;
-      if (moved) said = () => this.movedText(id);
+      if (m.moved) said = () => this.movedText(m.ids);
+      else if (e.type === 'pointerup') {
+        if (m.onTap === 'remove') {
+          this.setSelection(this.selection.filter((id) => id !== m.anchor));
+          this.say(announceSelectionCount(this.selection.length));
+        } else if (m.onTap === 'select') this.select(m.anchor);
+      }
     }
     if (this.rotating && this.rotating.pointerId === e.pointerId) {
-      const id = this.rotating.id;
+      const ids = this.rotating.ids;
       this.rotating = null;
-      said = () => this.rotationText(id);
+      said = () => this.rotatedText(ids);
     }
     this.syncLift();
     this.commitGesture();
+    if (wasGesture && !this.inGesture) this.render(); // the action bar's restack state is refreshed once, at the end
     const t = said?.();
     if (t) this.say(t);
   }
 
   // ---- keyboard and actions -----------------------------------------------
 
-  private runAction(act: string, id: string) {
+  /** Delete, bring forward or send backward the whole selection: each is ONE change (one undo step). */
+  private runAction(act: string) {
+    const sel = this.selectedPieces();
+    if (!sel.length) return;
     if (act === 'delete') {
-      if (this.composition.deletePiece(id)) this.say(announceDeleted(this.composition.pieces.length));
+      const n = this.composition.deletePieces(sel.map((p) => p.id));
+      if (n) this.say(n === 1 ? announceDeleted(this.composition.pieces.length) : announceGroupDeleted(n));
     } else if (act === 'forward' || act === 'backward') {
-      const dir = act === 'forward' ? 'forward' : 'backward';
-      const moved = dir === 'forward' ? this.composition.bringForward(id) : this.composition.sendBackward(id);
-      this.say(announceRestacked(dir, moved, this.composition.indexOf(id), this.composition.pieces.length));
+      const order = this.composition.pieces.map((p) => p.id);
+      const set = new Set(sel.map((p) => p.id));
+      const ov = this.overlapFn();
+      const next = act === 'forward' ? bringForwardOverlapping(order, set, ov) : sendBackwardOverlapping(order, set, ov);
+      const moved = !!next && this.composition.reorder(next);
+      this.say(announceRestacked(act, moved, this.composition.indexOf(sel[0].id), this.composition.pieces.length, sel.length));
     }
-  }
-
-  private nudge(id: string, x: number, y: number) {
-    this.coalesced(`nudge:${id}`, () => this.composition.movePiece(id, x, y));
-    this.sayMoved(id);
   }
 
   private onKey(e: KeyboardEvent) {
@@ -1875,6 +2162,7 @@ export class FridgeFace extends HTMLElement {
       const k = e.key.toLowerCase();
       if (k === 'z') { if (e.shiftKey) this.redo(); else this.undo(); e.preventDefault(); return; }
       if (k === 'y' && e.ctrlKey) { this.redo(); e.preventDefault(); return; }
+      if (k === 'a' && !e.shiftKey) { this.selectAllPieces(); e.preventDefault(); return; }
     }
     // Escape closes the innermost thing first: export menu, clear confirm, share field, then the selection.
     if (e.key === 'Escape') {
@@ -1891,7 +2179,7 @@ export class FridgeFace extends HTMLElement {
       } else if (this.suggOpen) {
         this.closeSuggestions();
         e.preventDefault();
-      } else if (this.selectedId) {
+      } else if (this.selection.length) {
         this.select(null);
         this.say('Selection cleared.');
         e.preventDefault();
@@ -1932,19 +2220,20 @@ export class FridgeFace extends HTMLElement {
         return;
       }
     }
-    // Arrow keys: move the selected piece, or pan the board (Alt always pans). Shift = bigger steps.
+    // Arrow keys: move the selection, or pan the board (Alt always pans). Shift = bigger steps.
     const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key as string] as [number, number] | undefined;
-    const id = this.selectedId;
+    const sel = this.selectedPieces();
+    const ids = sel.map((p) => p.id);
+    const key = this.selKey;
     if (arrow && !e.metaKey && !e.ctrlKey) {
-      if (e.altKey || !id) {
+      if (e.altKey || !sel.length) {
         this.panKey(arrow[0], arrow[1], e.shiftKey);
         e.preventDefault();
         return;
       }
-      const piece = this.composition.getPiece(id);
-      if (!piece) return;
       const step = e.shiftKey ? 10 : 1;
-      this.nudge(id, piece.x + arrow[0] * step, piece.y + arrow[1] * step);
+      this.coalesced(`nudge:${key}`, () => this.composition.setPlacements(sel.map((p) => ({ id: p.id, x: p.x + arrow[0] * step, y: p.y + arrow[1] * step }))));
+      this.sayLater(`move:${key}`, () => this.movedText(ids));
       e.preventDefault();
       return;
     }
@@ -1952,22 +2241,24 @@ export class FridgeFace extends HTMLElement {
       e.preventDefault(); // the focused board never scrolls the page behind it
       return;
     }
-    if (!id || e.metaKey || e.ctrlKey || e.altKey) return;
-    const piece = this.composition.getPiece(id);
-    if (!piece) return;
-    // , and . rotate 1 degree (free rotation, no steps; Shift + them does nothing).
+    if (!sel.length || e.metaKey || e.ctrlKey || e.altKey) return;
+    // , and . rotate 1 degree (free rotation, no steps; Shift + them does nothing). Several pieces turn as one unit.
     const rot = e.shiftKey ? 0 : e.code === 'Period' || e.key === '.' ? 1 : e.code === 'Comma' || e.key === ',' ? -1 : 0;
     if (rot) {
-      this.coalesced(`rot1:${id}`, () => this.composition.rotatePiece(id, rot));
-      this.sayRotation(id);
+      const centre = this.pivot(sel);
+      this.coalesced(`rot1:${key}`, () => {
+        this.groupAngle += rot;
+        this.composition.setPlacements(rotateRigid(sel, centre, rot));
+      });
+      this.sayLater(`rot:${key}`, () => this.rotatedText(ids));
       e.preventDefault();
       return;
     }
     switch (e.key) {
       case 'Delete':
-      case 'Backspace': this.runAction('delete', id); break;
-      case ']': this.runAction('forward', id); break;
-      case '[': this.runAction('backward', id); break;
+      case 'Backspace': this.runAction('delete'); break;
+      case ']': this.runAction('forward'); break;
+      case '[': this.runAction('backward'); break;
       default: return;
     }
     e.preventDefault();
@@ -2143,7 +2434,7 @@ export class FridgeFace extends HTMLElement {
     const t = Math.min(this.topInset(), r.height / this.k / 2) * this.k; // phones: the docks cover the top; centre in the visible part
     const c = this.toBoard(r.left + r.width / 2, r.top + t + (r.height - t) / 2);
     const items = centreOn(s.pieces, (id) => SHAPE_BY_ID.get(id), c).map((p) => ({ ...p, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 }));
-    this.selectedId = null;
+    this.selection = [];
     const added = this.composition.addPieces(items);
     const total = this.composition.pieces.length;
     this.say(isWord(s) ? announceWord(s.text, s.variant, added.length, total) : announceSuggestion(s.char, s.variant, added.length, total));
@@ -2224,56 +2515,127 @@ export class FridgeFace extends HTMLElement {
 
   // ---- rendering ----------------------------------------------------------
 
-  /** Selection box and rotate handle, drawn in board space but sized in screen pixels (counter-scaled by zoom). */
+  /**
+   * The selection overlay, drawn in board space but sized in screen pixels (counter-scaled by zoom). One piece: its box and
+   * rotate handle, turned with it. Several: a thin outline per piece, ONE box around them all (turned with the selection when
+   * it is rotated as a unit) and ONE rotate handle. Plus the selection box being dragged out, if any.
+   */
   private renderOverlay() {
     this.overlayZoom = this.view.zoom;
     this.overlay.replaceChildren();
-    const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
-    if (!sel) return;
-    const s = SHAPE_BY_ID.get(sel.shapeId)!;
     const k = this.k * this.view.zoom; // CSS px per board unit: pad, gap and handle stay screen-sized at every zoom
-    const pad = SELECT_PAD / k;
-    const ub = s.uprightBox; // the shape's bounds in its upright frame, centroid at the origin
-    const bx = ub.x - pad, by = ub.y - pad, bw = ub.w + 2 * pad, bh = ub.h + 2 * pad;
-    const cx = bx + bw / 2; // the handle sits at the box's upright top centre
-    const hy = by - HANDLE_GAP / k;
-    const g = svgEl('g', {
-      transform: `translate(${n3(sel.x)} ${n3(sel.y)}) rotate(${n3(fromUpright(s.uprightOffsetDeg, sel.rotation))})`,
-      'pointer-events': 'none',
-    });
+    const sel = this.selectedPieces();
     // Two-tone strokes (white under black dashes) read on black pieces, white pieces and the grey board.
     const line = (attrs: Record<string, string>) => {
       const base = { ...attrs, fill: 'none', 'vector-effect': 'non-scaling-stroke' };
+      const tag = attrs.r ? 'circle' : attrs.width ? 'rect' : 'line';
       return [
-        svgEl(attrs.r ? 'circle' : attrs.width ? 'rect' : 'line', { ...base, stroke: '#fff', 'stroke-width': '3.5' } as Record<string, string>),
-        svgEl(attrs.r ? 'circle' : attrs.width ? 'rect' : 'line', { ...base, stroke: '#000', 'stroke-width': '1.5', ...(attrs.r ? {} : { 'stroke-dasharray': '5 4' }) } as Record<string, string>),
+        svgEl(tag, { ...base, stroke: '#fff', 'stroke-width': '3.5' } as Record<string, string>),
+        svgEl(tag, { ...base, stroke: '#000', 'stroke-width': '1.5', ...(attrs.r ? {} : { 'stroke-dasharray': '5 4' }) } as Record<string, string>),
       ];
     };
-    g.append(
-      ...line({ x: n3(bx), y: n3(by), width: n3(bw), height: n3(bh) }),
-      ...line({ x1: n3(cx), y1: n3(by), x2: n3(cx), y2: n3(hy + 9 / k) }),
-    );
-    const h = svgEl('g', { 'data-handle': '', style: 'cursor: grab', 'pointer-events': 'all' });
-    h.append(
-      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(HANDLE_HIT / 2 / k), fill: 'transparent' }),
-      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(9 / k), fill: '#fff', stroke: '#000', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke' }),
-      svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(3 / k), fill: '#000' }),
-    );
-    g.append(h);
-    this.overlay.appendChild(g);
+    /**
+     * A box (in a frame given by `toBoardPt`) with the rotate handle above its top centre, or below its bottom centre when the
+     * top spot is off the board or under a control (the action bar, a dock) and the bottom one is clear.
+     */
+    const blocked = this.handleBlocker();
+    const boxWithHandle = (g: SVGGElement, bx: number, by: number, bw: number, bh: number, toBoardPt: (p: Pt) => Pt) => {
+      const cx = bx + bw / 2;
+      let hy = by - HANDLE_GAP / k;
+      let edge = by, toward = 9 / k;
+      if (blocked(toBoardPt({ x: cx, y: hy }))) {
+        const below = by + bh + HANDLE_GAP / k;
+        if (!blocked(toBoardPt({ x: cx, y: below }))) {
+          hy = below;
+          edge = by + bh;
+          toward = -9 / k;
+        }
+      }
+      g.append(
+        ...line({ x: n3(bx), y: n3(by), width: n3(bw), height: n3(bh) }),
+        ...line({ x1: n3(cx), y1: n3(edge), x2: n3(cx), y2: n3(hy + toward) }),
+      );
+      const h = svgEl('g', { 'data-handle': '', style: 'cursor: grab', 'pointer-events': 'all' });
+      h.append(
+        svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(HANDLE_HIT / 2 / k), fill: 'transparent' }),
+        svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(9 / k), fill: '#fff', stroke: '#000', 'stroke-width': '2', 'vector-effect': 'non-scaling-stroke' }),
+        svgEl('circle', { cx: n3(cx), cy: n3(hy), r: n3(3 / k), fill: '#000' }),
+      );
+      g.append(h);
+    };
+    const pad = SELECT_PAD / k;
+    if (sel.length === 1) {
+      const p = sel[0];
+      const s = SHAPE_BY_ID.get(p.shapeId)!;
+      const ub = s.uprightBox; // the shape's bounds in its upright frame, centroid at the origin
+      const g = svgEl('g', {
+        'data-selection-box': '',
+        transform: `translate(${n3(p.x)} ${n3(p.y)}) rotate(${n3(fromUpright(s.uprightOffsetDeg, p.rotation))})`,
+        'pointer-events': 'none',
+      });
+      const ang = fromUpright(s.uprightOffsetDeg, p.rotation);
+      boxWithHandle(g, ub.x - pad, ub.y - pad, ub.w + 2 * pad, ub.h + 2 * pad, (q) => {
+        const r = rotateAbout(q, { x: 0, y: 0 }, ang);
+        return { x: r.x + p.x, y: r.y + p.y };
+      });
+      this.overlay.appendChild(g);
+    } else if (sel.length > 1) {
+      for (const p of sel) {
+        const s = SHAPE_BY_ID.get(p.shapeId)!;
+        const g = svgEl('g', { 'data-sel-outline': p.id, transform: `translate(${n3(p.x)} ${n3(p.y)}) ${rotationTransform(p, s)}`, 'pointer-events': 'none' });
+        const stroke = (c: string, w: string) => geometryTemplate(s).replace('{a}', `fill="none" stroke="${c}" stroke-width="${w}" stroke-linejoin="round" vector-effect="non-scaling-stroke"`);
+        g.innerHTML = stroke('#fff', '3') + stroke('#000', '1');
+        this.overlay.appendChild(g);
+      }
+      const f = this.selFrame(sel);
+      if (f) {
+        const g = svgEl('g', { 'data-selection-box': '', 'data-group': '', transform: `rotate(${n3(this.groupAngle)})`, 'pointer-events': 'none' });
+        boxWithHandle(g, f.box.x - pad, f.box.y - pad, f.box.w + 2 * pad, f.box.h + 2 * pad, (q) => rotateAbout(q, { x: 0, y: 0 }, this.groupAngle));
+        this.overlay.appendChild(g);
+      }
+    }
+    const bs = this.boxSel;
+    if (bs?.active && bs.box) {
+      const b = bs.box;
+      const g = svgEl('g', { 'data-marquee': '', 'pointer-events': 'none' });
+      g.append(svgEl('rect', { x: n3(b.x), y: n3(b.y), width: n3(b.w), height: n3(b.h), fill: 'rgb(0 0 0 / 0.06)' }));
+      g.append(...line({ x: n3(b.x), y: n3(b.y), width: n3(b.w), height: n3(b.h) }));
+      this.overlay.appendChild(g);
+    }
   }
 
-  /** The piece being dragged, rotated or twisted is lifted: bigger, softer shadow and a small shift up-left. */
+  /** Is a board point a bad spot for the rotate handle: off the visible board, or under a control (action bar, dock, menu, sheet)? */
+  private handleBlocker(): (p: Pt) => boolean {
+    const board = this.boardEl.getBoundingClientRect();
+    if (!board.width) return () => false;
+    const r = HANDLE_HIT / 2;
+    const rects: DOMRect[] = [];
+    const shown = (e: HTMLElement | null) => !!e && !e.hidden && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
+    // The action bar is about to show whenever something is selected (render() unhides it right after the overlay).
+    if (this.selection.length) {
+      const was = this.actions.hidden;
+      this.actions.hidden = false;
+      if (shown(this.actions)) rects.push(this.actions.getBoundingClientRect());
+      this.actions.hidden = was;
+    }
+    for (const e of [...this.dockEl.querySelectorAll<HTMLElement>(':scope > .panel'), this.menuEl, this.suggEl]) if (shown(e)) rects.push(e.getBoundingClientRect());
+    const k = this.k, v = this.view;
+    return (p) => {
+      const x = board.left + (p.x * v.zoom + v.x) * k, y = board.top + (p.y * v.zoom + v.y) * k;
+      if (x - r < board.left || x + r > board.right || y - r < board.top || y + r > board.bottom) return true;
+      return rects.some((q) => x + r > q.left && x - r < q.right && y + r > q.top && y - r < q.bottom);
+    };
+  }
+
+  /** The pieces being dragged, rotated or twisted are lifted: bigger, softer shadow and a small shift up-left. */
   private syncLift() {
     const m = this.moving;
-    const id = this.rotating?.id ?? this.twist?.id ?? (m && m.moved ? m.id : null);
-    if (id === this.liftedId) return;
-    const prev = this.liftedId ? this.els.get(this.liftedId)?.g : undefined;
-    const next = id ? this.els.get(id)?.g : undefined;
-    for (const g of [prev, next]) g?.classList.add('anim');
-    prev?.classList.remove('lifted');
-    next?.classList.add('lifted');
-    this.liftedId = id;
+    const next = new Set(this.rotating?.ids ?? this.twist?.ids ?? (m && m.moved ? m.ids : []));
+    if (next.size === this.liftedIds.size && [...next].every((id) => this.liftedIds.has(id))) return;
+    for (const id of new Set([...this.liftedIds, ...next])) this.els.get(id)?.g.classList.add('anim');
+    for (const id of this.liftedIds) if (!next.has(id)) this.els.get(id)?.g.classList.remove('lifted');
+    for (const id of next) this.els.get(id)?.g.classList.add('lifted');
+    this.liftedIds = next;
     clearTimeout(this.liftTimer);
     this.liftTimer = window.setTimeout(() => {
       for (const g of this.piecesLayer.querySelectorAll('.anim')) g.classList.remove('anim');
@@ -2292,9 +2654,11 @@ export class FridgeFace extends HTMLElement {
 
   private render() {
     const pieces = this.composition.pieces;
-    if (this.selectedId && !this.composition.getPiece(this.selectedId)) this.selectedId = null;
-
     const live = new Set(pieces.map((p) => p.id));
+    if (this.selection.some((id) => !live.has(id))) {
+      this.selection = this.selection.filter((id) => live.has(id)); // deleted (or undone) pieces leave the selection
+      this.groupAngle = 0;
+    }
     for (const [id, el] of this.els) {
       if (!live.has(id)) {
         el.g.remove();
@@ -2330,13 +2694,14 @@ export class FridgeFace extends HTMLElement {
     this.renderOverlay();
     this.renderHistoryUi();
     this.renderShareUi();
-    const sel = this.selectedId ? this.composition.getPiece(this.selectedId) : undefined;
-    // Action bar.
-    this.actions.hidden = !sel;
-    if (sel) {
-      const i = this.composition.indexOf(sel.id);
-      (this.actions.querySelector('[data-action=forward]') as HTMLButtonElement).disabled = i === pieces.length - 1;
-      (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = i === 0;
+    // Action bar: it acts on the whole selection. Forward / Back are off when nothing above / below overlaps it.
+    const n = this.selection.length;
+    this.actions.hidden = !n;
+    if (n) {
+      const st = this.stackState();
+      (this.actions.querySelector('[data-action=forward]') as HTMLButtonElement).disabled = !st.fwd;
+      (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = !st.back;
+      this.actions.querySelector('[data-action=delete]')!.setAttribute('aria-label', n === 1 ? 'Delete piece' : `Delete ${n} pieces`);
     }
   }
 }

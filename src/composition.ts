@@ -94,22 +94,49 @@ export class Composition {
     return true;
   }
 
-  /** Move one step toward the top. No change (false) if already on top. */
-  bringForward(id: string): boolean {
-    return this.step(id, 1);
+  /** Delete several pieces as ONE change (one undo step). Returns how many were deleted. */
+  deletePieces(ids: Iterable<string>): number {
+    const gone = new Set(ids);
+    const next = this.list.filter((p) => !gone.has(p.id));
+    const n = this.list.length - next.length;
+    if (n) this.set(next);
+    return n;
   }
 
-  /** Move one step toward the bottom. No change (false) if already at the bottom. */
-  sendBackward(id: string): boolean {
-    return this.step(id, -1);
+  /**
+   * Move and/or rotate several pieces as ONE change (a selection moving or turning as a unit). Unknown ids are ignored;
+   * rotations are normalised. Never changes stacking order. False when nothing changed.
+   */
+  setPlacements(updates: readonly { id: string; x: number; y: number; rotation?: number }[]): boolean {
+    const by = new Map(updates.map((u) => [u.id, u]));
+    let changed = false;
+    const next = this.list.map((p) => {
+      const u = by.get(p.id);
+      if (!u) return p;
+      const rotation = u.rotation === undefined ? p.rotation : normalise(u.rotation);
+      if (p.x === u.x && p.y === u.y && p.rotation === rotation) return p;
+      changed = true;
+      return { ...p, x: u.x, y: u.y, rotation };
+    });
+    if (changed) this.set(next);
+    return changed;
   }
 
-  private step(id: string, dir: 1 | -1): boolean {
-    const i = this.indexOf(id);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= this.list.length) return false;
-    const next = this.list.slice();
-    [next[i], next[j]] = [next[j], next[i]];
+  /**
+   * Set a new stacking order (bottom first) as ONE change. `ids` must be exactly the current ids, in any order; anything
+   * else is refused (false). False too when the order is unchanged.
+   */
+  reorder(ids: readonly string[]): boolean {
+    if (ids.length !== this.list.length) return false;
+    const byId = new Map(this.list.map((p) => [p.id, p]));
+    const next: Piece[] = [];
+    for (const id of ids) {
+      const p = byId.get(id);
+      if (!p) return false;
+      byId.delete(id);
+      next.push(p);
+    }
+    if (next.every((p, i) => p === this.list[i])) return false;
     this.set(next);
     return true;
   }

@@ -27,10 +27,30 @@ export const announceRotated = (name: string, fromUprightDeg: number): string =>
 
 export const announceMoved = (name: string): string => `${name} moved.`;
 
-export function announceRestacked(dir: 'forward' | 'backward', moved: boolean, index: number, total: number): string {
-  if (!moved) return dir === 'forward' ? 'Already on top.' : 'Already at the bottom.';
-  return `Moved ${dir === 'forward' ? 'forward' : 'backward'}. ${stackPosition(index, total)}`;
+const pieces = (n: number): string => (n === 1 ? '1 piece' : `${n} pieces`);
+
+/**
+ * Overlap-aware restacking. One piece: its new place in the stacking order. A selection of several: a count. When nothing
+ * above (or below) overlaps, nothing moves and the announcement says why.
+ */
+export function announceRestacked(dir: 'forward' | 'backward', moved: boolean, index: number, total: number, count = 1): string {
+  if (!moved) return `Nothing ${dir === 'forward' ? 'above' : 'below'} overlaps ${count === 1 ? 'it' : 'them'}.`;
+  if (count > 1) return `${pieces(count)} moved ${dir}.`;
+  return `Moved ${dir}. ${stackPosition(index, total)}`;
 }
+
+/** A selection of several pieces (or the count after one was added or removed). */
+export const announceSelectionCount = (n: number): string => (n ? `${pieces(n)} selected.` : 'Selection cleared.');
+
+export const announceGroupMoved = (n: number): string => `${pieces(n)} moved.`;
+
+/** A selection rotated as one unit: the total turn since it was selected, in whole tenths of a degree, signed (clockwise positive). */
+export function announceGroupRotated(n: number, deg: number): string {
+  const r = Math.round(deg * 10) / 10 || 0;
+  return `${pieces(n)} rotated to ${r} ${Math.abs(r) === 1 ? 'degree' : 'degrees'}.`;
+}
+
+export const announceGroupDeleted = (n: number): string => `${pieces(n)} deleted.`;
 
 export const announceDeleted = (remaining: number): string => `Piece deleted. ${pieceCount(remaining)}`;
 
