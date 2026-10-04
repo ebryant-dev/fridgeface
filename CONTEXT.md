@@ -53,8 +53,16 @@ Everything a player has built on the board: the full set of pieces with their po
 _Avoid_: drawing, design, scene, project
 
 **Suggestion**:
-One possible way to build a letter, shown for inspiration. There is never a single correct construction of a letter in Fridgeface.
+One possible way to build a letter or a word, shown for inspiration. There is never a single correct construction in Fridgeface.
 _Avoid_: rule, template, correct form, glyph
+
+**Word composition**:
+A whole word built as a single composition rather than as separate letters set side by side. Its pieces may be shared between letters, overlap, or cross letter boundaries, so the word reads as one image. It is the truest form of Fridgeface writing: the whole is more than its letters, like a semagram that is read all at once.
+_Avoid_: spelled word, word layout, string, typesetting
+
+**Ligature**:
+A place within a word composition where a single piece, or a positive/negative combination, serves two or more letters at once.
+_Avoid_: join, connector, kerning
 
 ## Relationships
 
@@ -62,7 +70,9 @@ _Avoid_: rule, template, correct form, glyph
 - A **piece** is a copy of exactly one **shape**. A **board** holds any number of pieces.
 - A **composition** is the set of **pieces** on one **board**, together with their **stacking order**.
 - A **negative shape** shows as a cut only when it sits above a **positive shape** in the **stacking order**.
-- Many different **suggestions** can exist for the same letter.
+- Many different **suggestions** can exist for the same letter or word.
+- A **word composition** is not the sum of letter **suggestions** placed in a row; letters set side by side are only a fallback when no word composition exists.
+- A **ligature** only exists inside a **word composition**.
 
 ## Example dialogue
 
@@ -72,6 +82,8 @@ _Avoid_: rule, template, correct form, glyph
 > **Bry:** "It shows a suggestion. There's no correct 'a' — that's the point."
 
 ## Flagged ambiguities
+
+- "Word" could mean letters arranged in a row or one composed image. Resolved: a **word composition** is always composed as one; letters set in a row are a fallback, never the intended form.
 
 - "Magnet" is used both for the physical product and for an on-screen element. Resolved: **piece** on screen; "magnet" only for the physical product.
 - "Canvas" was used for the play surface. Resolved: **board** in domain language; "canvas" only for implementation.
