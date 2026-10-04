@@ -6,13 +6,52 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: early development (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.1.0 (first release). Built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
-© Edward Hamel. All rights reserved, except the bundled typeface below.
+© Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
 ### Third-party: Jost
 
 The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 500 and 700, latin subset, from the `@fontsource/jost` package), © 2020 The Jost Project Authors, licensed under the SIL Open Font License 1.1: see [LICENSES/Jost-OFL.txt](LICENSES/Jost-OFL.txt). The two woff2 files are inlined into `dist/fridgeface.js` and registered once on the host document under the family name `Fridgeface Jost`.
+
+## Using it
+
+### In a host site (git dependency)
+
+Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
+
+```sh
+npm install "github:ebryant-dev/fridgeface#v0.1.0"
+```
+
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.1.0"`. Then, in client-side code:
+
+```js
+import 'fridgeface'; // registers <fridge-face>
+```
+
+```html
+<fridge-face share-base="https://example.com/play" no-intro style="width:100%;height:80vh"></fridge-face>
+```
+
+- The import touches `customElements` and `HTMLElement`, so run it in the browser only (in Astro: a `<script>` in the page or a client-side island, not frontmatter).
+- `share-base`: the page that share links open. Default: the current URL without its hash.
+- `no-intro`: skip the first-visit "play" animation.
+- Size: the element needs a definite size (see Embedding below). It is `display: block; width: 100%; height: 100%`, so give its parent a height or size it directly.
+- Everything (styles, texture, the Jost subset) ships inside the one JS file. Nothing else to load.
+
+### Standalone site
+
+`npm run build:site` builds `index.html` (the toy full screen) into `site-dist/` (gitignored); `npm run preview:site` serves it. `embed.html` and the dev-only author mode are not part of it. `vercel.json` makes it deploy with no dashboard settings: import the repo in Vercel, leave everything as detected (`npm ci`, `npm run build:site`, output `site-dist`). Hashed files under `/assets/` are cached as immutable; `index.html` is always revalidated.
+
+`index.html` carries `<meta name="robots" content="noindex">` for the staging URL. Remove that meta when a real domain is attached.
+
+## Releasing
+
+1. Make sure `npm test`, `npx tsc --noEmit` and `npm run build` pass.
+2. Bump `version` in `package.json` (`npm version patch|minor` also commits and tags; or edit by hand), commit, merge to `main`.
+3. Tag and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. In each host, change the pin to `github:ebryant-dev/fridgeface#vX.Y.Z`, run `npm install` (updates the lockfile) and redeploy. The standalone site deploys from `main` with the repo itself.
 
 ## Development
 
@@ -23,6 +62,7 @@ npm install     # install dependencies
 npm run dev     # serve the demo page (index.html) with hot reload
 npm test        # run the unit tests (Vitest)
 npm run build   # type-check, then build the ES module to dist/fridgeface.js
+npm run build:site  # build the standalone site to site-dist/
 ```
 
 The build defines the `<fridge-face>` custom element (Shadow DOM, styles inside the shadow root).

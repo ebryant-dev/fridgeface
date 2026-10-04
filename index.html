@@ -4,10 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Fridgeface</title>
-    <link rel="icon" href="data:," />
+    <meta name="description" content="Five shapes. Infinite possibilities. Build words and pictures from the five Fridgeface magnets." />
+    <meta name="theme-color" content="#c5c3c0" />
+    <!-- Staging: no custom domain yet, so keep search engines out. Remove this meta when a real domain is attached. -->
+    <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20500%20500%22%3E%3Crect%20width=%22500%22%20height=%22500%22%20rx=%2290%22%20fill=%22%23c5c3c0%22/%3E%3Cpath%20fill=%22%23231f20%22%20transform=%22translate%28-95%20-20%29%22%20d=%22M365.59%2C234.46c-12.94-80.66-77.65-137.36-144.51-126.64-66.88%2C10.75-110.58%2C84.84-97.62%2C165.53%2C12.95%2C80.67%2C77.68%2C137.38%2C144.52%2C126.63%2C66.87-10.74%2C110.57-84.82%2C97.6-165.51h0Z%22/%3E%3Cpolygon%20fill=%22%23231f20%22%20transform=%22translate%28120%200%29%22%20points=%22243.55%20470.87%20192.47%20463.35%20256.44%2029.13%20307.53%2036.66%20243.55%20470.87%22/%3E%3Cpolygon%20fill=%22%23fff%22%20transform=%22translate%2840%20250%29%20scale%28.55%29%22%20points=%2238.11%20273.14%20336.03%20398.98%20461.89%20101.02%2038.11%20273.14%22/%3E%3C/svg%3E" />
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; }
       fridge-face { position: fixed; inset: 0; }
+      /* Credit: top-left corner, clear of the toy's controls (bottom) and its centred selection toolbar (top). Tiny, quiet, clear of the notch inset. */
+      .credit {
+        position: fixed; z-index: 2;
+        left: max(8px, env(safe-area-inset-left)); top: max(6px, env(safe-area-inset-top));
+        font: 500 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: rgba(0, 0, 0, 0.55); text-decoration: none; padding: 4px 2px;
+      }
+      /* On narrow portrait screens the selection toolbar spans most of the top edge, so the credit drops just below it. */
+      @media (max-width: 520px) { .credit { top: calc(env(safe-area-inset-top) + 68px); } }
+      .credit:hover, .credit:focus-visible { color: #000; text-decoration: underline; }
     </style>
   </head>
   <body>
@@ -15,6 +29,7 @@
       <h1 style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)">Fridgeface</h1>
       <fridge-face></fridge-face>
     </main>
+    <a class="credit" href="https://www.edwardbryanthamel.com" target="_blank" rel="noopener">by Edward Hamel</a>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
