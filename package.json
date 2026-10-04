@@ -1,6 +1,6 @@
 {
   "name": "fridgeface",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "UNLICENSED",
   "description": "Fridgeface: an interactive five-shape type toy, shipped as the <fridge-face> web component.",
   "type": "module",

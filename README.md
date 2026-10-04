@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.2.0"
+npm install "github:ebryant-dev/fridgeface#v0.3.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.2.0"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.3.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>

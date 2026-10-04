@@ -41,9 +41,11 @@ async function addWord(page: Page): Promise<number> {
 }
 
 async function openPanel(page: Page, isMobile: boolean) {
-  const b = page.locator('fridge-face [data-view=suggest]');
-  if (isMobile) await b.tap();
-  else await b.click();
+  if (isMobile) {
+    // On phones the Letters button lives in the menu.
+    await page.locator('fridge-face [data-view=menu]').tap();
+    await page.locator('fridge-face [data-menu=letters]').tap();
+  } else await page.locator('fridge-face [data-view=suggest]').click();
   await expect(page.locator('fridge-face .sugg')).toBeVisible();
 }
 
@@ -61,7 +63,7 @@ test('suggestions panel: Letters always, Words only when a word composition exis
   });
   // The Words section exists only while at least one word composition does.
   await expect(page.locator('fridge-face .sugg [data-sec=words]')).toBeVisible({ visible: hasWords });
-  await page.locator('fridge-face [data-view=suggest]').evaluate((b: HTMLElement) => b.click()); // close (the sheet covers the dock on phones)
+  await page.locator('fridge-face [data-sugg=close]').evaluate((b: HTMLElement) => b.click()); // close (the sheet covers the dock on phones)
   await expect(page.locator('fridge-face .sugg')).toBeHidden();
 
   const n = await addWord(page);

@@ -218,6 +218,21 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
 [data-compact] .actions { top: calc(8px + var(--sat)); }
 [data-compact] .msg { font-size: 12px; }
+/* The share, export, letters and help buttons live in the menu on phones; the menu button exists only there. */
+[data-compact] .share, [data-compact] [data-view=suggest], [data-compact] [data-view=help] { display: none; }
+.root:not([data-compact]) [data-view=menu], .root:not([data-compact]) .menu { display: none; }
+.menu { position: absolute; z-index: 6; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 3px; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
+.menu[hidden] { display: none; }
+.menu button.b { justify-content: flex-start; gap: 12px; padding: 0 16px 0 10px; white-space: nowrap; text-align: left; }
+.menu button.b .ic { display: block; }
+.menu button.b[aria-disabled="true"] { color: #767676; border-color: #767676; cursor: default; background: var(--paper); }
+.menu button.b[aria-disabled="true"]:hover { background: var(--paper); }
+.menu .sub { display: flex; gap: 3px; padding-left: 34px; }
+.menu .sub[hidden] { display: none; }
+.menu .sub button.b { flex: 1 1 0; justify-content: center; padding: 0 10px; }
+/* Short (landscape) screens: two columns, so the menu stays low enough not to reach the piece action bar. */
+.root[data-short] .menu:not([hidden]) { display: grid; grid-template-columns: 1fr 1fr; width: min(520px, calc(100% - 16px)); }
+.root[data-short] .menu .sub { grid-column: 1 / -1; order: 5; padding-left: 0; }
 /* Bottom sheet: full width, over the dock, no taller than most of the board. */
 [data-compact] .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
 /* Short (phones in landscape): a thinner tray band. */
@@ -310,6 +325,11 @@ function btn(attrs: string, label: string, ic?: string): string {
   return `<button type="button" class="b${ic ? ' i' : ''}" ${attrs}>${ic ? icon(ic) : ''}<span class="tx">${label}</span></button>`;
 }
 
+/** One item of the phone menu (a button with role=menuitem; arrow keys move between them, so none is in the tab order). */
+function menuItem(id: string, label: string, ic: string, attrs: string): string {
+  return `<button type="button" class="b mi" role="menuitem" tabindex="-1" data-menu="${id}" ${attrs}>${ic ? icon(ic) : ''}<span class="tx">${label}</span></button>`;
+}
+
 /** The geometry element with an `{a}` placeholder for attributes. */
 function geometryTemplate(s: Shape): string {
   return s.geometry.kind === 'polygon' ? `<polygon points="${s.geometry.points}" {a}/>` : `<path d="${s.geometry.d}" {a}/>`;
@@ -366,6 +386,8 @@ export class FridgeFace extends HTMLElement {
   private suggEl!: HTMLElement;
   private suggBtn!: HTMLButtonElement;
   private dockEl!: HTMLElement;
+  private menuEl!: HTMLElement;
+  private menuBtn!: HTMLButtonElement;
   private suggOpener: HTMLElement | SVGElement | null = null;
   private suggChar: string | null = null;
   private unsubSuggestions: (() => void) | null = null;
@@ -493,7 +515,18 @@ export class FridgeFace extends HTMLElement {
             ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
             ${btn('data-view="suggest" aria-label="Letter suggestions" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="L" hidden', 'Letters', 'letters')}
             ${btn('data-view="help" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
+            ${btn('data-view="menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="ff-menu"', 'Menu', 'menu')}
           </div>
+        </div>
+        <div class="menu panel" id="ff-menu" role="menu" aria-label="Menu" hidden>
+          ${menuItem('share', 'Copy share link', 'share', 'aria-keyshortcuts="C"').replace('tabindex="-1"', 'tabindex="0"')}
+          ${menuItem('download', 'Download', 'export', 'aria-haspopup="true" aria-expanded="false" aria-keyshortcuts="E"')}
+          <div class="sub" role="group" aria-label="Download as" hidden>
+            ${menuItem('png', 'PNG', '', 'aria-label="Download PNG"')}
+            ${menuItem('svg', 'SVG', '', 'aria-label="Download SVG"')}
+          </div>
+          ${menuItem('letters', 'Letters', 'letters', 'aria-haspopup="dialog" aria-keyshortcuts="L" hidden')}
+          ${menuItem('help', 'Keyboard shortcuts', 'help', 'aria-haspopup="dialog" aria-keyshortcuts="?"')}
         </div>
         <div class="sugg" role="dialog" aria-labelledby="ff-sugg-title" hidden>
           <div class="sghead"><h2 id="ff-sugg-title">Suggestions</h2>${btn('data-sugg="close" aria-label="Close suggestions"', 'Close', 'close')}</div>
@@ -546,6 +579,8 @@ export class FridgeFace extends HTMLElement {
     this.suggEl = wrap.querySelector('.sugg')!;
     this.suggBtn = wrap.querySelector('[data-view=suggest]')!;
     this.dockEl = wrap.querySelector('.dock')!;
+    this.menuEl = wrap.querySelector('.menu')!;
+    this.menuBtn = wrap.querySelector('[data-view=menu]')!;
     this.trayEl.style.setProperty('--tex', `url("${tex.href}")`);
 
     for (const s of SHAPES) {
@@ -594,7 +629,9 @@ export class FridgeFace extends HTMLElement {
       else if (v === 'fit') this.frameAll();
       else if (v === 'help') this.openHelp(e.target as HTMLElement);
       else if (v === 'suggest') this.toggleSuggestions(e.target as HTMLElement);
+      else if (v === 'menu') { if (this.menuOpen) this.closeMenu(true); else this.openMenu(); }
     });
+    this.menuEl.addEventListener('click', (e) => this.onMenuClick(e));
     this.suggEl.addEventListener('click', (e) => this.onSuggestionsClick(e));
     new ResizeObserver(() => this.rootEl.style.setProperty('--dock-h', `${Math.round(this.dockEl.getBoundingClientRect().height)}px`)).observe(this.dockEl);
     this.helpEl.addEventListener('click', (e) => {
@@ -679,6 +716,7 @@ export class FridgeFace extends HTMLElement {
     window.removeEventListener('orientationchange', this.onWindowResize);
     this.unsubSuggestions?.();
     this.unsubSuggestions = null;
+    this.closeMenu(false);
     this.finishIntro();
     this.flushSave();
   }
@@ -934,7 +972,8 @@ export class FridgeFace extends HTMLElement {
 
   private hideLinkBox() {
     this.linkboxEl.hidden = true;
-    this.shareEl.querySelector<HTMLButtonElement>('[data-share=copy]')!.focus();
+    // On phones the share button lives in the menu: focus goes back to the menu button.
+    (this.isCompact ? this.menuBtn : this.shareEl.querySelector<HTMLButtonElement>('[data-share=copy]')!).focus();
   }
 
   private onShareClick(e: MouseEvent) {
@@ -1041,6 +1080,130 @@ export class FridgeFace extends HTMLElement {
     const empty = this.composition.pieces.length === 0;
     for (const sel of ['[data-share=copy]', '[data-share=export]']) this.shareEl.querySelector<HTMLButtonElement>(sel)!.disabled = empty;
     if (empty) this.showExportMenu(false);
+    if (this.menuEl) {
+      for (const k of ['share', 'download']) this.menuEl.querySelector(`[data-menu=${k}]`)!.setAttribute('aria-disabled', String(empty));
+      if (empty) this.setDownloadOpen(false);
+    }
+  }
+
+  // ---- phone menu (compact layout only) -----------------------------------------------
+
+  private get isCompact(): boolean {
+    return !!this.rootEl && this.rootEl.hasAttribute('data-compact');
+  }
+
+  private get menuOpen(): boolean {
+    return !!this.menuEl && !this.menuEl.hidden;
+  }
+
+  private readonly onDocPointerDown = (e: Event) => {
+    const path = e.composedPath();
+    if (path.includes(this.menuEl) || path.includes(this.menuBtn)) return; // the button's own click toggles
+    this.closeMenu(false); // an outside tap: it still does whatever it was aimed at
+  };
+
+  /** Open the menu and focus its first item (or, with `download`, the PNG choice). Compact layout only. */
+  private openMenu(download = false) {
+    if (!this.isCompact || this.menuOpen) return;
+    this.showExportMenu(false);
+    this.menuEl.hidden = false;
+    this.menuBtn.setAttribute('aria-expanded', 'true');
+    this.setDownloadOpen(download && this.composition.pieces.length > 0);
+    document.addEventListener('pointerdown', this.onDocPointerDown, true);
+    this.positionMenu();
+    const first = download && !this.menuEl.querySelector<HTMLElement>('.sub')!.hasAttribute('hidden') ? '[data-menu=png]' : '[data-menu=share]';
+    this.menuEl.querySelector<HTMLElement>(first)!.focus();
+  }
+
+  private closeMenu(refocus: boolean) {
+    if (!this.menuOpen) return;
+    this.menuEl.hidden = true;
+    this.menuBtn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+    if (refocus) this.menuBtn.focus();
+  }
+
+  private setDownloadOpen(on: boolean) {
+    this.menuEl.querySelector<HTMLElement>('.sub')!.hidden = !on;
+    this.menuEl.querySelector('[data-menu=download]')!.setAttribute('aria-expanded', String(on));
+    if (this.menuOpen) {
+      this.positionMenu();
+      if (on) this.menuEl.scrollTop = this.menuEl.scrollHeight; // a short screen may clip the choices: show them
+    }
+  }
+
+  /** Anchor the menu to its button, right edges aligned, above it if it fits (else below), always inside the element. */
+  private positionMenu() {
+    const m = this.menuEl;
+    const host = this.getBoundingClientRect();
+    const b = this.menuBtn.getBoundingClientRect();
+    const gap = 6;
+    const edge = 8;
+    const px = (v: string) => parseFloat(v) || 0;
+    const cs = getComputedStyle(this.rootEl);
+    let top0 = edge + px(cs.getPropertyValue('--sat'));
+    if (!this.actions.hidden) top0 = Math.max(top0, this.actions.getBoundingClientRect().bottom - host.top + gap); // never over the piece action bar
+    m.style.maxHeight = '';
+    m.style.top = '0px';
+    m.style.left = '0px';
+    const mw = m.offsetWidth;
+    const mh = m.scrollHeight;
+    const above = b.top - host.top - gap - top0;
+    const below = host.bottom - b.bottom - gap - edge;
+    const up = mh <= above || above >= below;
+    const room = Math.max(0, up ? above : below);
+    const h = Math.min(mh, room);
+    m.style.maxHeight = `${h}px`;
+    const minLeft = edge + px(cs.getPropertyValue('--sal'));
+    const maxLeft = host.width - mw - edge - px(cs.getPropertyValue('--sar'));
+    m.style.left = `${Math.round(Math.max(minLeft, Math.min(b.right - host.left - mw, maxLeft)))}px`;
+    m.style.top = `${Math.round(up ? b.top - host.top - gap - h : b.bottom - host.top + gap)}px`;
+  }
+
+  private onMenuClick(e: MouseEvent) {
+    const it = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-menu]');
+    if (!it) return;
+    const id = it.dataset.menu;
+    if (it.getAttribute('aria-disabled') === 'true') return; // disabled items stay focusable (menu convention) but do nothing
+    if (id === 'download') {
+      this.setDownloadOpen(this.menuEl.querySelector<HTMLElement>('.sub')!.hasAttribute('hidden'));
+    } else if (id === 'share') {
+      this.closeMenu(true);
+      this.copyShareLink();
+    } else if (id === 'png' || id === 'svg') {
+      this.closeMenu(true);
+      void this.download(id);
+    } else if (id === 'letters') {
+      this.closeMenu(false);
+      this.openSuggestions(this.menuBtn);
+    } else if (id === 'help') {
+      this.closeMenu(false);
+      this.openHelp(this.menuBtn);
+    }
+  }
+
+  /** Menu keys while it is open. Returns true when the key is fully handled. */
+  private onMenuKey(e: KeyboardEvent): boolean {
+    if (e.key === 'Escape') {
+      this.closeMenu(true);
+      e.preventDefault();
+      return true;
+    }
+    if (e.key === 'Tab') {
+      this.closeMenu(true); // focus is back on the menu button; the browser's Tab continues from there
+      return true;
+    }
+    const items = [...this.menuEl.querySelectorAll<HTMLElement>('[role=menuitem]')].filter((i) => i.offsetParent !== null);
+    const i = items.indexOf(this.shadowRoot!.activeElement as HTMLElement);
+    const to = e.key === 'ArrowDown' ? (i + 1) % items.length : e.key === 'ArrowUp' ? (i <= 0 ? items.length - 1 : i - 1) : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : -1;
+    if (to >= 0) {
+      items[to]?.focus();
+      e.preventDefault();
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === ' ' || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key) || e.metaKey || e.ctrlKey || e.altKey) return false;
+    this.closeMenu(true); // any other key (C, E, L, ?, a number...) closes the menu, then does its usual thing
+    return false;
   }
 
   // ---- geometry helpers -------------------------------------------------
@@ -1231,6 +1394,10 @@ export class FridgeFace extends HTMLElement {
     for (const el of [this.rootEl, this.helpEl]) {
       el.toggleAttribute('data-compact', compact);
       el.toggleAttribute('data-short', short);
+    }
+    if (this.menuEl) {
+      if (!compact) this.closeMenu(false);
+      else if (this.menuOpen) this.positionMenu();
     }
   }
 
@@ -1668,6 +1835,7 @@ export class FridgeFace extends HTMLElement {
       this.onHelpKey(e);
       return;
     }
+    if (this.menuOpen && this.onMenuKey(e)) return;
     const origin = e.composedPath()[0] as HTMLElement | undefined;
     const inField = origin instanceof HTMLInputElement || origin instanceof HTMLTextAreaElement;
     if (inField) {
@@ -1724,7 +1892,10 @@ export class FridgeFace extends HTMLElement {
       if (letter === 'c' || letter === 'e') {
         if (!this.composition.pieces.length) this.say('Nothing to share or export yet.');
         else if (letter === 'c') this.copyShareLink();
-        else {
+        else if (this.isCompact) {
+          this.closeSuggestions(); // the sheet would cover the menu's button
+          this.openMenu(true); // the export choices live in the menu on phones
+        } else {
           this.showExportMenu(true);
           this.shareEl.querySelector<HTMLButtonElement>('[data-export=png]')!.focus();
         }
@@ -1788,6 +1959,8 @@ export class FridgeFace extends HTMLElement {
     if (!this.suggEl) return;
     const has = suggestionStore.size > 0;
     this.suggBtn.hidden = !has;
+    this.menuEl.querySelector<HTMLElement>('[data-menu=letters]')!.hidden = !has;
+    if (this.menuOpen) this.positionMenu();
     this.helpEl.classList.toggle('has-sugg', has);
     if (!has && this.suggOpen) this.closeSuggestions();
     else if (this.suggOpen) this.renderSuggestions();
