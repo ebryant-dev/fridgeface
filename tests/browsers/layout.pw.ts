@@ -107,6 +107,17 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
     }
   }
 
+  // 3b. Phones: docks at the TOP, action bar at the BOTTOM just above the tray. Desktop: the reverse (unchanged).
+  const dockTop = Math.min(...after.dock.map((d) => d.r.y));
+  if (isMobile && after.actions) {
+    expect.soft(dockTop, 'phone: docks sit at the top of the board').toBeLessThan(20);
+    expect.soft(dockTop, "phone: docks' top < action bar's top").toBeLessThan(after.actions.y);
+    expect.soft(after.actions.y + after.actions.height, "phone: action bar's bottom <= tray's top").toBeLessThanOrEqual(after.tray.y + 0.5);
+  } else if (after.actions) {
+    expect.soft(after.actions.y, 'desktop: action bar at the top').toBeLessThan(20);
+    expect.soft(dockTop, 'desktop: docks at the bottom, above the tray').toBeGreaterThan(after.actions.y + after.actions.height);
+  }
+
   // 4. No page scroll.
   expect.soft(after.scroll.sh, 'page height fits').toBeLessThanOrEqual(after.scroll.ch + 1);
   expect.soft(after.scroll.sw, 'page width fits').toBeLessThanOrEqual(after.scroll.cw + 1);

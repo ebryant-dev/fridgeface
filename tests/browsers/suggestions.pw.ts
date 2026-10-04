@@ -95,7 +95,10 @@ test('suggestions panel: Letters always, Words only when a word composition exis
     const gs = [...sr.querySelectorAll('[data-pieces] > [data-piece-id]')].slice(-count).map((g) => g.querySelector('.bd')!.getBoundingClientRect());
     const l = Math.min(...gs.map((r) => r.left)), r = Math.max(...gs.map((r) => r.right)), t = Math.min(...gs.map((r) => r.top)), b = Math.max(...gs.map((r) => r.bottom));
     const board = sr.querySelector('.board')!.getBoundingClientRect();
-    return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (board.top + board.height / 2)) };
+    // Phones: the docks cover the top of the board, so "centred" means centred in the visible part (below the docks, 8px gap).
+    const compact = sr.querySelector('.root')!.hasAttribute('data-compact');
+    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
+    return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (dockBottom + (board.bottom - dockBottom) / 2)) };
   }, n);
   expect(centred.dx).toBeLessThan(3);
   expect(centred.dy).toBeLessThan(3);
@@ -171,7 +174,10 @@ test('intro: first visit only, centred, at most 1.6 s, interruptible, off with r
     const gs = [...sr.querySelectorAll('[data-pieces] .bd')].map((g) => g.getBoundingClientRect());
     const l = Math.min(...gs.map((r) => r.left)), r = Math.max(...gs.map((r) => r.right)), t = Math.min(...gs.map((r) => r.top)), b = Math.max(...gs.map((r) => r.bottom));
     const board = sr.querySelector('.board')!.getBoundingClientRect();
-    return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (board.top + board.height / 2)) };
+    // Phones: the docks cover the top of the board, so "centred" means centred in the visible part (below the docks, 8px gap).
+    const compact = sr.querySelector('.root')!.hasAttribute('data-compact');
+    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
+    return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (dockBottom + (board.bottom - dockBottom) / 2)) };
   });
   expect(c.dx, 'centred horizontally').toBeLessThan(3);
   expect(c.dy, 'centred vertically').toBeLessThan(3);

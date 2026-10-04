@@ -205,7 +205,8 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 /* Compact layout (phones, either orientation): the element is narrow OR short (data-compact, set from JS on .root
    and .help). Icon controls, a small tray. */
 .root[data-compact] { --k: 0.17; --tk: 0.17; }
-[data-compact] .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab)) calc(10px + var(--sal)); }
+/* --ff-bottom-reserve: optional extra room under the tray shapes that a host can set (the standalone page puts its credit line there on phones). */
+[data-compact] .tray { gap: 10px 14px; padding: 12px calc(10px + var(--sar)) calc(10px + var(--sab) + var(--ff-bottom-reserve, 0px)) calc(10px + var(--sal)); }
 [data-compact] .tray .grp { display: contents; }
 [data-compact] .tray .shapes { display: contents; }
 [data-compact] .tray .bracket { display: none; }
@@ -215,8 +216,13 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] button.b.i .ic { display: block; }
 [data-compact] button.b.i .tx { display: none; }
 [data-compact] .panel { gap: 3px; padding: 3px; }
-[data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); bottom: 8px; gap: 6px; }
-[data-compact] .actions { top: calc(8px + var(--sat)); }
+/* Phones: the docks sit at the TOP of the board, and the piece action bar at the BOTTOM, just above the tray. The notice and
+   the share fallback field wrap onto a row below the docks (order), so nothing shares a row with the action bar. */
+[data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); top: calc(8px + var(--sat)); bottom: auto; align-items: flex-start; gap: 6px; }
+[data-compact] .dock > .notice, [data-compact] .dock > .linkbox { order: 2; }
+[data-compact] .actions { top: auto; bottom: 8px; }
+/* The letters sheet covers the bottom of the board: the action bar hides while it is open (the selection stays). */
+.root[data-compact][data-sugg] .actions, .root[data-compact][data-sugg] .dock > .notice { visibility: hidden; } /* (the notice is also spoken by the live region) */
 [data-compact] .msg { font-size: 12px; }
 /* The share, export, letters and help buttons live in the menu on phones; the menu button exists only there. */
 [data-compact] .share, [data-compact] [data-view=suggest], [data-compact] [data-view=help] { display: none; }
@@ -230,13 +236,13 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .menu .sub { display: flex; gap: 3px; padding-left: 34px; }
 .menu .sub[hidden] { display: none; }
 .menu .sub button.b { flex: 1 1 0; justify-content: center; padding: 0 10px; }
-/* Short (landscape) screens: two columns, so the menu stays low enough not to reach the piece action bar. */
+/* Short (landscape) screens: two columns, so the menu stays short enough to clear the piece action bar below it. */
 .root[data-short] .menu:not([hidden]) { display: grid; grid-template-columns: 1fr 1fr; width: min(520px, calc(100% - 16px)); }
 .root[data-short] .menu .sub { grid-column: 1 / -1; order: 5; padding-left: 0; }
 /* Bottom sheet: full width, over the dock, no taller than most of the board. */
 [data-compact] .sugg { --sheet: 1; left: 0; right: 0; bottom: 0; width: auto; max-height: 64%; border-width: 2px 0 0; box-shadow: none; }
 /* Short (phones in landscape): a thinner tray band. */
-[data-short] .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab)); }
+[data-short] .tray { padding-top: 8px; padding-bottom: calc(6px + var(--sab) + var(--ff-bottom-reserve, 0px)); }
 
 /* ---- keyboard shortcuts dialog ---- */
 .help {
@@ -1132,7 +1138,7 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** Anchor the menu to its button, right edges aligned, above it if it fits (else below), always inside the element. */
+  /** Anchor the menu to its button (the docks are at the top on phones): right edges aligned, opening DOWNWARD, always inside the board and clear of the piece action bar. */
   private positionMenu() {
     const m = this.menuEl;
     const host = this.getBoundingClientRect();
@@ -1141,23 +1147,20 @@ export class FridgeFace extends HTMLElement {
     const edge = 8;
     const px = (v: string) => parseFloat(v) || 0;
     const cs = getComputedStyle(this.rootEl);
-    let top0 = edge + px(cs.getPropertyValue('--sat'));
-    if (!this.actions.hidden) top0 = Math.max(top0, this.actions.getBoundingClientRect().bottom - host.top + gap); // never over the piece action bar
+    let bottom = this.boardEl.getBoundingClientRect().bottom - edge;
+    if (!this.actions.hidden && getComputedStyle(this.actions).visibility !== 'hidden') bottom = Math.min(bottom, this.actions.getBoundingClientRect().top - gap); // never over the piece action bar
     m.style.maxHeight = '';
     m.style.top = '0px';
     m.style.left = '0px';
     const mw = m.offsetWidth;
     const mh = m.scrollHeight;
-    const above = b.top - host.top - gap - top0;
-    const below = host.bottom - b.bottom - gap - edge;
-    const up = mh <= above || above >= below;
-    const room = Math.max(0, up ? above : below);
-    const h = Math.min(mh, room);
+    const top = b.bottom + gap;
+    const h = Math.min(mh, Math.max(0, bottom - top));
     m.style.maxHeight = `${h}px`;
     const minLeft = edge + px(cs.getPropertyValue('--sal'));
     const maxLeft = host.width - mw - edge - px(cs.getPropertyValue('--sar'));
     m.style.left = `${Math.round(Math.max(minLeft, Math.min(b.right - host.left - mw, maxLeft)))}px`;
-    m.style.top = `${Math.round(up ? b.top - host.top - gap - h : b.bottom - host.top + gap)}px`;
+    m.style.top = `${Math.round(top - host.top)}px`;
   }
 
   private onMenuClick(e: MouseEvent) {
@@ -1239,6 +1242,18 @@ export class FridgeFace extends HTMLElement {
     return screenToBoard(this.view, this.clientToScreen(clientX, clientY));
   }
 
+  /**
+   * Compact layout: the docks sit over the top of the board, so the part of the board that is actually visible starts below
+   * them. Returns that offset in screen (viewBox) units; 0 on desktop, where the docks are at the bottom and the board is whole.
+   */
+  private topInset(): number {
+    if (!this.isCompact) return 0;
+    const board = this.boardEl.getBoundingClientRect();
+    let bottom = 0;
+    for (const p of this.dockEl.querySelectorAll<HTMLElement>(':scope > .history, :scope > .view')) bottom = Math.max(bottom, p.getBoundingClientRect().bottom);
+    return bottom > board.top ? (bottom - board.top + 8) / this.k : 0;
+  }
+
   private viewport(): { width: number; height: number } {
     if (this.vpCache) return this.vpCache;
     const r = this.boardEl.getBoundingClientRect();
@@ -1301,7 +1316,8 @@ export class FridgeFace extends HTMLElement {
   /** A view with the board origin (x = 0, the baseline y = 0) comfortably in sight, left of centre and below the middle. */
   private originView(): Camera {
     const vp = this.viewport();
-    return { x: vp.width * 0.3, y: vp.height * 0.62, zoom: this.comfortZoom() };
+    const t = Math.min(this.topInset(), vp.height / 2);
+    return { x: vp.width * 0.3, y: t + (vp.height - t) * 0.62, zoom: this.comfortZoom() };
   }
 
   private zoomBy(factor: number) {
@@ -1477,7 +1493,11 @@ export class FridgeFace extends HTMLElement {
       this.setView(this.defaultView());
       return;
     }
-    this.setView(fitTo(b, this.viewport(), FIT_MARGIN / this.k, FIT_MAX_COMFORT * this.comfortZoom()));
+    // Fit into the visible board (below the top docks on phones), not the whole board.
+    const vp = this.viewport();
+    const t = Math.min(this.topInset(), vp.height / 2);
+    const c = fitTo(b, { width: vp.width, height: vp.height - t }, FIT_MARGIN / this.k, FIT_MAX_COMFORT * this.comfortZoom());
+    this.setView({ ...c, y: c.y + t });
   }
 
   private setSpace(on: boolean) {
@@ -1976,6 +1996,8 @@ export class FridgeFace extends HTMLElement {
     this.suggOpener = opener?.closest?.('button') ?? (this.shadowRoot!.activeElement as HTMLElement | null) ?? this.surface;
     this.showExportMenu(false);
     this.suggEl.hidden = false;
+    this.rootEl.setAttribute('data-sugg', '');
+    if (this.isCompact && !this.linkboxEl.hidden) this.hideLinkBox(); // the sheet covers the share fallback field's row on phones
     this.suggBtn.setAttribute('aria-expanded', 'true');
     this.renderSuggestions();
     this.suggEl.querySelector<HTMLElement>('.sgchars button[aria-pressed=true], .sgwords button')?.focus();
@@ -1985,6 +2007,7 @@ export class FridgeFace extends HTMLElement {
     if (!this.suggOpen) return;
     const hadFocus = this.suggEl.contains(this.shadowRoot!.activeElement);
     this.suggEl.hidden = true;
+    this.rootEl.removeAttribute('data-sugg');
     this.suggBtn.setAttribute('aria-expanded', 'false');
     const o = this.suggOpener;
     this.suggOpener = null;
@@ -2111,7 +2134,8 @@ export class FridgeFace extends HTMLElement {
   /** Add a letter's or a word's pieces on top of whatever is on the board, centred in the current view: ONE undo step. */
   private placeSuggestion(s: AnySuggestion) {
     const r = this.boardEl.getBoundingClientRect();
-    const c = this.toBoard(r.left + r.width / 2, r.top + r.height / 2);
+    const t = Math.min(this.topInset(), r.height / this.k / 2) * this.k; // phones: the docks cover the top; centre in the visible part
+    const c = this.toBoard(r.left + r.width / 2, r.top + t + (r.height - t) / 2);
     const items = centreOn(s.pieces, (id) => SHAPE_BY_ID.get(id), c).map((p) => ({ ...p, x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10 }));
     this.selectedId = null;
     const added = this.composition.addPieces(items);

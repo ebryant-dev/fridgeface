@@ -125,6 +125,11 @@ test('phone: the menu button replaces share, export, letters and help; the menu 
   expect(open1.pieces).toBe(before.pieces);
   await expect(el(page, '.actions')).toBeVisible();
   await expectNoOverlaps(page);
+  const mr = open1.boxes.find((b) => b.name === 'menu')!.r;
+  const br = await menuBtn(page).boundingBox();
+  expect(mr.y, 'the menu opens downward from the button').toBeGreaterThanOrEqual(br!.y + br!.height - 0.5);
+  const ar = open1.boxes.find((b) => b.name === 'actions')!.r;
+  expect(mr.y + mr.height, 'the menu stays above the action bar').toBeLessThanOrEqual(ar.y + 0.5);
   const lettersShown = await item(page, 'letters').isVisible();
   if (lettersShown) await expect(item(page, 'letters')).toContainText('Letters');
   await expect(item(page, 'share')).toContainText('Copy share link');

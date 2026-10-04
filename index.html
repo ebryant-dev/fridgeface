@@ -12,15 +12,19 @@
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; }
       fridge-face { position: fixed; inset: 0; }
-      /* Credit: top-left corner, clear of the toy's controls (bottom) and its centred selection toolbar (top). Tiny, quiet, clear of the notch inset. */
+      /* Credit: top-left corner on desktop, clear of the toy's controls (bottom) and its centred selection toolbar (top). Tiny, quiet, clear of the notch inset. */
       .credit {
         position: fixed; z-index: 2;
         left: max(8px, env(safe-area-inset-left)); top: max(6px, env(safe-area-inset-top));
         font: 500 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
         color: rgba(0, 0, 0, 0.55); text-decoration: none; padding: 4px 2px;
       }
-      /* On narrow portrait screens the selection toolbar spans most of the top edge, so the credit drops just below it. */
-      @media (max-width: 520px) { .credit { top: calc(env(safe-area-inset-top) + 68px); } }
+      /* Phones (the toy's compact layout: at most 600px wide or 520px tall): the toy's docks are at the top and its piece action bar
+         just above the tray, so the credit moves to a reserved strip at the very bottom, under the tray shapes. */
+      @media (max-width: 600px), (max-height: 520px) {
+        fridge-face { --ff-bottom-reserve: 16px; }
+        .credit { top: auto; bottom: calc(env(safe-area-inset-bottom) + 3px); left: max(10px, env(safe-area-inset-left)); }
+      }
       .credit:hover, .credit:focus-visible { color: #000; text-decoration: underline; }
     </style>
   </head>
