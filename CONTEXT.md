@@ -48,6 +48,10 @@ _Avoid_: palette, toolbar, inventory
 Which piece sits on top where pieces overlap. Because negative shapes only cut when they sit above positive ones, stacking order is part of how a letter is built.
 _Avoid_: z-index, layer order
 
+**Selection**:
+The pieces currently chosen to act on together: move, rotate, restack or delete. A selection is temporary; it is not saved and does not survive deselecting. A selection of several pieces moves and rotates as one rigid unit around its common centre.
+_Avoid_: group (there are no lasting groups), layer, set
+
 **Composition**:
 Everything a player has built on the board: the full set of pieces with their positions, rotations and stacking order. This is what gets shared, exported and saved.
 _Avoid_: drawing, design, scene, project
@@ -70,6 +74,7 @@ _Avoid_: join, connector, kerning
 - A **piece** is a copy of exactly one **shape**. A **board** holds any number of pieces.
 - A **composition** is the set of **pieces** on one **board**, together with their **stacking order**.
 - A **negative shape** shows as a cut only when it sits above a **positive shape** in the **stacking order**.
+- Bringing a **selection** forward or back moves it past the next **piece** it actually overlaps, keeping the selection's own internal **stacking order**.
 - Many different **suggestions** can exist for the same letter or word.
 - A **word composition** is not the sum of letter **suggestions** placed in a row; letters set side by side are only a fallback when no word composition exists.
 - A **ligature** only exists inside a **word composition**.
