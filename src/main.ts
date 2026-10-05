@@ -16,7 +16,8 @@ import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } fro
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideSpot, chooseWord, coverage,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
+  findWordC, placeWordC, type WordC,
   currentSection, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextOutline,
   observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type CalloutSide, type GuideState,
   type GuideWorld, type Rect,
@@ -2952,10 +2953,54 @@ export class FridgeFace extends HTMLElement {
     return this.toBoard(r.left + r.width / 2, r.top + t + (r.height - t) / 2);
   }
 
-  /** The c's outlines, centred in the visible board. */
+  /**
+   * The c the guide builds (v1.2.3): the one INSIDE `word-create-1` (`findWordC`), so it stays in place as the start of
+   * "create" at Guide me. Null without the word (or without a c in it): the guide then builds `lower-c-1` as before.
+   */
+  private guideWordC(): { pieces: readonly Outline[]; c: WordC } | null {
+    const w = this.guideWordSuggestion();
+    if (!w) return null;
+    const c = findWordC(w.pieces, (id) => SHAPE_BY_ID.get(id));
+    return c ? { pieces: w.pieces, c } : null;
+  }
+
+  /**
+   * The c's outlines on a blank board. From the word: placed so the WHOLE word, aligned to the c, is centred in the visible
+   * board (the c at its left), then the view pans to centre the c (steps 1 to 3 frame the c, as before; Guide me reframes
+   * to the word). Without the word: `lower-c-1` centred in the visible board.
+   */
   private letterOutlines(): Outline[] {
-    const c = this.guideLetter();
-    return c ? outlinesAt(c.pieces, (id) => SHAPE_BY_ID.get(id), this.visibleCentre()) : [];
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
+    const wc = this.guideWordC();
+    if (wc) {
+      const { c } = placeWordC(wc.pieces, wc.c, shape, this.visibleCentre());
+      const b = rotatedBounds(c, shape);
+      if (b) {
+        const v = this.visibleView(), z = this.view.zoom;
+        this.setView({ x: v.x + v.w / 2 - (b.x + b.w / 2) * z, y: v.y + v.h / 2 - (b.y + b.h / 2) * z, zoom: z });
+      }
+      return c;
+    }
+    const l = this.guideLetter();
+    return l ? outlinesAt(l.pieces, shape, this.visibleCentre()) : [];
+  }
+
+  /**
+   * Keep my pieces (and an untouched c relocated beside their pieces): the c's outlines in EMPTY board beside their work.
+   * From the word: the spot is chosen for the WHOLE word's bounds (`besideSpot`), so the word's outlines will never overlap
+   * their pieces, and the c is the word's c there; the view frames their work and the c. Otherwise `lower-c-1` as before.
+   */
+  private cBeside(): Outline[] {
+    const wc = this.guideWordC();
+    if (!wc) return this.outlinesBeside(this.guideLetter()!.pieces);
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
+    const work = rotatedBounds(this.composition.pieces, shape);
+    const { c } = placeWordC(wc.pieces, wc.c, shape, work ? this.besideCentre(wc.pieces, work) : this.visibleCentre());
+    if (work) {
+      const f = frameBeside(work, rotatedBounds(c, shape)!, this.visibleView(), GUIDE_FRAME_PAD / this.k, this.targetZoom(c), FIT_MAX_COMFORT * this.comfortZoom());
+      this.setView({ x: f.x, y: f.y, zoom: f.zoom });
+    }
+    return c;
   }
 
   /** Every visit, after the intro if one plays (or at once), unless no-guide, author mode or "Don't show again". */
@@ -3005,23 +3050,28 @@ export class FridgeFace extends HTMLElement {
    * `besideSpot`), and the view framed on both (`frameBeside`). `view` is the part of the board to frame them in (screen
    * units); default the visible board. With nothing on the board, centred in view as usual.
    */
-  private outlinesBeside(pieces: readonly Outline[], view: Rect = this.visibleView(), frame = true): Outline[] {
+  private outlinesBeside(pieces: readonly Outline[], view: Rect = this.visibleView()): Outline[] {
     const work = rotatedBounds(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
     const shape = (id: string) => SHAPE_BY_ID.get(id);
     if (!work) return outlinesAt(pieces, shape, this.visibleCentre());
+    const outlines = outlinesAt(pieces, shape, this.besideCentre(pieces, work, view));
+    const c = frameBeside(work, rotatedBounds(outlines, shape)!, view, GUIDE_FRAME_PAD / this.k, this.targetZoom(outlines), FIT_MAX_COMFORT * this.comfortZoom());
+    this.setView({ x: c.x, y: c.y, zoom: c.zoom });
+    return outlines;
+  }
+
+  /**
+   * The centre of the EMPTY board spot beside `work` (right, then below, left, above: `besideSpot`) for a suggestion's
+   * bounds, clear of every piece of `avoidPieces` (default: the whole board). Board units.
+   */
+  private besideCentre(pieces: readonly Outline[], work: Rect, view: Rect = this.visibleView(), avoidPieces: readonly Outline[] = this.composition.pieces): Pt {
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
     const own = rotatedBounds(pieces, shape)!;
     const pad = GUIDE_FRAME_PAD / this.k;
-    const centred = outlinesAt(pieces, shape, { x: 0, y: 0 });
-    const minZoom = this.targetZoom(centred);
-    const avoid = this.composition.pieces.map((p) => rotatedBounds([p], shape)!).filter(Boolean);
+    const minZoom = this.targetZoom(outlinesAt(pieces, shape, { x: 0, y: 0 }));
+    const avoid = avoidPieces.map((p) => rotatedBounds([p], shape)!).filter(Boolean);
     const spot = besideSpot(work, { w: own.w, h: own.h }, { margin: GUIDE_BESIDE_MARGIN * STEM_LENGTH, view, pad, minZoom, avoid });
-    const outlines = outlinesAt(pieces, shape, { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 });
-    if (frame) {
-      const ob = rotatedBounds(outlines, shape)!;
-      const c = frameBeside(work, ob, view, pad, minZoom, FIT_MAX_COMFORT * this.comfortZoom());
-      this.setView({ x: c.x, y: c.y, zoom: c.zoom });
-    }
-    return outlines;
+    return { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 };
   }
 
   /** Step 0's answer: Clear and start (one undoable clear, then step 1 on the blank board) or Keep my pieces. */
@@ -3041,7 +3091,7 @@ export class FridgeFace extends HTMLElement {
       this.setGuide(answerAsk(this.guide, 'clear', this.letterOutlines(), this.guideWorld(), theirs));
       if (had) this.say('Board cleared. Undo brings it back.');
     } else {
-      const outlines = this.outlinesBeside(this.guideLetter()!.pieces);
+      const outlines = this.cBeside();
       this.setGuide(answerAsk(this.guide, 'keep', outlines, this.guideWorld(), theirs));
     }
   }
@@ -3054,13 +3104,16 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide;
     if (s.phase !== 'c' || s.filled.some(Boolean) || !this.composition.pieces.length || !this.boardEl.clientWidth) return;
     const shape = (id: string) => SHAPE_BY_ID.get(id);
-    const ob = rotatedBounds(s.outlines, shape);
+    // From the word (v1.2.3): the WHOLE word that will be anchored on this c must stay clear of their pieces, not just the c.
+    const wc = this.guideWordC();
+    const word = wc ? anchorWord(wc.pieces, wc.c, s.letter, shape) : null;
+    const ob = rotatedBounds(word ?? s.outlines, shape);
     const m = 0.25 * STEM_LENGTH;
     if (!ob || !this.composition.pieces.some((p) => {
       const b = rotatedBounds([p], shape);
       return b && rectsOverlap({ x: ob.x - m, y: ob.y - m, w: ob.w + 2 * m, h: ob.h + 2 * m }, b);
     })) return;
-    this.setGuide(moveLetter(s, this.outlinesBeside(this.guideLetter()!.pieces), this.guideWorld()));
+    this.setGuide(moveLetter(s, this.cBeside(), this.guideWorld()));
   }
 
   private skipGuide() {
@@ -3086,7 +3139,8 @@ export class FridgeFace extends HTMLElement {
     if (next.phase === 'word' && next.sections && !this.wordFitPending
       && (currentSection(next) !== currentSection(prev) || next.sections !== prev.sections || next.step !== prev.step)) this.wordFitPending = 'smooth';
     this.renderOutlines();
-    if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter)) {
+    if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter || next.step === 4)) {
+      // (Step 4 with a new letter: the finished c moved as one and its outlines followed it; nothing new to say.)
       // The same step: its outlines, its turning hint or its progress moved.
       const p = guideProgress(next), q = guideProgress(prev);
       if (!!next.turn !== !!prev.turn || p.done !== q.done) {
@@ -3201,36 +3255,34 @@ export class FridgeFace extends HTMLElement {
   }
 
   /**
-   * Step 4's Guide me: the c is cleared (one undoable step: the whole board on a blank start, ONLY the guide-built c after
-   * Keep my pieces) and the whole word appears as outlines, framed in view (beside their work, in empty board, after Keep).
+   * Step 4's Guide me (v1.2.3): NOTHING is cleared. The word's outlines go in the same board frame as the built c
+   * (`anchorWord`), so the c's three pieces sit exactly on their outlines: they count as filled ("3 of 32") and their
+   * outlines never show. The board does not change, so there is no undo step here (an undo undoes the c's last piece, and
+   * the guide follows, staying on the word). Fallback (the c is not the word's c, or the word anchored on it would overlap
+   * other pieces, e.g. the c was moved next to them): the c's pieces become the visitor's own and the word goes in fresh,
+   * in empty board beside everything on it.
    */
   private guideChooseWord() {
     const w = this.guideWordSuggestion();
-    if (!w || this.guide.step !== 4) return;
-    const plan = guideClearPlan(this.guide, this.composition.pieces);
-    // Where the word goes is decided on the board as it will be once the c is gone.
-    const remaining = plan.all ? [] : this.composition.pieces.filter((p) => !plan.ids.includes(p.id));
+    const s0 = this.guide;
+    if (!w || s0.step !== 4) return;
     const shape = (id: string) => SHAPE_BY_ID.get(id);
-    let outlines: Outline[];
-    if (remaining.length) {
-      const work = rotatedBounds(remaining, shape)!;
-      const own = rotatedBounds(w.pieces, shape)!;
-      const centred = outlinesAt(w.pieces, shape, { x: 0, y: 0 });
-      const avoid = remaining.map((p) => rotatedBounds([p], shape)!);
-      const spot = besideSpot(work, { w: own.w, h: own.h }, {
-        margin: GUIDE_BESIDE_MARGIN * STEM_LENGTH, view: this.visibleView(), pad: GUIDE_FRAME_PAD / this.k, minZoom: this.targetZoom(centred), avoid,
-      });
-      outlines = outlinesAt(w.pieces, shape, { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 });
+    const cIds = s0.filled.filter((id): id is string => !!id);
+    const others = this.composition.pieces.filter((p) => !cIds.includes(p.id));
+    const wc = findWordC(w.pieces, shape);
+    let outlines = wc ? anchorWord(w.pieces, wc, s0.letter, shape, others.map((p) => rotatedBounds([p], shape)!)) : null;
+    let s = s0;
+    if (outlines) this.wordWork = rotatedBounds(others, shape);
+    else {
+      s = adoptTheirs(s0, cIds);
+      const work = rotatedBounds(this.composition.pieces, shape)!;
+      outlines = outlinesAt(w.pieces, shape, this.besideCentre(w.pieces, work));
       this.wordWork = work;
-    } else {
-      outlines = outlinesAt(w.pieces, shape, this.visibleCentre());
-      this.wordWork = null;
     }
     const sections = this.wordSections();
     this.wordFitPending = sections ? 'smooth' : 'instant';
-    this.setGuide(chooseWord(this.guide, outlines, this.guideWorld(), sections)); // first, so clearing the c is not read as undoing it
-    this.selection = [];
-    if (this.guideClear(plan)) this.say(plan.all ? 'Board cleared. Undo brings it back.' : 'The c is cleared. Undo brings it back.');
+    this.select(null);
+    this.setGuide(chooseWord(s, outlines, this.guideWorld(), sections));
   }
 
   /** Apply a clear plan as ONE undoable step: the whole board, or only the guide-built pieces. Whether anything went. */
@@ -3745,7 +3797,10 @@ export class FridgeFace extends HTMLElement {
     const st = this.guide;
     const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));
     const turnEl = st.turn ? this.els.get(st.turn)?.g.querySelector('.bd') : null;
-    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : [])];
+    // ...and so must the round handle that turns it (when it is the one piece selected): the hint asks for it.
+    const handleEl = st.turn && this.selection.length === 1 && this.selection[0] === st.turn ? this.overlay.querySelector<SVGElement>('[data-handle] circle') : null;
+    const handle = handleEl ? toRect(handleEl.getBoundingClientRect()) : null;
+    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : []), ...(handle && handle.w > 0 ? [handle] : [])];
     // Steps 4 and 6 (centred): keep the finished letter or word in sight where the board allows.
     const done = st.phase === 'ask' ? [...this.els.values()].map((e) => {
       const r = toRect(e.g.querySelector('.bd')!.getBoundingClientRect());

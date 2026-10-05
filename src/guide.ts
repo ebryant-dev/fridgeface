@@ -1,15 +1,24 @@
-import { activeIndices, clickIn, filledBy, needsTurning, type ClickResult, type Outline, type OutlinePiece, type SizeOf } from './outline';
+import { rotatedBounds } from './camera';
+import { normalise } from './rotation';
+import {
+  FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
+  type ShapeFrame, type SizeOf,
+} from './outline';
 
 /**
- * The onboarding guide (v2): the visitor builds Edward's "c" (`lower-c-1`) piece by piece onto dotted **outlines**, then may
- * be guided through the whole word "create" (`word-create-1`). Pure, no DOM: the step state machine, the "don't show again"
+ * The onboarding guide (v2): the visitor builds Edward's "c" piece by piece onto dotted **outlines**, then may be guided
+ * through the whole word "create" (`word-create-1`). Since v1.2.3 the c is the one INSIDE the word (`findWordC`), placed so
+ * the whole word aligned to it fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without
+ * the word (or a c in it) the c is `lower-c-1`, as before. Pure, no DOM: the step state machine, the "don't show again"
  * storage rule and the callout placement. The component (main.ts) feeds it the board and draws the outlines and the callout.
  *
  * 1. outline: the black oval (the c's first piece).            Done when it is filled (a piece sits exactly on it).
  * 2. outline: the white oval, lying on the black oval.          Done when it is filled.
  * 3. outline: the wedge, at its angle. 3a "drag it into place"; 3b (a wedge is close in position but needs turning) "turn it".
- * 4. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play.
+ * 4. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
+ *    (rigidly, not turned) keeps step 4: its outlines follow it (`rigidShift`).
  * 5. outlines: the whole word, every piece at once, filled in any order. Progress "N of M". Same turning hint as 3b.
+ *    v1.2.3: nothing is cleared; the word's outlines are in the c's board frame, so the c's pieces fill theirs ("3 of 32").
  *    Phones (v1.2.2, the compact layout): the word is filled one SECTION at a time (`sections`, split by sections.ts): only
  *    the current section's outlines show and accept a piece. The current section is the first, left to right, with an
  *    unfilled outline, so it too is derived from the board (undoing back into an earlier section makes it current again).
@@ -208,7 +217,7 @@ export function guideBuilt(s: GuideState, pieces: readonly OutlinePiece[]): stri
 }
 
 /**
- * What the guide's clears remove (Guide me, Clear for free play, Start fresh): only the guide-built pieces once the visitor
+ * What the guide's clears remove (Clear for free play, Start fresh; Guide me clears nothing since v1.2.3): only the guide-built pieces once the visitor
  * kept their pieces (or any of theirs is on the board again, e.g. after undoing Clear and start); otherwise, on a blank
  * start, the whole board as before.
  */
@@ -225,7 +234,32 @@ export function guideClearPlan(s: GuideState, pieces: readonly OutlinePiece[]): 
 export function observeGuide(s: GuideState, w: GuideWorld): GuideState {
   if (!s.step || !s.phase || s.phase === 'ask') return s;
   const next = derive(s.phase, s.outlines, w, carry(s));
+  if (s.phase === 'c' && s.step === 4 && next.step !== 4) {
+    // The finished c moved as one (a selection dragged, or that drag undone): its outlines follow it, so it is still the c
+    // and the word will be anchored on it where it now is. Turned, or broken apart, it is not: the step goes back.
+    const shift = rigidShift(s.letter, s.filled, w.pieces);
+    if (shift) {
+      const letter = s.letter.map((o) => ({ ...o, x: o.x + shift.dx, y: o.y + shift.dy }));
+      return derive('c', letter, w, { ...carry(s), letter });
+    }
+  }
   return same(s, next) ? s : next;
+}
+
+/**
+ * The pieces that filled `outlines` (`filled`, all of them) moved together by one translation: every one still there, at
+ * its outline's rotation, and each offset from its outline by the same amount (within the fill tolerance). Returns that
+ * move (taken from the first piece exactly), or null (something is missing, turned, or out of arrangement, or nothing moved).
+ */
+export function rigidShift(outlines: readonly Outline[], filled: readonly (string | null)[], pieces: readonly OutlinePiece[]): { dx: number; dy: number } | null {
+  if (!outlines.length || filled.length !== outlines.length || filled.some((f) => !f)) return null;
+  const byId = new Map(pieces.map((p) => [p.id, p]));
+  const ps = filled.map((id) => byId.get(id!));
+  if (ps.some((p, i) => !p || p.shapeId !== outlines[i].shapeId || angleGap(p.rotation, outlines[i].rotation) > FILL_ANGLE_EPS)) return null;
+  const dx = ps[0]!.x - outlines[0].x, dy = ps[0]!.y - outlines[0].y;
+  if (Math.hypot(dx, dy) <= FILL_POS_EPS) return null; // still in place
+  const rigid = ps.every((p, i) => Math.hypot(p!.x - outlines[i].x - dx, p!.y - outlines[i].y - dy) <= FILL_POS_EPS);
+  return rigid ? { dx, dy } : null;
 }
 
 /**
@@ -379,6 +413,104 @@ export function frameBeside(
   x = fit(outlines.x, outlines.w, view.x, view.w, x);
   y = fit(outlines.y, outlines.h, view.y, view.h, y);
   return { x, y, zoom, both };
+}
+
+// ---- the c inside the word (v1.2.3) ------------------------------------------------------------------------------
+
+/** Where the c is inside the word: the indices (in the word's pieces) of its positive round, negative round and wedge. */
+export interface WordC {
+  round: number;
+  negative: number;
+  wedge: number;
+}
+
+type FrameOf = (id: string) => ShapeFrame | undefined;
+
+const overlapArea = (a: Rect, b: Rect) => {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+};
+
+/** How far beyond the round and its negative round a wedge may start and still be part of the c, of their bounds' longer side. */
+export const WORD_C_REACH = 0.25;
+
+/**
+ * Find the guide's c inside a word composition (pure): the LEFTMOST positive round (by the centre of its rotated bounds;
+ * ties: the lower index), the negative round whose rotated bounds overlap it the most (ties: the nearer centroid), and,
+ * among the wedges whose rotated bounds overlap those two (or come within WORD_C_REACH of them), the one whose centroid is
+ * nearest the round's. Null when any of the three is missing. Never by index: the word may be built in any order.
+ */
+export function findWordC(pieces: readonly Outline[], shapeOf: FrameOf): WordC | null {
+  const box = pieces.map((p) => rotatedBounds([p], shapeOf));
+  const of = (shapeId: string) => pieces.map((p, i) => (p.shapeId === shapeId && box[i] ? i : -1)).filter((i) => i >= 0);
+  const cx = (i: number) => box[i]!.x + box[i]!.w / 2;
+  const dist = (i: number, j: number) => Math.hypot(pieces[i].x - pieces[j].x, pieces[i].y - pieces[j].y);
+  const rounds = of('positive-round');
+  if (!rounds.length) return null;
+  const round = rounds.reduce((a, b) => (cx(b) < cx(a) - 1e-9 ? b : a));
+  let negative = -1, most = 0;
+  for (const j of of('negative-round')) {
+    const a = overlapArea(box[round]!, box[j]!);
+    if (a > most + 1e-9 || (a > 0 && Math.abs(a - most) <= 1e-9 && negative >= 0 && dist(round, j) < dist(round, negative))) {
+      negative = j;
+      most = a;
+    }
+  }
+  if (negative < 0) return null;
+  const pair = union(box[round]!, box[negative]!);
+  const zone = grow(pair, WORD_C_REACH * Math.max(pair.w, pair.h));
+  let wedge = -1;
+  for (const j of of('wedge')) {
+    if (!rectsOverlap(box[j]!, zone)) continue;
+    if (wedge < 0 || dist(round, j) < dist(round, wedge) - 1e-9) wedge = j;
+  }
+  return wedge < 0 ? null : { round, negative, wedge };
+}
+
+/** The c's three outlines, picked out of the word's (in the c's step order: black oval, white oval, wedge). */
+export function cOutlines(word: readonly Outline[], c: WordC): Outline[] {
+  return [word[c.round], word[c.negative], word[c.wedge]];
+}
+
+/**
+ * Where the c goes so that the WHOLE word, aligned to it, lands in the target area: the word is placed with the centre of
+ * its rotated bounds at `centre` (`outlinesAt`, a rigid move), and the c is its three pieces there. On a blank board the
+ * centre is the visible board's; after Keep my pieces it is the centre of the spot `besideSpot` found for the word's bounds.
+ */
+export function placeWordC(word: readonly Outline[], c: WordC, shapeOf: FrameOf, centre: { x: number; y: number }): { word: Outline[]; c: Outline[] } {
+  const placed = outlinesAt(word, shapeOf, centre);
+  return { word: placed, c: placed.length ? cOutlines(placed, c) : [] };
+}
+
+/**
+ * Guide me: the word's outlines in the same board frame as the built c, so the c's three pieces sit exactly on their
+ * outlines (the c's outlines are copied over as they are; every other outline is moved by the same translation, which
+ * takes the word's round onto the c's). Null when `letter` is not this word's c (another arrangement, e.g. the
+ * `lower-c-1` fallback, or a c that was turned: only a moved c keeps its rotation as built), or when the word placed there
+ * would overlap any rect in `avoid` (pieces that are not the c): the caller then places the word fresh.
+ */
+export function anchorWord(word: readonly Outline[], c: WordC, letter: readonly Outline[], shapeOf: FrameOf, avoid: readonly Rect[] = []): Outline[] | null {
+  const want = cOutlines(word, c);
+  if (letter.length !== 3 || want.some((o, i) => !o || o.shapeId !== letter[i].shapeId)) return null;
+  for (let i = 1; i < 3; i++) {
+    const a = { x: want[i].x - want[0].x, y: want[i].y - want[0].y }, b = { x: letter[i].x - letter[0].x, y: letter[i].y - letter[0].y };
+    if (Math.hypot(a.x - b.x, a.y - b.y) > FILL_POS_EPS) return null;
+  }
+  if (want.some((o, i) => angleGap(o.rotation, letter[i].rotation) > FILL_ANGLE_EPS)) return null;
+  const dx = letter[0].x - want[0].x, dy = letter[0].y - want[0].y;
+  const r6 = (n: number) => Math.round(n * 1e6) / 1e6 || 0;
+  const at = new Map([[c.round, letter[0]], [c.negative, letter[1]], [c.wedge, letter[2]]]);
+  const out = word.map((p, i) => at.get(i) ?? { shapeId: p.shapeId, x: r6(p.x + dx), y: r6(p.y + dy), rotation: Math.round(normalise(p.rotation) * 100) / 100 || 0 });
+  const b = rotatedBounds(out, shapeOf);
+  if (b && avoid.some((q) => rectsOverlap(b, q))) return null;
+  return out.map((o) => ({ ...o }));
+}
+
+/** The fallback at Guide me: the c's pieces are the visitor's now (never removed by the guide); the word goes in fresh. */
+export function adoptTheirs(s: GuideState, ids: readonly string[]): GuideState {
+  const add = ids.filter((id) => !s.theirs.includes(id));
+  if (!add.length) return s;
+  return { ...s, theirs: [...s.theirs, ...add], built: s.built.filter((id) => !add.includes(id)) };
 }
 
 /**

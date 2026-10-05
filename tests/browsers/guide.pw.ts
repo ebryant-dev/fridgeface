@@ -5,7 +5,8 @@ declare const process: { env: Record<string, string | undefined> }; // runs in N
 /**
  * The onboarding guide v2 (v1.2.0, step 0 in v1.2.1), in Chromium AND WebKit, desktop, iPhone portrait and iPhone
  * landscape: a blank board, the c built piece by piece onto dotted outlines that pieces click into (guide only), step 4's
- * choice, the whole word "create" from Edward's REAL word-create-1 (32 pieces), Skip / Don't show again / Next, replay from
+ * choice, the whole word "create" from Edward's REAL word-create-1 (32 pieces; v1.2.3: the c built is the word's own c, and
+ * it stays in place at Guide me, exactly, counting as "3 of 32"; a c moved as one re-anchors the word), Skip / Don't show again / Next, replay from
  * Controls, no-guide, share links, Escape order, coexistence with the menu, sheet and dialog, placement in every layout,
  * reduced motion and axe. Step 0 (a saved board): Clear and start, Keep my pieces (outlines in empty board beside their
  * work), and the guide never touching their pieces. The "no word" case removes word-create-1 from the LIVE store at
@@ -233,7 +234,7 @@ async function buildC(page: Page, isMobile: boolean, project?: string, from = 1)
     await checkCallout(page, 'step 3b');
     await shoot(page, project, 'step3b');
   }
-  await turnTo(page, wedge, 111.03, 5); // 5 degrees past: still clicks in, exactly
+  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 5); // 5 degrees past (101.22 + 5): still clicks in, exactly
   await expect.poll(async () => (await state(page)).step).toBe(4);
   return wedge;
 }
@@ -290,9 +291,11 @@ test('blank start (no intro), then the whole c: each piece clicks exactly into i
   const wedge = await buildC(page, isMobile, info.project.name, 2);
   s = await state(page);
   ps = await pieces(page);
-  expect(ps.map((p) => p.shapeId), 'stacking order of lower-c-1').toEqual(['positive-round', 'negative-round', 'wedge']);
+  expect(ps.map((p) => p.shapeId), 'stacking order of the c (as in word-create-1)').toEqual(['positive-round', 'negative-round', 'wedge']);
   ps.forEach((p, i) => expect(onOutline(p, s.outlines[i]), `piece ${i} exactly on its outline`).toBe(true));
-  expect(ps[2].rotation).toBeCloseTo(111.03, 2);
+  expect(ps[2].rotation, 'the c inside word-create-1: its wedge at 101.22 degrees').toBeCloseTo(101.22, 2);
+  expect(ps[1].x - ps[0].x).toBeCloseTo(-0.4, 6); // arranged exactly as in the word
+  expect(ps[1].y - ps[0].y).toBeCloseTo(4.0, 6);
   // Undo the turn: the wedge goes back (unturned, close) and the guide follows: 3b again. Redo: step 4.
   await press(isMobile, el(page, '[data-history=undo]'));
   await expect.poll(async () => (await state(page)).turn).toBe(wedge);
@@ -339,7 +342,26 @@ test('step 4 without word-create-1: "That\'s a c." and only Clear for free play,
   expect(errors).toEqual([]);
 });
 
-test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every outline in a shuffled order (stacking order fixed), step 6, Start fresh, one undo restores', async ({ page, isMobile }, info) => {
+/** The c's three pieces (by id) are exactly where they were: same place, rotation and stacking order among themselves. */
+async function expectCInPlace(page: Page, c: P[], label: string) {
+  const now = await pieces(page);
+  const got = c.map((p) => now.find((q) => q.id === p.id));
+  expect(got.every(Boolean), `${label}: the c's pieces are all still on the board`).toBe(true);
+  got.forEach((q, i) => expect({ x: q!.x, y: q!.y, rotation: q!.rotation, shapeId: q!.shapeId }, `${label}: piece ${i} of the c did not move`).toEqual({ x: c[i].x, y: c[i].y, rotation: c[i].rotation, shapeId: c[i].shapeId }));
+  const order = c.map((p) => now.findIndex((q) => q.id === p.id));
+  expect([...order].sort((x, y) => x - y), `${label}: their stacking order among themselves`).toEqual(order);
+}
+
+/** Every outline of the word in the same board frame as the c: outlines 0, 1, 2 are exactly the c's pieces. */
+async function expectWordOnC(page: Page, c: P[]) {
+  const s = await state(page);
+  expect(s.outlines.slice(0, 3).map((o, i) => onOutline(c[i], o)), 'the c\'s pieces sit exactly on their outlines').toEqual([true, true, true]);
+  expect(s.filled.slice(0, 3), 'and count as filled').toEqual(c.map((p) => p.id));
+  const shown = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<SVGGElement>('[data-outline]')].map((g) => Number(g.dataset.outline)));
+  expect(shown.filter((i) => i < 3), 'the c\'s outlines are not shown').toEqual([]);
+}
+
+test('the REAL word-create-1 (32 pieces) on a blank board: the c stays in place at Guide me (3 of 32), then every other outline in a shuffled order (stacking order fixed), step 6, Start fresh, one undo restores', async ({ page, isMobile }, info) => {
   test.skip(isMobile, 'phones fill the word one section at a time (the section tests below)');
   test.setTimeout(300_000);
   const errors = collectErrors(page);
@@ -353,29 +375,39 @@ test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every 
   await expect(gbtn(page, 'clear')).toHaveText('Clear for free play');
   await checkCallout(page, 'step 4');
   await shoot(page, info.project.name, 'step4');
+  const c = await pieces(page);
+  expect(c).toHaveLength(3);
+  if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g5-c-built-desktop.png` });
 
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '5');
-  await expect.poll(() => pieceCount(page), 'the c is cleared').toBe(0);
+  await expectCInPlace(page, c, 'Guide me'); // nothing cleared, nothing moved
+  await expectWordOnC(page, c);
   await expect(el(page, '.guide .gt1')).toHaveText('Fill in the outlines to spell "create".');
-  await expect(el(page, '.guide .gt2')).toHaveText(`0 of ${total}`);
+  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  await expect(el(page, '#ff-live')).toContainText(`3 of ${total}`);
   await expect(gbtn(page, 'skip')).toBeVisible();
   await expect(gbtn(page, 'off')).toBeVisible();
-  expect(await el(page, '[data-outline]').count(), 'the whole word at once').toBe(total);
+  expect(await el(page, '[data-outline]').count(), 'the rest of the word at once').toBe(total - 3);
   await checkCallout(page, 'step 5');
+  if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g5-guideme-desktop.png` });
   // Every target on screen, and how big the smallest is at the fitted zoom (a shape's shorter side, CSS px).
   const small = await smallestTarget(page);
   info.annotations.push({ type: 'smallest target', description: `${small.px.toFixed(1)} CSS px (${small.shape}) at zoom ${small.zoom.toFixed(3)}` });
   console.log(`[${info.project.name}] smallest create target: ${small.px.toFixed(1)} CSS px (${small.shape})`);
-  // Undo brings the c back but never goes back past Guide me.
+  // Undo at the start of step 5: Guide me added no undo step, so it takes back the c's last action (the wedge's turn) and
+  // never the c itself; the guide stays on the word. Redo: 3 of 32 again.
   await press(isMobile, el(page, '[data-history=undo]'));
-  await expect.poll(() => pieceCount(page)).toBe(3);
+  await expect.poll(async () => (await state(page)).filled[2]).toBeNull();
+  expect(await pieceCount(page), 'the c is still on the board').toBe(3);
   await expect(guide(page)).toHaveAttribute('data-step', '5');
+  await expect(el(page, '.guide .gt2')).toHaveText(`2 of ${total}`);
   await press(isMobile, el(page, '[data-history=redo]'));
-  await expect.poll(() => pieceCount(page)).toBe(0);
+  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  await expectCInPlace(page, c, 'undo and redo at the boundary');
 
   // A shuffled order (fixed seed), so negatives are often placed before the positives they cut.
-  const order = Array.from({ length: total }, (_, i) => i);
+  const order = Array.from({ length: total - 3 }, (_, i) => i + 3);
   let seed = 7;
   for (let i = order.length - 1; i > 0; i--) {
     seed = (seed * 9301 + 49297) % 233280;
@@ -397,19 +429,20 @@ test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every 
       await expect.poll(async () => (await state(page)).filled[i], `outline ${i} filled`).not.toBeNull();
       s = await state(page);
     }
-    if (s.step === 5) await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
+    if (s.step === 5) await expect(el(page, '.guide .gt2')).toHaveText(`${n + 4} of ${total}`);
     if (n === 6) {
       await checkCallout(page, 'step 5 partly filled');
       const nm = NAMES[info.project.name];
       if (nm) await page.screenshot({ path: `${SHOT}/g3-step5-real-${nm}.png` });
-      expect(await el(page, '[data-outline]').count(), 'filled outlines disappear').toBe(total - 7);
+      expect(await el(page, '[data-outline]').count(), 'filled outlines disappear').toBe(total - 10);
     }
   }
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await expect(el(page, '.guide .gt1')).toHaveText('You made "create". Now try your own name.');
   await expect(gbtn(page, 'fresh')).toHaveText('Start fresh');
   await expect(gbtn(page, 'keep')).toHaveText('Keep it');
-  // The stacking order is exactly word-create-1's.
+  await expectCInPlace(page, c, 'the finished word');
+  // The stacking order is exactly word-create-1's (the c's pieces included).
   const s = await state(page);
   const ps = await pieces(page);
   expect(ps.map((p) => s.outlines.findIndex((o) => onOutline(p, o))), 'every piece on its outline, in the word\'s stacking order').toEqual(s.outlines.map((_, i) => i));
@@ -423,6 +456,33 @@ test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every 
   await expect.poll(() => pieceCount(page), 'one undo restores the whole word').toBe(total);
   expect((await pieces(page)).map((p) => s.outlines.findIndex((o) => onOutline(p, o)))).toEqual(s.outlines.map((_, i) => i));
   expect(errors).toEqual([]);
+});
+
+test('the c moved as one after step 3: the word is anchored on it where it now is (still 3 of 32, the c untouched)', async ({ page, isMobile }) => {
+  test.setTimeout(120_000);
+  await open(page, '/?n=movedc');
+  await page.evaluate(() => {
+    const ff = document.querySelector('fridge-face') as unknown as { guideNextFill(): void };
+    for (let i = 0; i < 3; i++) ff.guideNextFill();
+  });
+  await expect(guide(page)).toHaveAttribute('data-step', '4');
+  // Select all three and nudge them as one (Shift+Arrows: 10 units each), as the visitor might before choosing.
+  const was = await pieces(page);
+  await el(page, '.board svg.surface').focus();
+  await page.keyboard.press('Control+a');
+  for (let i = 0; i < 4; i++) await page.keyboard.press('Shift+ArrowRight');
+  for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(async () => (await pieces(page)).map((p, i) => [Math.round(p.x - was[i].x), Math.round(p.y - was[i].y)]), 'moved as one').toEqual([[40, 20], [40, 20], [40, 20]]);
+  await page.waitForTimeout(400); // the nudges are judged once they pause
+  await expect(guide(page), 'still "That\'s a c."').toHaveAttribute('data-step', '4');
+  const c = await pieces(page);
+  const s4 = await state(page);
+  c.forEach((p, i) => expect(onOutline(p, s4.outlines[i]), 'the c\'s outlines followed it').toBe(true));
+  await press(isMobile, gbtn(page, 'word'));
+  await expect(guide(page)).toHaveAttribute('data-step', '5');
+  await expectCInPlace(page, c, 'moved c, Guide me');
+  await expectWordOnC(page, c);
+  await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
 });
 
 test('no click-in outside the guide: after Skip (and with no-guide) a piece dropped right by where the outline was stays where it was dropped', async ({ page, browser }, info) => {
@@ -700,7 +760,7 @@ test('axe: no violations with a callout showing (steps 1, 3b, 4 and 5)', async (
   await dropNear(page, 2);
   await expect(guide(page)).toHaveAttribute('data-turn', '');
   expect(await run()).toEqual([]);
-  await turnTo(page, (await state(page)).turn!, 111.03, 0);
+  await turnTo(page, (await state(page)).turn!, (await state(page)).outlines[2].rotation, 0);
   await expect(guide(page)).toHaveAttribute('data-step', '4');
   expect(await run()).toEqual([]);
   await press(isMobile, gbtn(page, 'word'));
@@ -917,7 +977,7 @@ test('step 0 -> Keep my pieces: the c beside their work; Clear for free play rem
   expect(errors).toEqual([]);
 });
 
-test('step 0 -> Keep my pieces -> the c -> Guide me: only the c goes, "create" beside their work; a few filled, then Start fresh removes ONLY the guide\'s pieces', async ({ page, isMobile }, info) => {
+test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" grows from the c beside their work (never over it); a few filled, then Start fresh removes ONLY the guide\'s pieces', async ({ page, isMobile }, info) => {
   test.setTimeout(240_000);
   const errors = collectErrors(page);
   await openAsk(page, '/?n=keepw');
@@ -925,27 +985,41 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: only the c goes, "create" b
   await press(isMobile, gbtn(page, 'mine'));
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   await buildC(page, isMobile);
-  // The visitor adds a piece of their own during the guide, away from any outline: it is theirs, never removed.
-  await el(page, '.board svg.surface').focus();
-  await page.keyboard.press('4'); // a negative round, added in view
-  await expect.poll(() => pieceCount(page)).toBe(theirs.length + 4);
-  const extra = (await pieces(page)).at(-1)!;
-  const mineNow = [...theirs, extra];
   await expect(guide(page)).toHaveAttribute('data-step', '4');
+  const c = (await pieces(page)).filter((p) => !theirs.some((t) => t.id === p.id));
+  expect(c).toHaveLength(3);
   await setNextMs(page, 50); // step 5's Next comes quickly (used for the rest of the word below)
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '5');
-  await expect.poll(() => pieceCount(page), 'ONLY the c is cleared').toBe(mineNow.length);
+  await expect.poll(() => pieceCount(page), 'nothing is cleared').toBe(theirs.length + 3);
+  await expectCInPlace(page, c, 'keep, Guide me');
+  await expectWordOnC(page, c);
   const left = await pieces(page);
   expect(same(theirs, left.filter((p) => theirs.some((t) => t.id === p.id))), 'their saved pieces unchanged').toBe(true);
-  expect(left.some((p) => p.id === extra.id && p.x === extra.x && p.y === extra.y), 'their added piece unchanged').toBe(true);
   const total = await realCreate(page);
-  await expect(el(page, '.guide .gt2')).toHaveText(`0 of ${total}`);
-  await expectBeside(page, left);
+  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  // The WHOLE word (every outline, the c's included) is clear of their pieces' bounds.
+  const all = await state(page);
+  const a = await boundsIn(page, theirs), w = await boundsIn(page, all.outlines);
+  expect(a!.x < w!.x + w!.w && w!.x < a!.x + a!.w && a!.y < w!.y + w!.h && w!.y < a!.y + a!.h, `the word ${JSON.stringify(w)} never overlaps their work ${JSON.stringify(a)}`).toBe(false);
+  await expectBeside(page, theirs);
   await settled(page); // phones: the view glides to the first section
   await checkCallout(page, 'keep, step 5');
+  if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g5-keep-word-desktop.png` });
+  // The visitor adds a piece of their own during the word, not clicked in: it is theirs, never removed.
+  await el(page, '.board svg.surface').focus();
+  await page.keyboard.press('3'); // a negative stem, added in view
+  await expect.poll(() => pieceCount(page)).toBe(theirs.length + 4);
+  // ...and moves it well clear of everything (left of their work and the word), so no outline is anywhere near it.
+  await page.evaluate(({ x }) => {
+    const ff = document.querySelector('fridge-face') as unknown as { composition: { pieces: P[]; movePiece(id: string, x: number, y: number): boolean } };
+    const p = ff.composition.pieces.at(-1)!;
+    ff.composition.movePiece(p.id, x, p.y);
+  }, { x: Math.min(a!.x, w!.x) - 1500 });
+  const extra = (await pieces(page)).at(-1)!;
+  const mineNow = [...theirs, extra];
   // A few outlines filled by hand (drag + turn when needed).
-  for (let n = 0; n < 3; n++) {
+  for (let n = 3; n < 6; n++) {
     await settled(page);
     const s = await state(page);
     const i = Math.min(...s.outlines.map((_, j) => j).filter((j) => !s.filled[j] && (!s.sections || s.sections.find((sec) => sec.some((q) => !s.filled[q]))!.includes(j))));
@@ -962,15 +1036,15 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: only the c goes, "create" b
   }
   // The rest by Next (shortened timer: once offered it stays on step 5).
   await expect(gbtn(page, 'next')).toBeVisible();
-  for (let n = 3; n < total; n++) {
+  for (let n = 6; n < total; n++) {
     await gbtn(page, 'next').click({ force: true });
     if (n < total - 1) await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
   }
   await expect(guide(page)).toHaveAttribute('data-step', '6');
-  expect(await pieceCount(page)).toBe(mineNow.length + total);
+  expect(await pieceCount(page), 'their pieces, and the word (the c included)').toBe(mineNow.length + total);
   await press(isMobile, gbtn(page, 'fresh'));
   await expect(guide(page)).toBeHidden();
-  await expect.poll(() => pieceCount(page), 'Start fresh removed ONLY the guide-built word').toBe(mineNow.length);
+  await expect.poll(() => pieceCount(page), 'Start fresh removed ONLY the guide-built word (the c with it)').toBe(mineNow.length);
   const end = await pieces(page);
   expect(same(theirs, end.filter((p) => theirs.some((t) => t.id === p.id))), 'their pieces unchanged at the end').toBe(true);
   expect(end.some((p) => p.id === extra.id)).toBe(true);
@@ -1039,17 +1113,26 @@ async function shown(page: Page) {
   });
 }
 
-/** Into step 5 on a blank board: the c by Next (it is tested above), then Guide me. */
-async function toWord(page: Page, isMobile: boolean) {
+/** Into step 5 on a blank board: the c by Next (it is tested above), then Guide me. The c stays: returns its pieces. */
+async function toWord(page: Page, isMobile: boolean, project?: string): Promise<P[]> {
   await open(page, '/?n=sec');
   await page.evaluate(() => {
     const ff = document.querySelector('fridge-face') as unknown as { guideNextFill(): void };
     for (let i = 0; i < 3; i++) ff.guideNextFill();
   });
   await expect(guide(page)).toHaveAttribute('data-step', '4');
+  const c = await pieces(page);
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '5');
-  await expect.poll(() => pieceCount(page)).toBe(0);
+  expect(await pieceCount(page), 'the c stays').toBe(3);
+  await expectCInPlace(page, c, 'Guide me (phone)');
+  await expectWordOnC(page, c);
+  await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+  if (project && NAMES[project] === 'wk-iphone') {
+    await settled(page);
+    await page.screenshot({ path: `${SHOT}/g5-guideme-wk-iphone.png` });
+  }
+  return c;
 }
 
 /** Fill outline `i` by hand: drop it close from the tray, turn it in with the handle when it needs turning. */
@@ -1069,7 +1152,7 @@ test('phones: the REAL create, section by section (shuffled within each): only t
   test.skip(!isMobile, 'desktop shows the whole word at once (the test above)');
   test.setTimeout(400_000);
   const errors = collectErrors(page);
-  await toWord(page, isMobile);
+  const c = await toWord(page, isMobile, info.project.name);
   const total = await realCreate(page);
   const sections = await page.evaluate(() => (document.querySelector('fridge-face') as FF).guide.sections);
   expect(sections, 'the split of the real word').toEqual(CREATE_SECTIONS);
@@ -1077,13 +1160,14 @@ test('phones: the REAL create, section by section (shuffled within each): only t
   const nm = NAMES[info.project.name];
   const mins: string[] = [];
   let lastView: { x: number; y: number; zoom: number } | null = null;
-  let done = 0;
+  let done = 3; // the c (outlines 0, 1, 2) is already in place: section 1 shows only its other outlines
   let seed = 11;
   for (let k = 0; k < CREATE_SECTIONS.length; k++) {
     await settled(page);
-    const sec = CREATE_SECTIONS[k];
+    const sec = CREATE_SECTIONS[k].filter((i) => i > 2);
     const sh = await shown(page);
-    expect(sh.idx, `section ${k + 1}: only its outlines show`).toEqual([...sec].sort((a, b) => a - b));
+    expect(sh.idx, `section ${k + 1}: only its outlines show (the c's are filled)`).toEqual([...sec].sort((a, b) => a - b));
+    if (k === 0) expect(sh.idx).toEqual([4, 7]);
     await expect(el(page, '.guide .gt1')).toHaveText('Fill in the outlines to spell "create".');
     await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
     const view = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
@@ -1117,6 +1201,7 @@ test('phones: the REAL create, section by section (shuffled within each): only t
   console.log(`[${info.project.name}] smallest target per section: ${mins.join(', ')} CSS px`);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await settled(page);
+  await expectCInPlace(page, c, 'the finished word (phone)');
   const s = await state(page);
   const ps = await pieces(page);
   expect(ps.map((p) => s.outlines.findIndex((o) => onOutline(p, o))), 'every piece on its outline, in the word\'s stacking order').toEqual(s.outlines.map((_, i) => i));
@@ -1139,8 +1224,9 @@ test('phones: undo back across a section boundary returns the view to that secti
   test.skip(!isMobile, 'phones only');
   test.setTimeout(120_000);
   await toWord(page, isMobile);
-  // Fill section 1 with Next (one undoable step each): Next always fills the CURRENT section's lowest outline.
-  for (let n = 0; n < CREATE_SECTIONS[0].length; n++) {
+  // Fill section 1 with Next (one undoable step each): Next always fills the CURRENT section's lowest outline. Its c is
+  // already filled, so that is its two other outlines.
+  for (let n = 0; n < CREATE_SECTIONS[0].length - 3; n++) {
     await settled(page);
     const before = await state(page);
     const want = Math.min(...CREATE_SECTIONS[0].filter((i) => !before.filled[i]));
@@ -1170,14 +1256,14 @@ test('rotating or resizing mid-step switches modes without losing progress (port
   if (!isMobile) await page.setViewportSize({ width: 393, height: 760 }); // a phone-sized window: the compact layout
   await toWord(page, isMobile);
   await settled(page);
-  // Two pieces of section 1 by hand.
-  for (const i of [1, 0]) {
+  // One piece of section 1 by hand (its c is already filled).
+  for (const i of [7]) {
     await fillByHand(page, i);
     await settled(page);
   }
   const progress = async () => (await state(page)).filled.filter(Boolean).length;
-  expect(await progress()).toBe(2);
-  const sec1Rest = CREATE_SECTIONS[0].filter((i) => i !== 0 && i !== 1).sort((a, b) => a - b);
+  expect(await progress()).toBe(4);
+  const sec1Rest = CREATE_SECTIONS[0].filter((i) => i > 2 && i !== 7).sort((a, b) => a - b);
   const sizes = [
     { name: 'landscape', w: 852, h: 393, sections: true },
     { name: 'desktop', w: 1280, h: 800, sections: false },
@@ -1187,11 +1273,11 @@ test('rotating or resizing mid-step switches modes without losing progress (port
     await page.setViewportSize({ width: z.w, height: z.h });
     await expect.poll(async () => !!(await page.evaluate(() => (document.querySelector('fridge-face') as FF).guide.sections)), `${z.name}: sections ${z.sections ? 'on' : 'off'}`).toBe(z.sections);
     await settled(page);
-    expect(await progress(), `${z.name}: progress kept`).toBe(2);
-    await expect(el(page, '.guide .gt2')).toHaveText('2 of 32');
+    expect(await progress(), `${z.name}: progress kept`).toBe(4);
+    await expect(el(page, '.guide .gt2')).toHaveText('4 of 32');
     const sh = await shown(page);
     if (z.sections) expect(sh.idx, `${z.name}: still section 1`).toEqual(sec1Rest);
-    else expect(sh.idx, `${z.name}: the whole word at once`).toHaveLength(30);
+    else expect(sh.idx, `${z.name}: the whole word at once`).toHaveLength(28);
     await checkCallout(page, `after switching to ${z.name}`);
   }
   // Pieces placed before the switches are still valid: finishing section 1 moves on to section 2.

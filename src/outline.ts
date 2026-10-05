@@ -174,13 +174,15 @@ export function stackFix(order: readonly string[], filled: readonly (string | nu
 export type ShapeFrame = { bbox: Rect; centroid: { x: number; y: number } };
 
 /**
- * A suggestion's pieces as outlines on the board, moved rigidly so the centre of their rotated bounds is at `centre`.
- * Rounded like the wire format (0.1 units, 0.01 degrees), so a saved and restored board still sits exactly on them.
+ * A suggestion's pieces as outlines on the board, moved rigidly so the centre of their rotated bounds is at `centre` (to
+ * within 0.05 units: the move is rounded to 0.1). Rounded like the wire format (0.1 units, 0.01 degrees), so a saved and
+ * restored board still sits exactly on them.
  */
 export function outlinesAt(pieces: readonly Outline[], shapeOf: (id: string) => ShapeFrame | undefined, centre: { x: number; y: number }): Outline[] {
   const b = rotatedBounds(pieces, shapeOf);
   if (!b) return [];
-  const dx = centre.x - (b.x + b.w / 2), dy = centre.y - (b.y + b.h / 2);
   const r1 = (n: number) => Math.round(n * 10) / 10 || 0;
+  // The move itself is a whole number of 0.1 units, so the pieces' arrangement is kept exactly (not just to rounding).
+  const dx = r1(centre.x - (b.x + b.w / 2)), dy = r1(centre.y - (b.y + b.h / 2));
   return pieces.map((p) => ({ shapeId: p.shapeId, x: r1(p.x + dx), y: r1(p.y + dy), rotation: Math.round(normalise(p.rotation) * 100) / 100 || 0 }));
 }
