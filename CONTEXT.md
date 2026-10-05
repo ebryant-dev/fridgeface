@@ -39,6 +39,11 @@ _Avoid_: magnet (except when talking about the physical product), instance, stic
 **Board**:
 The unbounded surface pieces are placed on — the digital fridge door.
 _Avoid_: canvas (implementation term), artboard, page
+In visitor-facing copy the board may be called **the fridge** ("Drag the black oval onto the fridge").
+
+**Outline**:
+A dotted guide-only target that shows where one piece of a suggestion belongs during the guide. A piece released close to its outline clicks exactly into place; outside the guide, pieces never snap.
+_Avoid_: ghost, placeholder, template, snap target
 
 **Tray**:
 Where a player takes new pieces from. It always holds all five shapes and never runs out.
