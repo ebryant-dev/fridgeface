@@ -114,3 +114,37 @@ export function sectionOf(sections: readonly (readonly number[])[], n: number): 
   sections.forEach((s, k) => s.forEach((i) => (of[i] = k)));
   return of;
 }
+
+/** Phones, the word by sections: the view is about this many letter-sections wide (the current one and a neighbour). */
+export const SECTION_LETTERS_IN_VIEW = 2;
+
+/**
+ * The zoom at which a view `viewWidth` wide (screen units) spans SECTION_LETTERS_IN_VIEW average sections, given every
+ * section's width in board units. The AVERAGE (not the current section's own width) keeps the scale steady from one
+ * section to the next, so the glide is mostly a pan; a wide section (an "a") and a narrow one (an "r") both show with a
+ * neighbour. Pure. 0 when there is nothing to measure.
+ */
+export function lettersZoom(viewWidth: number, sectionWidths: readonly number[], letters = SECTION_LETTERS_IN_VIEW): number {
+  const ws = sectionWidths.filter((w) => w > 0);
+  if (!ws.length || !(viewWidth > 0)) return 0;
+  return viewWidth / (letters * (ws.reduce((a, b) => a + b, 0) / ws.length));
+}
+
+/**
+ * Where the camera's x goes (screen = board * zoom + result) to frame the current section [cur] (board x range) with the
+ * built section before it [prev] (or null) as context: the pair is centred on `view` (a screen x range) where it fits, then
+ * the current section is kept inside `reg` (the screen x range clear of the callout), `pad` from its edges. A current
+ * section wider than `reg` is centred in it. Pure.
+ */
+export function sectionOffsetX(cur: readonly [number, number], prev: readonly [number, number] | null, zoom: number, view: readonly [number, number], reg: readonly [number, number], pad: number): number {
+  const lo = prev ? Math.min(prev[0], cur[0]) : cur[0], hi = prev ? Math.max(prev[1], cur[1]) : cur[1];
+  const unionW = (hi - lo) * zoom;
+  let off = (view[0] + view[1]) / 2 - ((lo + hi) / 2) * zoom;
+  if (prev && unionW > view[1] - view[0]) off = view[1] - pad - hi * zoom; // the pair does not fit: keep the current section's far edge in
+  const a = cur[0] * zoom + off, b = cur[1] * zoom + off;
+  const rlo = reg[0] + pad, rhi = reg[1] - pad;
+  if (b - a >= rhi - rlo) return (reg[0] + reg[1]) / 2 - ((cur[0] + cur[1]) / 2) * zoom;
+  if (a < rlo) off += rlo - a;
+  else if (b > rhi) off -= b - rhi;
+  return off;
+}

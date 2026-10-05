@@ -1,6 +1,6 @@
 import { SHAPES, type Shape } from './shapes';
 import { Composition, type Piece } from './composition';
-import { DEFAULT_CAMERA, fitTo, panBy, rotatedBounds, screenToBoard, zoomAt, type Camera } from './camera';
+import { DEFAULT_CAMERA, cFrameZoom, fitTo, panBy, phoneComfortZoom, rotatedBounds, screenToBoard, zoomAt, type Camera } from './camera';
 import { History } from './history';
 import { deserialize, serialize, serializeToString, type SerializedComposition, type DeserializeResult } from './serialize';
 import { buildShareUrl, decode, encode, encodedFromHash } from './share';
@@ -22,7 +22,7 @@ import {
   observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type CalloutSide, type GuideState,
   type GuideWorld, type Rect,
 } from './guide';
-import { splitSections } from './sections';
+import { lettersZoom, sectionOffsetX, splitSections } from './sections';
 import { filledBy, outlinesAt, settleRotation, stackFix, type Outline } from './outline';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
@@ -68,6 +68,8 @@ const TRAY_COLUMN_MIN_W = 76; // CSS px, minimum width of the landscape tray col
 const TRAY_COLUMN_W = Math.max(...SHAPES.map((s) => s.bbox.w + 2 * PAD));
 const TRAY_COLUMN_H = SHAPES.reduce((n, s) => n + s.bbox.h + 2 * PAD, 0);
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
+/** A black oval's upright width, board units: phones' comfortable zoom fits four of them across the board's shorter side. */
+const OVAL_WIDTH = SHAPE_BY_ID.get('positive-round')!.uprightBox.w;
 /** A shape's size for the guide's click-in tolerance: the longer side of its upright bounds, board units. */
 const sizeOf = (id: string): number => {
   const u = SHAPE_BY_ID.get(id)?.uprightBox;
@@ -93,6 +95,10 @@ const SECTION_MIN_TARGET = 24;
 const SECTION_MAX_COMFORT = 4;
 /** Phones, the word by sections: the view glides to the next section over this long, ms (instantly with reduced motion). */
 const SECTION_GLIDE_MS = 450;
+/** Phones, the word by sections: the zoom cap and the built section before it (board x range) a section is framed with. */
+interface SectionContext { maxZoom: number; prev: [number, number] | null; /** Fraction of the zoom that fits the room to use (default 1): spare room for the callout to step aside into. */ slack?: number }
+/** Phones, the guide's c: it uses this share of the zoom that just fits the room, so the callout can step aside (a rotate handle pushes it) without covering the c. */
+const C_FIT_SLACK = 0.9;
 const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 const STYLES = `
@@ -583,6 +589,8 @@ export class FridgeFace extends HTMLElement {
    * phones: the current section, gliding there, or the finished word at step 6). false: nothing pending.
    */
   private wordFitPending: false | 'instant' | 'smooth' = false;
+  /** Phones, steps 1 to 3: the c is framed once the callout can be measured (see `fitC`). */
+  private cFitPending = false;
   private viewGlide = 0; // the view gliding to a section (requestAnimationFrame id), 0 when still
   private gliding = false; // the glide itself is moving the view (any other view change cancels it)
   private sectionCache: { word: unknown; sections: number[][] } | null = null; // the word's sections (phones), per word
@@ -846,6 +854,7 @@ export class FridgeFace extends HTMLElement {
         this.setView({ x: after.width / 2 - centre.x * z, y: after.height / 2 - centre.y * z, zoom: z });
         // Phones, the word by sections: frame the current section again in the new board.
         if (this.guide.phase === 'word' && this.guide.sections) this.wordFitPending = 'instant';
+        if (this.guide.phase === 'c' && this.isCompact && this.guide.step >= 1 && this.guide.step <= 3) this.cFitPending = true;
       } else if (this.pendingFit && this.boardEl.clientWidth) {
         this.pendingFit = false;
         this.viewReady = true;
@@ -1511,8 +1520,22 @@ export class FridgeFace extends HTMLElement {
     this.scheduleGuide(); // pan and zoom move what the callout points at
   }
 
-  /** The zoom at which a positive stem is COMFORT_STEM of the board's shorter visible side. */
+  /**
+   * The comfortable zoom: the default view, the reference Frame all caps against. Desktop: a positive stem is COMFORT_STEM of
+   * the board's shorter side. Phones (compact): four black ovals fit across the VISIBLE board's shorter side (v1.2.5).
+   */
   comfortZoom(): number {
+    if (!this.isCompact) return this.legacyComfortZoom();
+    const v = this.visibleView();
+    return phoneComfortZoom({ width: v.w, height: v.h }, OVAL_WIDTH);
+  }
+
+  /**
+   * The comfortable zoom before v1.2.5 (a positive stem is COMFORT_STEM of the board's shorter side, whole board). Kept for
+   * ONE use: Keep my pieces' framing caps (`frameBeside`), so that tested framing is exactly as it was on phones; desktop's
+   * comfortable zoom is this same value.
+   */
+  private legacyComfortZoom(): number {
     const vp = this.viewport();
     const side = Math.min(vp.width, vp.height);
     return side > 0 ? (COMFORT_STEM * side) / STEM_LENGTH : DEFAULT_CAMERA.zoom;
@@ -1521,6 +1544,19 @@ export class FridgeFace extends HTMLElement {
   /** The default view: comfortable scale, board origin at the top-left. */
   private defaultView(): Camera {
     return { x: 0, y: 0, zoom: this.comfortZoom() };
+  }
+
+  /**
+   * Phones: the view that frames the guide's c (oval and wedge, `outlines`' tight bounds) centred in the visible board, the
+   * black oval's width 45% of its shorter side (`cFrameZoom`). Other layouts keep the view's own zoom, centring only.
+   */
+  private cView(outlines: readonly Outline[]): Camera | null {
+    const b = this.tightBounds(outlines);
+    if (!b) return null;
+    const v = this.visibleView();
+    if (this.isCompact) this.cFitPending = true; // refined once the callout is placed (fitC)
+    const z = this.isCompact ? cFrameZoom({ width: v.w, height: v.h }, OVAL_WIDTH, b, GUIDE_FRAME_PAD / this.k) : this.view.zoom;
+    return { x: v.x + v.w / 2 - (b.x + b.w / 2) * z, y: v.y + v.h / 2 - (b.y + b.h / 2) * z, zoom: z };
   }
 
   /** A view with the board origin (x = 0, the baseline y = 0) comfortably in sight, left of centre and below the middle. */
@@ -2975,15 +3011,17 @@ export class FridgeFace extends HTMLElement {
     const wc = this.guideWordC();
     if (wc) {
       const { c } = placeWordC(wc.pieces, wc.c, shape, this.visibleCentre());
-      const b = rotatedBounds(c, shape);
-      if (b) {
-        const v = this.visibleView(), z = this.view.zoom;
-        this.setView({ x: v.x + v.w / 2 - (b.x + b.w / 2) * z, y: v.y + v.h / 2 - (b.y + b.h / 2) * z, zoom: z });
-      }
+      const view = this.cView(c);
+      if (view) this.setView(view);
       return c;
     }
     const l = this.guideLetter();
-    return l ? outlinesAt(l.pieces, shape, this.visibleCentre()) : [];
+    const out = l ? outlinesAt(l.pieces, shape, this.visibleCentre()) : [];
+    if (this.isCompact) {
+      const view = this.cView(out); // phones: the c's close-up (no word: its outlines are already centred)
+      if (view) this.setView(view);
+    }
+    return out;
   }
 
   /**
@@ -2998,7 +3036,7 @@ export class FridgeFace extends HTMLElement {
     const work = rotatedBounds(this.composition.pieces, shape);
     const { c } = placeWordC(wc.pieces, wc.c, shape, work ? this.besideCentre(wc.pieces, work) : this.visibleCentre());
     if (work) {
-      const f = frameBeside(work, rotatedBounds(c, shape)!, this.visibleView(), GUIDE_FRAME_PAD / this.k, this.targetZoom(c), FIT_MAX_COMFORT * this.comfortZoom());
+      const f = frameBeside(work, rotatedBounds(c, shape)!, this.visibleView(), GUIDE_FRAME_PAD / this.k, this.targetZoom(c), FIT_MAX_COMFORT * this.legacyComfortZoom());
       this.setView({ x: f.x, y: f.y, zoom: f.zoom });
     }
     return c;
@@ -3056,7 +3094,7 @@ export class FridgeFace extends HTMLElement {
     const shape = (id: string) => SHAPE_BY_ID.get(id);
     if (!work) return outlinesAt(pieces, shape, this.visibleCentre());
     const outlines = outlinesAt(pieces, shape, this.besideCentre(pieces, work, view));
-    const c = frameBeside(work, rotatedBounds(outlines, shape)!, view, GUIDE_FRAME_PAD / this.k, this.targetZoom(outlines), FIT_MAX_COMFORT * this.comfortZoom());
+    const c = frameBeside(work, rotatedBounds(outlines, shape)!, view, GUIDE_FRAME_PAD / this.k, this.targetZoom(outlines), FIT_MAX_COMFORT * this.legacyComfortZoom());
     this.setView({ x: c.x, y: c.y, zoom: c.zoom });
     return outlines;
   }
@@ -3572,13 +3610,13 @@ export class FridgeFace extends HTMLElement {
    * at each width it may take, in its tallest form) and of the action bar (it shows after every click-in). The largest
    * free strip wins (`freeRect`); the callout later places itself clear of the outlines.
    */
-  private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0) {
+  private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0, ctx: SectionContext | null = null) {
     const g = this.guideEl;
     const bar = this.actionsRect();
     const tray = toRect(this.trayEl.getBoundingClientRect());
     const grow = (r: Rect, m: number): Rect => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
     const t3 = g.querySelector<HTMLElement>('.gt3')!, was = [t3.textContent, t3.hidden] as const;
-    if (this.guide.step === 5) {
+    if (this.guide.step === 5 || this.guide.phase === 'c') {
       t3.textContent = this.turnText(); // room for the turning hint, so it never has to cover the outlines later
       t3.hidden = false;
     }
@@ -3629,7 +3667,7 @@ export class FridgeFace extends HTMLElement {
         }
       }
     }
-    this.frameRect(b, reg, smooth);
+    this.frameRect(b, reg, smooth, ctx);
   }
 
   /** Phones, step 5: frame the CURRENT section's outlines (see `frameClear`), gliding there unless `smooth` is false. */
@@ -3645,7 +3683,31 @@ export class FridgeFace extends HTMLElement {
       return u ? Math.min(u.w, u.h) : Infinity;
     }));
     const parts = list.map((o) => this.tightBounds([o])!);
-    if (b) this.frameClear(b, parts, widths, bounds, obstacles, smooth, Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0);
+    if (!b) return;
+    // About two letters in view (v1.2.5): the view is SECTION_LETTERS_IN_VIEW average sections wide (src/sections.ts), the
+    // current section with the built one before it as context. The zoom is that, or less where the section would not fit
+    // the room the callout leaves (a tall section on a short landscape board).
+    const widths2 = s.sections.map((sec) => this.tightBounds(sec.map((i) => s.outlines[i]))?.w ?? 0);
+    const vw = this.viewport().width;
+    const two = lettersZoom(vw, widths2);
+    const prev = k > 0 ? this.tightBounds(s.sections[k - 1].map((i) => s.outlines[i])) : null;
+    const ctx: SectionContext = { maxZoom: two > 0 ? two : Infinity, prev: prev ? [prev.x, prev.x + prev.w] : null };
+    const want = Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0;
+    this.frameClear(b, parts, widths, bounds, obstacles, smooth, want, ctx);
+  }
+
+  /**
+   * Phones, steps 1 to 3: the c (oval and wedge, all its outlines) framed with the black oval 45% of the visible board's
+   * shorter side, or less where the whole c does not then fit the room the docks, the callout (in its tallest form), the
+   * action bar and the tray leave (`frameClear`: the largest free strip wins, the c centred in it).
+   */
+  private fitC(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[]) {
+    const list = this.guide.outlines;
+    const b = this.tightBounds(list);
+    if (!b) return;
+    const v = this.visibleView();
+    const maxZoom = cFrameZoom({ width: v.w, height: v.h }, OVAL_WIDTH, { w: 0, h: 0 }, 0); // the 45% zoom, whatever the room
+    this.frameClear(b, list.map((o) => this.tightBounds([o])!), widths, bounds, obstacles, false, 0, { maxZoom, prev: null, slack: C_FIT_SLACK });
   }
 
   /** Phones, step 6: the finished word, framed whole (the callout centres itself clear of it where it can). */
@@ -3659,13 +3721,23 @@ export class FridgeFace extends HTMLElement {
    * Frame board rect `b` centred in `reg` (client px) with SECTION_FRAME_PAD of air, as large as fits (a section is small,
    * so up to SECTION_MAX_COMFORT times the comfortable scale: Frame all's cap would keep its thinnest targets too small).
    */
-  private frameRect(b: Rect, reg: Rect, smooth: boolean) {
+  private frameRect(b: Rect, reg: Rect, smooth: boolean, ctx: SectionContext | null = null) {
     const board = this.boardEl.getBoundingClientRect();
     const k = this.k;
     const m = SECTION_FRAME_PAD;
-    const zoom = Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h), SECTION_MAX_COMFORT * this.comfortZoom());
+    const zoom = Math.min((ctx?.slack ?? 1) * Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h)), SECTION_MAX_COMFORT * this.comfortZoom(), ctx?.maxZoom ?? Infinity);
     const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
     const to = { x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom };
+    if (ctx) {
+      // Vertically: where the view is zoomed out past what the room needs, the section sits at the top of it, leaving the
+      // spare room below it for the callout to move into (a rotate handle can push the callout up from the tray).
+      to.y = (reg.y - board.top) / k + m / k - b.y * zoom + (reg.h / k - 2 * m / k - b.h * zoom) * 0.25;
+    }
+    if (ctx?.prev) {
+      // Horizontally: the built section before this one shows as context where the view has room (sectionOffsetX).
+      const vp = this.viewport();
+      to.x = sectionOffsetX([b.x, b.x + b.w], ctx.prev, zoom, [0, vp.width], [(reg.x - board.left) / k, (reg.x + reg.w - board.left) / k], m / k);
+    }
     if (smooth) this.glideTo(to);
     else {
       this.stopGlide();
@@ -3805,7 +3877,12 @@ export class FridgeFace extends HTMLElement {
         Object.assign(g.style, prevPos); // it stays where it was while the view glides; placed again once the glide ends
         return;
       }
+    } else if (this.cFitPending && this.guide.phase === 'c' && s >= 1 && s <= 3 && this.isCompact) {
+      this.cFitPending = false;
+      this.fitC(widths, bounds, obstacles);
+      this.renderOutlines();
     } else if (this.wordFitPending && this.guide.phase !== 'word') this.wordFitPending = false;
+    if (this.cFitPending && this.guide.phase !== 'c') this.cFitPending = false;
     // The active outlines and the piece being turned toward one must stay in sight: the callout never covers them.
     const st = this.guide;
     const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));

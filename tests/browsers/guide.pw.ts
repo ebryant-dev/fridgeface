@@ -152,7 +152,7 @@ const onOutline = (p: P, o: O) => p.shapeId === o.shapeId && Math.hypot(p.x - o.
  * The callout: inside the viewport and the board, clear of its target, the dock panels, the action bar and the tray, and
  * (v2) clear of every active outline and of the piece being turned toward one.
  */
-async function checkCallout(page: Page, label: string, opts: { panned?: boolean } = {}) {
+async function checkCallout(page: Page, label: string, opts: { panned?: boolean; squeezed?: boolean } = {}) {
   await frames(page);
   const m = await page.evaluate(() => {
     const ff = document.querySelector('fridge-face') as FF;
@@ -209,7 +209,9 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean 
   if (m.turn) expect.soft(ov(c, m.turn), `${where} overlaps the piece being turned ${JSON.stringify(m.turn)}`).toBe(false);
   for (const h of m.handles) expect.soft(ov(c, h), `${where} overlaps a rotate handle's 44px hit box ${JSON.stringify(h)}`).toBe(false);
   expect.soft(ov(c, m.tray), `${where} overlaps the tray`).toBe(false);
-  for (const k of m.controls) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
+  // (squeezed: a pan put the rotate handle where the callout was, at the foot of a ~545 px board between the section and the
+  // action bar: the callout's last resort puts handle and outlines first, the action bar may then be touched.)
+  for (const k of m.controls) if (!(opts.squeezed && k.name.includes('actions'))) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
   return m;
 }
 
@@ -1119,6 +1121,28 @@ async function shown(page: Page) {
   });
 }
 
+/**
+ * Phones, the word by sections: how much of the word the view shows across, in letter-sections. `view` is the board's width
+ * in board units at the current zoom; `avg` the average section's width and `cur` the current section's, from the real
+ * outlines' tight bounds (the same measure the framing uses); `prevIn` whether at least half of the built section before it is in view.
+ */
+async function sectionSpan(page: Page) {
+  return page.evaluate(() => {
+    const ff = document.querySelector('fridge-face') as FF & { tightBounds(o: O[]): { x: number; y: number; w: number; h: number } | null; viewport(): { width: number; height: number } };
+    const g = ff.guide, sr = ff.shadowRoot!;
+    const k = parseFloat(getComputedStyle(sr.querySelector('.board')!).getPropertyValue('--k'));
+    const secs = g.sections!;
+    const cur = secs.findIndex((sec) => sec.some((i) => !g.filled[i]));
+    const bs = secs.map((sec) => ff.tightBounds(sec.map((i) => g.outlines[i]))!);
+    const avg = bs.reduce((a, b) => a + b.w, 0) / bs.length;
+    const v = ff.getView(), vw = ff.viewport().width;
+    const left = -v.x / v.zoom, right = (vw - v.x) / v.zoom; // board x range in view
+    const inX = (b: { x: number; w: number }) => b.x >= left - 1 && b.x + b.w <= right + 1;
+    const share = (b: { x: number; w: number }) => Math.max(0, Math.min(right, b.x + b.w) - Math.max(left, b.x)) / b.w; // the part of it in view
+    return { view: vw / v.zoom, avg, cur: bs[cur].w, curIn: inX(bs[cur]), prevIn: cur > 0 ? share(bs[cur - 1]) >= 0.5 : null, k };
+  });
+}
+
 /** Into step 5 on a blank board: the c by Next (it is tested above), then Guide me. The c stays: returns its pieces. */
 async function toWord(page: Page, isMobile: boolean, project?: string): Promise<P[]> {
   await open(page, '/?n=sec');
@@ -1165,6 +1189,7 @@ test('phones: the REAL create, section by section (shuffled within each): only t
   const landscape = info.project.name.endsWith('landscape');
   const nm = NAMES[info.project.name];
   const mins: string[] = [];
+  const spans: string[] = [];
   let lastView: { x: number; y: number; zoom: number } | null = null;
   let done = 3; // the c (outlines 0, 1, 2) is already in place: section 1 shows only its other outlines
   let seed = 11;
@@ -1180,13 +1205,22 @@ test('phones: the REAL create, section by section (shuffled within each): only t
     if (lastView) expect(view.x !== lastView.x || view.y !== lastView.y || view.zoom !== lastView.zoom, `section ${k + 1}: the view moved to it`).toBe(true);
     lastView = view;
     mins.push(sh.min.toFixed(1));
-    // The aim is 24 px (the framing zooms in that far whenever the callout, its turning hint and the action bar can stay
-    // clear). The tallest sections (about 750 board units of stems and wedges) cannot: about 18 to 20 px in portrait and
-    // 17 to 19 in landscape, where the board is only ~330 px tall. Sections without stems are far larger.
-    expect(sh.min, `section ${k + 1}: the thinnest target`).toBeGreaterThanOrEqual(landscape ? 17 : 18);
+    const span = await sectionSpan(page);
+    spans.push(`${(span.view / span.avg).toFixed(2)}${span.prevIn === null ? '' : span.prevIn ? '+' : '-'}`);
+    expect(span.curIn, `section ${k + 1}: the current section is in view`).toBe(true);
+    // v1.2.5: about TWO letters in view. The aim is up to 24 px targets, but the view is at most two average sections wide, so
+    // a tall section (about 750 board units of stems and wedges) is limited by the height of the room the callout leaves:
+    // measured 17 to 24 px (the thinnest stems and wedges; the rest are far larger). Edward accepted about 14 to 18 px.
+    expect(sh.min, `section ${k + 1}: the thinnest target`).toBeGreaterThanOrEqual(14);
+    // The measure of "about two letters": the board's width in the view, in AVERAGE sections (the same average the framing
+    // zooms by, so the scale is steady from section to section). Portrait: 1.6 to 2.4, always. Landscape's board is only ~340
+    // px tall, so a tall section sets the zoom (the view shows about 3 to 4 sections), never fewer than 1.6.
+    expect(span.view / span.avg, `section ${k + 1}: letters in view`).toBeGreaterThanOrEqual(1.6);
+    expect(span.view / span.avg, `section ${k + 1}: letters in view`).toBeLessThanOrEqual(landscape ? 4.2 : 2.4);
     await checkCallout(page, `section ${k + 1}`);
     if (nm === 'wk-iphone' && (k === 0 || k === 2)) await page.screenshot({ path: `${SHOT}/g4-section${k + 1}-wk-iphone.png` });
     if (nm === 'wk-iphone-landscape' && k === 0) await page.screenshot({ path: `${SHOT}/g4-section1-wk-iphone-landscape.png` });
+    if ((nm === 'wk-iphone' || nm === 'wk-iphone-landscape') && k === 2) await page.screenshot({ path: `${SHOT}/zoom-create-s3-${nm}.png` });
     // A shuffled order within the section (fixed seed).
     const order = [...sec];
     for (let j = order.length - 1; j > 0; j--) {
@@ -1205,6 +1239,8 @@ test('phones: the REAL create, section by section (shuffled within each): only t
   }
   info.annotations.push({ type: 'smallest target per section', description: mins.join(', ') + ' CSS px' });
   console.log(`[${info.project.name}] smallest target per section: ${mins.join(', ')} CSS px`);
+  console.log(`[${info.project.name}] view width in average sections (+: half or more of the built section before it is in view): ${spans.join(', ')}`);
+  expect(spans.filter((x) => x.endsWith('+')).length, `the built section before it shows as context in most sections (${spans.join(', ')})`).toBeGreaterThanOrEqual(4);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await settled(page);
   await expectCInPlace(page, c, 'the finished word (phone)');
@@ -1310,14 +1346,14 @@ type FFi = FF & {
 };
 
 /** A negative stem of the visitor's own (not part of the c), added in view near the board's centre: its id. */
-async function addStem(page: Page, dx = 0): Promise<string> {
-  return page.evaluate((dx) => {
+async function addStem(page: Page, dx = 0, shapeId = 'negative-stem'): Promise<string> {
+  return page.evaluate(({ dx, shapeId }) => {
     const ff = document.querySelector('fridge-face') as unknown as FFi;
     const b = ff.shadowRoot!.querySelector('.board')!.getBoundingClientRect();
     const v = ff.getView();
     const x = (b.width / 2 / ff.k - v.x) / v.zoom + dx, y = (b.height / 2 / ff.k - v.y) / v.zoom;
-    return ff.composition.addPieces([{ shapeId: 'negative-stem', x, y, rotation: 0 }])[0].id;
-  }, dx);
+    return ff.composition.addPieces([{ shapeId, x, y, rotation: 0 }])[0].id;
+  }, { dx, shapeId });
 }
 
 /**
@@ -1329,6 +1365,7 @@ async function handleProbe(page: Page, label: string, ids: string[], pan = false
   await expect(guide(page)).toBeVisible();
   const where = await guide(page).boundingBox();
   const target = { x: where!.x + where!.width / 2, y: where!.y + where!.height / 2 };
+  const view0 = await page.evaluate(() => (document.querySelector('fridge-face') as unknown as FFi).getView());
   await page.evaluate(async ({ ids, target, pan }) => {
     const ff = document.querySelector('fridge-face') as unknown as FFi;
     const raf = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -1354,10 +1391,15 @@ async function handleProbe(page: Page, label: string, ids: string[], pan = false
   await frames(page);
   await frames(page);
   await expect(guide(page)).toBeVisible();
-  const m = await checkCallout(page, `${label} (handle moved under it${pan ? ' by panning' : ''})`, { panned: pan });
+  const m = await checkCallout(page, `${label} (handle moved under it${pan ? ' by panning' : ''})`, { panned: pan, squeezed: pan && label === 'step 5' });
   expect(m.handles.length, `${label}: a handle shows`).toBeGreaterThan(0);
   const ov = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
   for (const h of m.handles) expect(ov(m.callout, h), `${label}: the callout ${JSON.stringify(m.callout)} is clear of the handle ${JSON.stringify(h)}`).toBe(false);
+  // The pan was only to put the handle under the callout: put the view back, so the next step starts framed as the guide left it.
+  if (pan) {
+    await page.evaluate((v) => (document.querySelector('fridge-face') as unknown as FFi).setView(v), view0);
+    await frames(page);
+  }
   return m;
 }
 
@@ -1391,11 +1433,18 @@ test('the callout never covers a rotate handle: a selected piece (or a selection
   await expect.poll(async () => (await state(page)).step).toBe(4);
   await handleProbe(page, 'step 4', [a, b]);
   if (await realCreate(page)) {
+    // The visitor's two stems were moved under the callout at the c's close-up (scale-dependent board spots, now beside the c).
+    // They are not part of what this probe tests: take them off before Guide me (stray pieces would make it place the word
+    // clear of them, not on the c), and use a fresh one for step 5.
+    await page.evaluate((ids) => (document.querySelector('fridge-face') as unknown as { composition: { deletePieces(ids: string[]): number } }).composition.deletePieces(ids), [a, b]);
     await press(isMobile, gbtn(page, 'word'));
     await expect(guide(page)).toHaveAttribute('data-step', '5');
     await page.waitForTimeout(700); // phones: the view glides to the first section
-    await handleProbe(page, 'step 5', [a]);
-    await handleProbe(page, 'step 5', [a], true);
+    // A white oval, not a stem: at the section's close-up a stem is about 175 px tall, and one panned to the callout's place
+    // at the foot of the board leaves the callout nowhere to go (a corner, not what this checks).
+    const a5 = await addStem(page, 0, 'negative-round');
+    await handleProbe(page, 'step 5', [a5]);
+    await handleProbe(page, 'step 5', [a5], true);
   }
   expect(errors).toEqual([]);
 });

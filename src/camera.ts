@@ -25,6 +25,39 @@ export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 8;
 export const DEFAULT_CAMERA: Readonly<Camera> = { x: 0, y: 0, zoom: 1 };
 
+/** Phones, free play: this many black ovals (positive rounds) fit side to side across the visible board's shorter side... */
+export const PHONE_OVALS_ACROSS = 4;
+/** ...with a little air, so four fit with a sliver to spare (the row is 97% of that side). */
+export const PHONE_COMFORT_MARGIN = 0.97;
+
+/**
+ * The comfortable zoom on phones (the compact layout, either orientation): PHONE_OVALS_ACROSS black ovals, `ovalWidth` board
+ * units wide each, fit side by side across the shorter side of `visible`, the board area actually in sight (below the top
+ * docks in portrait; right of the vertical tray in landscape: the host passes that area's size in screen units). Pure.
+ */
+export function phoneComfortZoom(visible: { width: number; height: number }, ovalWidth: number): number {
+  const side = Math.min(visible.width, visible.height);
+  return side > 0 && ovalWidth > 0 ? (PHONE_COMFORT_MARGIN * side) / (PHONE_OVALS_ACROSS * ovalWidth) : DEFAULT_CAMERA.zoom;
+}
+
+/** Phones, the guide's c (steps 1 to 3): the black oval's upright width is this share of the visible board's shorter side. */
+export const C_OVAL_SHARE = 0.45;
+
+/**
+ * The zoom that frames the guide's c on phones: the black oval's upright width, `ovalWidth` board units, is C_OVAL_SHARE of the
+ * shorter side of `visible` (the same visible-board area as `phoneComfortZoom`: about 2.2 ovals across), or less where the
+ * whole c (`c`, its tight bounds in board units, oval and wedge) would not then fit `visible` with `pad` of air on every side
+ * (a short landscape board). Pure; 1 when a size is missing.
+ */
+export function cFrameZoom(visible: { width: number; height: number }, ovalWidth: number, c: { w: number; h: number }, pad: number): number {
+  const side = Math.min(visible.width, visible.height);
+  if (!(side > 0) || !(ovalWidth > 0)) return DEFAULT_CAMERA.zoom;
+  const want = (C_OVAL_SHARE * side) / ovalWidth;
+  const zw = c.w > 0 ? Math.max(1, visible.width - 2 * pad) / c.w : Infinity;
+  const zh = c.h > 0 ? Math.max(1, visible.height - 2 * pad) / c.h : Infinity;
+  return Math.min(want, zw, zh);
+}
+
 export function clampZoom(zoom: number, min = MIN_ZOOM, max = MAX_ZOOM): number {
   return Math.min(max, Math.max(min, zoom));
 }

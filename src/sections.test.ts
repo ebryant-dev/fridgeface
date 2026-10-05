@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CLEAR_GAP, centreXs, sectionOf, splitSections } from './sections';
+import { CLEAR_GAP, SECTION_LETTERS_IN_VIEW, centreXs, lettersZoom, sectionOf, sectionOffsetX, splitSections } from './sections';
+import { rotatedBounds } from './camera';
 import type { Outline, ShapeFrame } from './outline';
 
 /**
@@ -103,5 +104,45 @@ describe('the REAL word-create-1', () => {
     // Roughly balanced: no section more than twice another.
     const n = s.map((x) => x.length);
     expect(Math.max(...n)).toBeLessThanOrEqual(2 * Math.min(...n));
+  });
+});
+
+describe('about two letters in view on phones (v1.2.5)', () => {
+  const boardW = (sec: number[]) => rotatedBounds(sec.map((i) => createPieces[i]), shapeOf)!;
+  const secs = splitSections(createPieces, shapeOf, CREATE.text.length);
+  const widths = secs.map((s) => boardW(s).w);
+  const avg = widths.reduce((a, b) => a + b, 0) / widths.length;
+
+  it('the view is SECTION_LETTERS_IN_VIEW (2) average sections wide, so 1.6 to 2.4 of any ordinary section', () => {
+    expect(SECTION_LETTERS_IN_VIEW).toBe(2);
+    for (const viewW of [393, 734]) {
+      const view = viewW / lettersZoom(viewW, widths); // board units across
+      expect(view / avg).toBeCloseTo(2, 9);
+      // Measured against the current section: within 1.6 to 2.4 of every section within 20% of the average width.
+      for (const w of widths.filter((w) => Math.abs(w - avg) <= 0.2 * avg)) {
+        expect(view / w).toBeGreaterThanOrEqual(1.6);
+        expect(view / w).toBeLessThanOrEqual(2.4);
+      }
+    }
+  });
+
+  it('has no zoom with nothing to measure', () => {
+    expect(lettersZoom(393, [])).toBe(0);
+    expect(lettersZoom(0, [100])).toBe(0);
+  });
+
+  it('sectionOffsetX centres the built section and the current one together, keeping the current inside the free strip', () => {
+    const zoom = 1, view: [number, number] = [0, 400];
+    const off = sectionOffsetX([200, 380], [0, 180], zoom, view, [0, 400], 8);
+    expect(0 * zoom + off).toBeGreaterThanOrEqual(0); // the built section is in view
+    expect(380 * zoom + off).toBeLessThanOrEqual(392);
+    expect((0 + 380) / 2 * zoom + off).toBeCloseTo(200); // the pair is centred
+    // The free strip (clear of the callout) excludes the left 150: the current section is kept inside it.
+    const o2 = sectionOffsetX([200, 380], [0, 180], zoom, view, [150, 400], 8);
+    expect(200 * zoom + o2).toBeGreaterThanOrEqual(158);
+    // No built section before it (the first section): centred, and kept inside the strip.
+    expect(sectionOffsetX([100, 300], null, zoom, view, [0, 400], 8)).toBeCloseTo(0);
+    // A pair wider than the view keeps the current section's far edge in.
+    expect(380 * 2 + sectionOffsetX([300, 380], [0, 180], 2, view, [0, 400], 8)).toBeCloseTo(392);
   });
 });

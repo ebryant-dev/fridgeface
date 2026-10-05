@@ -251,6 +251,9 @@ test('phone: a suggestion placed from the letters sheet lands below the docks an
     await press(isMobile, el(page, '[data-history=clear]'));
     await press(isMobile, el(page, '[data-history=clear-yes]'));
   }
+  // With the guide on (FF_GUIDE=on) the blank board is framed on the c (v1.2.5: the oval 45% of the board's shorter side, closer
+  // than free play's), a view a whole letter does not fit: Frame all (a blank board: the default view) is what a visitor would do.
+  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { fitToComposition(): void }).fitToComposition());
   await el(page, '.board svg.surface').focus();
   await page.keyboard.press('l');
   await expect(el(page, '.sugg')).toBeVisible();
