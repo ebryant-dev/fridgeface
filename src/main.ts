@@ -16,16 +16,18 @@ import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } fro
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_NEXT_MS, coverage, endGuide, guideWanted, nextStep, observeGuide, placeCallout, readGuideOff, rebaseGuide,
-  startGuide, writeGuideOff, type CalloutSide, type GuideState, type GuideWorld, type Rect,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, chooseWord, coverage, endGuide, guideClickIn, guideProgress,
+  guideWanted, nextOutline, observeGuide, placeCallout, readGuideOff, startGuide, writeGuideOff, type CalloutSide, type GuideState,
+  type GuideWorld, type Rect,
 } from './guide';
+import { filledBy, outlinesAt, stackFix, type Outline } from './outline';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
   announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro,
   announceSelectionCount, announceGroupMoved, announceGroupRotated, announceGroupDeleted,
 } from './announce';
 import {
-  boxFromCorners, bringForwardOverlapping, convexIntersect, piecesInBox, placeOutline, rotateAbout, rotateRigid, selectAll, selectionFrame,
+  boundsOf, boxFromCorners, bringForwardOverlapping, convexIntersect, piecesInBox, placeOutline, rotateAbout, rotateRigid, selectAll, selectionFrame,
   sendBackwardOverlapping, toggleInSelection, translateAll, type Box, type Pt,
 } from './selection';
 
@@ -62,6 +64,18 @@ const TRAY_COLUMN_MIN_W = 76; // CSS px, minimum width of the landscape tray col
 const TRAY_COLUMN_W = Math.max(...SHAPES.map((s) => s.bbox.w + 2 * PAD));
 const TRAY_COLUMN_H = SHAPES.reduce((n, s) => n + s.bbox.h + 2 * PAD, 0);
 const STEM_LENGTH = SHAPE_BY_ID.get('positive-stem')!.uprightBox.h;
+/** A shape's size for the guide's click-in tolerance: the longer side of its upright bounds, board units. */
+const sizeOf = (id: string): number => {
+  const u = SHAPE_BY_ID.get(id)?.uprightBox;
+  return u ? Math.max(u.w, u.h) : 0;
+};
+/** The guide's outlines: blueprint blue, dotted, in screen px (counter-scaled with zoom). */
+const OUTLINE_COLOR = '#378ADD';
+const OUTLINE_PX = 2.75;
+const OUTLINE_DASH = [6, 5];
+/** A piece clicking into its outline settles there over this long, ms (no motion with reduced motion). */
+const SETTLE_MS = 170;
+const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 const STYLES = `
 /* The compact layouts follow the element's own box, not the window's: a ResizeObserver on the host sets
@@ -324,13 +338,12 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 }
 .guide[hidden], .guide [hidden] { display: none !important; }
 .gtext { margin: 0; font: 700 14px/1.35 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
+.gtext .gt2, .gtext .gt3 { display: block; margin-top: 4px; }
+.gtext .gt2.gprog { font-weight: 500; letter-spacing: 0.12em; }
 .grow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .grow.gctl button.b { font-size: 11px; padding: 0 10px; }
 .guide button.b.pri { background: var(--ink); color: var(--paper); }
 .guide button.b.pri:hover { background: #333; }
-.gnote { margin: 10px 0 0; font: 500 12px/1.45 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
-.gnote .gabc { display: inline-flex; vertical-align: -0.4em; }
-.gnote .gabc .ic { width: 20px; height: 20px; }
 /* The pointer: a flat black triangle (white edge, so it reads on black pieces too) just outside the callout, tip toward the target. */
 .gpt { position: absolute; width: 22px; height: 13px; pointer-events: none; line-height: 0; }
 .gpt svg { display: block; animation: ff-guide-nudge 1.2s ease-in-out infinite; }
@@ -343,21 +356,15 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 /* The row of small controls: hit areas (::after) carry the 44px touch target, not visual bulk. */
 .grow.gctl button.b { position: relative; }
 .grow.gctl button.b::after { content: ""; position: absolute; inset: -4px -2px; }
-/* Step 4: "Don't show again" is small and secondary (no Skip: Keep playing does that). */
-.guide[data-step="4"] .gctl { margin-top: 6px; }
-.guide[data-step="4"] .gctl button.b { min-height: 30px; padding: 0 2px; border-color: transparent; text-decoration: underline; text-underline-offset: 3px; }
-.guide[data-step="4"] .gctl button.b::after { inset: -7px -6px; }
 /* Phones (compact): a smaller callout, so it covers as little of the board as it can. Width is set from JS (45% of the board in landscape). */
 [data-compact] .guide { padding: 8px 10px 8px 10px; box-shadow: 3px 4px 0 rgb(0 0 0 / 0.25); }
 [data-compact] .gtext { font-size: 12px; line-height: 1.3; letter-spacing: 0.06em; }
-[data-compact] .gnote { margin-top: 6px; font-size: 10.5px; line-height: 1.35; letter-spacing: 0.06em; }
 [data-compact] .grow { margin-top: 6px; gap: 4px; }
 [data-compact] .grow.gctl { flex-wrap: nowrap; gap: 12px; margin-top: 4px; }
 [data-compact] .grow.gctl button.b { min-width: 0; min-height: 28px; padding: 0 6px; font-size: 10px; letter-spacing: 0.08em; border-width: 1.5px; white-space: nowrap; }
 [data-compact] .grow.gctl button.b::after { inset: -8px -6px; }
-[data-compact] .guide[data-step="4"] .gctl button.b { min-height: 28px; padding: 0 2px; }
-[data-compact] .gfour button.b { position: relative; min-height: 34px; font-size: 11px; padding: 0 10px; }
-[data-compact] .gfour button.b::after { content: ""; position: absolute; inset: -5px -2px; }
+[data-compact] .gpick button.b { position: relative; min-height: 34px; font-size: 11px; padding: 0 10px; }
+[data-compact] .gpick button.b::after { content: ""; position: absolute; inset: -5px -2px; }
 
 /* ---- motion: none at all when the visitor asks for less ---- */
 @media (prefers-reduced-motion: reduce) {
@@ -436,6 +443,7 @@ export class FridgeFace extends HTMLElement {
   private cameraEl!: SVGGElement;
   private piecesLayer!: SVGGElement;
   private overlay!: SVGGElement;
+  private outlinesEl!: SVGGElement;
   private actions!: HTMLElement;
   private boardEl!: HTMLElement;
   private trayEl!: HTMLElement;
@@ -549,8 +557,12 @@ export class FridgeFace extends HTMLElement {
   private guideNext = false; // the Next button is offered
   private guideNextTimer = 0;
   private guideFrame = 0;
-  private guideLoading = false; // a load is replacing the board: not the visitor doing a step
+  private guideLoading = false; // a load is replacing the board: judged once, after it
   private guideFocusOnShow = false; // a replay from Controls moves focus into the callout once it shows
+  private guideQueued = false; // the guide waits for the board to be laid out (its outlines are centred in it)
+  private wordFitPending = false; // step 5: frame the word's outlines beside the callout, once it can be measured
+  private outlineZoom = NaN;
+  private keySnapTimer = 0; // `,` `.` turns click in when the keys pause
   private authoring = false;
 
   connectedCallback() {
@@ -585,7 +597,7 @@ export class FridgeFace extends HTMLElement {
       <div class="board" part="board">
         <svg class="surface" tabindex="0" role="application" aria-label="Fridgeface board" aria-describedby="ff-desc">
           <defs><pattern id="ff-tex" patternUnits="userSpaceOnUse" x="0" y="0" width="${tex.units}" height="${tex.units}"><image href="${tex.href}" x="0" y="0" width="${tex.units}" height="${tex.units}" preserveAspectRatio="none"/></pattern></defs>
-          <g data-camera aria-hidden="true" transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-overlay></g></g>
+          <g data-camera aria-hidden="true" transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-outlines pointer-events="none"></g><g data-overlay></g></g>
         </svg>
         <div class="actions panel" role="toolbar" aria-label="Piece actions" hidden>
           ${btn('data-action="delete" aria-label="Delete piece"', 'Delete', 'delete')}
@@ -660,12 +672,15 @@ export class FridgeFace extends HTMLElement {
       </div>
       <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
         <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
-        <p class="gtext"><span class="gt1"></span></p>
-        <div class="grow gfour" hidden>
-          <button type="button" class="b" data-guide="fresh"><span class="tx">${GUIDE_COPY.startFresh}</span></button>
-          <button type="button" class="b pri" data-guide="keep"><span class="tx">${GUIDE_COPY.keepPlaying}</span></button>
+        <p class="gtext"><span class="gt1"></span><span class="gt2" hidden></span><span class="gt3" hidden></span></p>
+        <div class="grow gpick" data-pick="4" hidden>
+          <button type="button" class="b pri" data-guide="word"><span class="tx">${GUIDE_COPY.guideMe}</span></button>
+          <button type="button" class="b" data-guide="clear"><span class="tx">${GUIDE_COPY.clearFree}</span></button>
         </div>
-        <p class="gnote" hidden><span class="gletters">${GUIDE_COPY.noteLetters[0]}<span class="gabc">${icon('letters')}<span class="sr">${GUIDE_COPY.noteLetters[1]}</span></span>${GUIDE_COPY.noteLetters[2]} </span>${GUIDE_COPY.noteFree}</p>
+        <div class="grow gpick" data-pick="6" hidden>
+          <button type="button" class="b" data-guide="fresh"><span class="tx">${GUIDE_COPY.startFresh}</span></button>
+          <button type="button" class="b pri" data-guide="keep"><span class="tx">${GUIDE_COPY.keepIt}</span></button>
+        </div>
         <div class="grow gctl">
           <button type="button" class="b" data-guide="skip"><span class="tx">${GUIDE_COPY.skip}</span></button>
           <button type="button" class="b" data-guide="off"><span class="tx">${GUIDE_COPY.dontShow}</span></button>
@@ -694,6 +709,7 @@ export class FridgeFace extends HTMLElement {
     this.textureRect = wrap.querySelector('[data-texture]')!;
     this.piecesLayer = wrap.querySelector('[data-pieces]')!;
     this.overlay = wrap.querySelector('[data-overlay]')!;
+    this.outlinesEl = wrap.querySelector('[data-outlines]')!;
     this.actions = wrap.querySelector('.actions')!;
     this.historyEl = wrap.querySelector('.history')!;
     this.shareEl = wrap.querySelector('.share')!;
@@ -809,6 +825,7 @@ export class FridgeFace extends HTMLElement {
       this.applyView(); // the texture rect follows the viewport size
       this.render();
       if (this.introQueued && this.boardEl.clientWidth) this.startIntroAnimation(); // the board was not laid out yet when the intro began
+      if (this.guideQueued && this.boardEl.clientWidth && !this.introAnims.length) this.autoStartGuide(); // ...or when the guide wanted to start
     }).observe(this.boardEl);
     this.syncViewBox();
     this.syncInsets();
@@ -866,6 +883,7 @@ export class FridgeFace extends HTMLElement {
     this.finishIntro();
     this.flushSave();
     clearTimeout(this.guideNextTimer);
+    clearTimeout(this.keySnapTimer);
   }
 
   attributeChangedCallback(name: string) {
@@ -906,12 +924,12 @@ export class FridgeFace extends HTMLElement {
       this.restoring = false;
       this.guideLoading = false;
     }
-    this.guideRebase();
     if (!undoable) this.history.reset(this.composition.pieces);
     else this.say(announceLoaded(this.composition.pieces.length));
     this.render();
     if (this.boardEl.clientWidth) this.fitToComposition();
     else this.pendingFit = true;
+    this.guideAfterLoad();
   }
 
   /** Read the auto-save back. Returns whether a VALID saved composition existed (even an empty one). */
@@ -945,10 +963,12 @@ export class FridgeFace extends HTMLElement {
     return !!(this.moving || this.rotating || this.twist);
   }
 
-  /** A drag / handle drag / twist is one step: record once, when the gesture ends. */
-  private commitGesture() {
-    if (this.inGesture) return;
-    if (this.history.record(this.composition.pieces)) this.render();
+  /** A drag / handle drag / twist is one step: record once, when the gesture ends. Returns whether it changed anything. */
+  private commitGesture(): boolean {
+    if (this.inGesture) return false;
+    const changed = this.history.record(this.composition.pieces);
+    if (changed) this.render();
+    return changed;
   }
 
   private coalesced(key: string, fn: () => void) {
@@ -996,7 +1016,7 @@ export class FridgeFace extends HTMLElement {
     } finally {
       this.applying = false;
     }
-    this.guideRebase(); // undo and redo are not the visitor doing a step
+    this.guideObserve(); // the guide follows the board: an undone click-in shows its outline again
   }
 
   private clearBoard() {
@@ -1451,6 +1471,7 @@ export class FridgeFace extends HTMLElement {
       this.cameraEl.style.setProperty('--px', `${1 / (this.k * zoom)}px`);
     }
     if (zoom !== this.overlayZoom) this.renderOverlay();
+    if (zoom !== this.outlineZoom) this.renderOutlines(); // the outlines' dots stay the same size on screen
     for (const fn of this.viewListeners) fn();
     this.scheduleGuide(); // pan and zoom move what the callout points at
   }
@@ -1745,10 +1766,11 @@ export class FridgeFace extends HTMLElement {
 
   // ---- adding pieces ----------------------------------------------------
 
-  private addAt(shape: Shape, x: number, y: number) {
+  private addAt(shape: Shape, x: number, y: number): Piece {
     const p = this.composition.addPiece(shape.id, x, y);
     this.select(p.id);
     this.say(announceAdded(shape.name, this.composition.pieces.length));
+    return p;
   }
 
   private addNearCentre(shape: Shape) {
@@ -1818,7 +1840,8 @@ export class FridgeFace extends HTMLElement {
     setTimeout(() => (this.suppressClick = false), 100);
     if (commit && this.overBoard(e.clientX, e.clientY)) {
       const p = this.toBoard(e.clientX, e.clientY);
-      this.addAt(d.shape, p.x, p.y);
+      const added = this.addAt(d.shape, p.x, p.y);
+      this.guideSnap([added.id]); // dropped from the tray close to its outline: it clicks in (guide only)
     }
   }
 
@@ -2227,15 +2250,20 @@ export class FridgeFace extends HTMLElement {
     const wasGesture = this.inGesture;
     // One summary per gesture, never per pixel.
     let said: (() => string | null) | null = null;
+    let released: string[] = []; // the pieces a drag, turn or twist just let go of (the guide may click them in)
     if (this.twist && this.touches.size < 2) {
       const ids = this.twist.ids;
       this.twist = null; // ends cleanly; the remaining finger does nothing
       said = () => this.rotatedText(ids);
+      released = ids;
     }
     const m = this.moving;
     if (m && m.pointerId === e.pointerId) {
       this.moving = null;
-      if (m.moved) said = () => this.movedText(m.ids);
+      if (m.moved) {
+        said = () => this.movedText(m.ids);
+        released = m.ids;
+      }
       else if (e.type === 'pointerup') {
         if (m.onTap === 'remove') {
           this.setSelection(this.selection.filter((id) => id !== m.anchor));
@@ -2247,11 +2275,13 @@ export class FridgeFace extends HTMLElement {
       const ids = this.rotating.ids;
       this.rotating = null;
       said = () => this.rotatedText(ids);
+      released = ids;
     }
     this.syncLift();
-    this.commitGesture();
+    const changed = this.commitGesture();
     if (wasGesture && !this.inGesture) {
       this.render(); // the action bar's restack state is refreshed once, at the end
+      if (changed) this.guideSnap(released); // guide only: close to its outline, it clicks in, in the same undo step
       this.guideObserve(); // a whole drag, turn or twist is judged once, at the end
     }
     const t = said?.();
@@ -2385,6 +2415,12 @@ export class FridgeFace extends HTMLElement {
         this.composition.setPlacements(rotateRigid(sel, centre, rot));
       });
       this.sayLater(`rot:${key}`, () => this.rotatedText(ids));
+      // Guide only: when the keys pause, a piece turned close to its outline's angle clicks in (same undo step as the turn).
+      const after = this.composition.pieces;
+      clearTimeout(this.keySnapTimer);
+      this.keySnapTimer = window.setTimeout(() => {
+        if (this.composition.pieces === after && this.history.present === after && !this.inGesture) this.guideSnap(ids);
+      }, ANNOUNCE_SETTLE_MS);
       e.preventDefault();
       return;
     }
@@ -2579,9 +2615,12 @@ export class FridgeFace extends HTMLElement {
 
   // ---- the "play" intro ----------------------------------------------------------------
 
-  /** First visit only: no saved composition, no share link, `no-intro` unset, and the word play exists (as a word composition, or as the letters p, l, a, y). */
+  /** Opt-in (`intro` attribute), first visit only: no saved composition, no share link, `no-intro` unset, and the word play exists (as a word composition, or as the letters p, l, a, y). */
   private maybeIntro(hadSaved: boolean, authoring: boolean) {
-    const want = introWanted({ hasSavedComposition: hadSaved, hasShareLink: encodedFromHash(location.hash) !== null, disabled: this.hasAttribute('no-intro'), skip: authoring });
+    const want = introWanted({
+      enabled: this.hasAttribute('intro'), // set aside in v1.2.0: off unless the host opts in
+      hasSavedComposition: hadSaved, hasShareLink: encodedFromHash(location.hash) !== null, disabled: this.hasAttribute('no-intro'), skip: authoring,
+    });
     if (!want) return;
     const pieces = introPieces(suggestionStore.list, (id) => SHAPE_BY_ID.get(id));
     if (!pieces) return;
@@ -2849,32 +2888,60 @@ export class FridgeFace extends HTMLElement {
   // ---- the guide ----------------------------------------------------------------------------
 
   private guideWorld(): GuideWorld {
-    return { pieces: this.composition.pieces, polarityOf: (id) => SHAPE_BY_ID.get(id)?.polarity, hullOf };
+    return { pieces: this.composition.pieces, sizeOf };
   }
 
   private guideConditions() {
     return { disabled: this.hasAttribute('no-guide'), authoring: this.authoring, off: readGuideOff(() => localStorage) };
   }
 
+  /** The guide builds Edward's c (`lower-c-1`): without it there is nothing to guide. */
+  private guideLetter() {
+    return suggestionStore.get(GUIDE_LETTER.char, GUIDE_LETTER.variant);
+  }
+
+  /** Step 4 offers the word (`word-create-1`) only when it exists. */
+  private guideWordSuggestion() {
+    return suggestionStore.get(GUIDE_WORD.text, GUIDE_WORD.variant);
+  }
+
   /** "Show guide" in the Controls panel exists only where the guide can run. */
   private syncGuideButton() {
     const el = this.helpEl?.querySelector<HTMLElement>('.ctlguide');
-    if (el) el.hidden = !guideWanted({ ...this.guideConditions(), off: false }, true);
+    if (el) el.hidden = !guideWanted({ ...this.guideConditions(), off: false }, true) || !this.guideLetter();
   }
 
-  /** Every visit, after the intro (or at once without one), unless no-guide, author mode or "Don't show again". */
+  /** The middle of the visible board, in board units (phones: below the docks that cover its top). */
+  private visibleCentre(): Pt {
+    const r = this.boardEl.getBoundingClientRect();
+    const t = Math.min(this.topInset(), r.height / this.k / 2) * this.k;
+    return this.toBoard(r.left + r.width / 2, r.top + t + (r.height - t) / 2);
+  }
+
+  /** The c's outlines, centred in the visible board. */
+  private letterOutlines(): Outline[] {
+    const c = this.guideLetter();
+    return c ? outlinesAt(c.pieces, (id) => SHAPE_BY_ID.get(id), this.visibleCentre()) : [];
+  }
+
+  /** Every visit, after the intro if one plays (or at once), unless no-guide, author mode or "Don't show again". */
   private autoStartGuide() {
     if (!this.isConnected || !this.guideEl || this.guide.step || !guideWanted(this.guideConditions())) return;
-    this.setGuide(startGuide(this.guideWorld()));
+    if (!this.boardEl.clientWidth) {
+      this.guideQueued = true; // the outlines are centred in the board: wait for it to be laid out
+      return;
+    }
+    this.guideQueued = false;
+    this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
   }
 
   /** "Show guide": from step 1, even when "Don't show again" is set (which stays set). */
   private replayGuide() {
-    if (!guideWanted(this.guideConditions(), true)) return;
+    if (!guideWanted(this.guideConditions(), true) || !this.guideLetter()) return;
     this.finishIntro();
     this.setGuide(GUIDE_IDLE);
     this.guideFocusOnShow = true;
-    this.setGuide(startGuide(this.guideWorld()));
+    this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
   }
 
   private skipGuide() {
@@ -2882,27 +2949,41 @@ export class FridgeFace extends HTMLElement {
     this.say('Guide closed.');
   }
 
-  private setGuide(next: GuideState, addedPiece = false) {
+  /** After a load the view moved to frame it: an untouched c moves with the view (centred again); otherwise follow the board. */
+  private guideAfterLoad() {
+    const s = this.guide;
+    if (s.phase === 'c' && !s.filled.some(Boolean) && this.boardEl.clientWidth) this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
+    else this.guideObserve();
+  }
+
+  private setGuide(next: GuideState) {
     const prev = this.guide;
     if (next === prev) return;
     this.guide = next;
-    if (next.step === prev.step) return; // only the baseline moved
+    this.renderOutlines();
+    if (next.step === prev.step) {
+      // The same step: its outlines, its turning hint or its progress moved.
+      const p = guideProgress(next), q = guideProgress(prev);
+      if (!!next.turn !== !!prev.turn || p.done !== q.done) {
+        this.renderGuideContent();
+        if (next.turn && !prev.turn) this.say(this.turnText());
+        else if (next.step === 5 && p.done !== q.done) this.say(`${GUIDE_COPY.progress(p.done, p.total)}.`);
+      }
+      this.scheduleGuide();
+      return;
+    }
     clearTimeout(this.guideNextTimer);
     this.guideNext = false;
     const hadFocus = this.guideEl.contains(this.shadowRoot!.activeElement);
     if (!next.step) {
       this.guideFocusOnShow = false;
+      this.wordFitPending = false;
       this.guideEl.hidden = true;
       this.guideEl.dataset.step = '0';
       if (hadFocus) this.surface.focus();
       return;
     }
-    // Step 2 points at the handle: when nothing is selected, select the piece just added (else it points at the board).
-    if (next.step === 2 && addedPiece && !this.selection.length) {
-      const top = this.composition.pieces[this.composition.pieces.length - 1];
-      if (top) this.select(top.id);
-    }
-    if (next.step < 4) {
+    if (this.guideHasControls(next.step)) {
       const step = next.step;
       this.guideNextTimer = window.setTimeout(() => {
         if (this.guide.step !== step) return;
@@ -2913,72 +2994,229 @@ export class FridgeFace extends HTMLElement {
     }
     this.renderGuideContent();
     this.say(this.guideSpeech());
-    if (hadFocus) this.guideFocusOnShow = true; // a keyboard user who pressed Next stays in the callout
+    if (hadFocus) this.guideFocusOnShow = true; // a keyboard user who pressed a guide button stays in the callout
     this.scheduleGuide();
   }
 
-  /** The composition changed (outside a gesture, not a load or undo): advance when the step is done. */
-  private guideObserve() {
-    if (!this.guide.step) return;
-    const before = this.guide.step;
-    const next = observeGuide(this.guide, this.guideWorld());
-    this.setGuide(next, before === 1 && next.step === 2);
+  /** Steps with outlines carry Skip, Don't show again and (when stuck) Next; steps 4 and 6 have their own buttons. */
+  private guideHasControls(step: number): boolean {
+    return step === 1 || step === 2 || step === 3 || step === 5;
   }
 
-  private guideRebase() {
-    if (this.guide.step) this.guide = rebaseGuide(this.guide, this.guideWorld());
+  /** The board changed (outside a gesture): the guide re-reads which outlines are filled. */
+  private guideObserve() {
+    if (!this.guide.step) return;
+    this.setGuide(observeGuide(this.guide, this.guideWorld()));
+  }
+
+  /**
+   * Guide only: released pieces close to an active outline of their shape click exactly into it, with a short settle, and
+   * the stacking order is fixed to the suggestion's. Folded into the undo step that just recorded the release (a drag, a
+   * turn, a twist, a drop from the tray, a pause in `,` `.` turning). With the guide not running this does nothing at all.
+   */
+  private guideSnap(ids: readonly string[]) {
+    if (!this.guide.step || !ids.length) return;
+    const r = guideClickIn(this.guide, this.guideWorld(), ids);
+    if (!r) return;
+    const before = new Map(this.composition.pieces.map((p) => [p.id, p]));
+    this.applying = true;
+    try {
+      this.composition.setPlacements(r.placements.map(({ id, x, y, rotation }) => ({ id, x, y, rotation })));
+      if (r.order) this.composition.reorder(r.order);
+    } finally {
+      this.applying = false;
+    }
+    this.history.amend(this.composition.pieces); // the same undo step as the release that caused it
+    this.render();
+    this.settle(r.placements, before);
+    this.say(r.placements.length === 1 ? 'Clicked into place.' : `${r.placements.length} pieces clicked into place.`);
+    this.guideObserve();
+  }
+
+  /** Put the pieces sitting on outlines into the suggestion's stacking order, folded into the last undo step. */
+  private guideOrderFix() {
+    const s = this.guide;
+    if (!s.step) return;
+    const pieces = this.composition.pieces;
+    const order = stackFix(pieces.map((p) => p.id), filledBy(s.outlines, pieces));
+    if (order.every((id, i) => id === pieces[i].id)) return;
+    this.applying = true;
+    try {
+      this.composition.reorder(order);
+    } finally {
+      this.applying = false;
+    }
+    this.history.amend(this.composition.pieces);
+    this.render();
+  }
+
+  /** The click: each piece glides from where it was let go to its outline (transforms only; none with reduced motion). */
+  private settle(placements: readonly { id: string; x: number; y: number; rotation: number }[], before: ReadonlyMap<string, Piece>) {
+    if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const opts: KeyframeAnimationOptions = { duration: SETTLE_MS, easing: SETTLE_EASE };
+    for (const pl of placements) {
+      const old = before.get(pl.id), el = this.els.get(pl.id), s = old ? SHAPE_BY_ID.get(old.shapeId) : undefined;
+      if (!old || !el || !s || typeof el.g.animate !== 'function') continue;
+      if (old.x !== pl.x || old.y !== pl.y) {
+        el.g.animate([{ transform: `translate(${n3(old.x)}px, ${n3(old.y)}px)` }, { transform: `translate(${n3(pl.x)}px, ${n3(pl.y)}px)` }], opts);
+      }
+      if (old.rotation !== pl.rotation) {
+        const to = old.rotation + normalise(pl.rotation - old.rotation); // the short way round
+        const back = `translate(${n3(-s.centroid.x)}px, ${n3(-s.centroid.y)}px)`;
+        for (const r of el.rots) r.animate([{ transform: `rotate(${n3(old.rotation)}deg) ${back}` }, { transform: `rotate(${n3(to)}deg) ${back}` }], opts);
+      }
+    }
+  }
+
+  /** Step 4's Guide me: the board is cleared (one undoable step) and the whole word appears as outlines, framed in view. */
+  private guideChooseWord() {
+    const w = this.guideWordSuggestion();
+    if (!w || this.guide.step !== 4) return;
+    const outlines = outlinesAt(w.pieces, (id) => SHAPE_BY_ID.get(id), this.visibleCentre());
+    this.wordFitPending = true;
+    this.setGuide(chooseWord(this.guide, outlines, this.guideWorld())); // first, so clearing the c is not read as undoing it
+    this.selection = [];
+    if (this.composition.clear()) this.say('Board cleared. Undo brings it back.');
+  }
+
+  /** Next (when stuck): fill the next outline for the visitor, as one undoable step (the piece that needs turning, else a new one). */
+  private guideNextFill() {
+    const s = this.guide;
+    const i = nextOutline(s);
+    if (i === null) return;
+    const o = s.outlines[i];
+    const turning = s.turn ? this.composition.getPiece(s.turn) : undefined;
+    if (turning && turning.shapeId === o.shapeId) {
+      this.composition.setPlacements([{ id: turning.id, x: o.x, y: o.y, rotation: o.rotation }]);
+    } else {
+      const [p] = this.composition.addPieces([o]);
+      this.select(p.id);
+    }
+    this.guideOrderFix();
+    this.say('Placed for you.');
+    this.guideObserve();
   }
 
   private guideTouch(): boolean {
     return this.inputSections().touch;
   }
 
+  private turnText(): string {
+    return this.guideTouch() ? GUIDE_COPY.step3bTouch : GUIDE_COPY.step3b;
+  }
+
+  /** The callout's lines for the current step: the main text, a second line (step 4's question, step 5's progress) and step 5's turning hint. */
+  private guideLines(): [string, string, string] {
+    const s = this.guide;
+    switch (s.step) {
+      case 1: return [GUIDE_COPY.step1, '', ''];
+      case 2: return [GUIDE_COPY.step2, '', ''];
+      case 3: return [s.turn ? this.turnText() : GUIDE_COPY.step3a, '', ''];
+      case 4: return [GUIDE_COPY.step4, this.guideWordSuggestion() ? GUIDE_COPY.step4Ask : '', ''];
+      case 5: {
+        const p = guideProgress(s);
+        return [GUIDE_COPY.step5, GUIDE_COPY.progress(p.done, p.total), s.turn ? this.turnText() : ''];
+      }
+      case 6: return [GUIDE_COPY.step6, '', ''];
+      default: return ['', '', ''];
+    }
+  }
+
   private guideSpeech(): string {
-    const s = this.guide.step;
-    if (s === 1) return GUIDE_COPY.step1;
-    if (s === 2) return this.guideTouch() ? GUIDE_COPY.step2Touch : GUIDE_COPY.step2;
-    if (s === 3) return GUIDE_COPY.step3;
-    if (s === 4) return [GUIDE_COPY.step4, suggestionStore.size ? GUIDE_COPY.noteLetters.join('') : '', GUIDE_COPY.noteFree].filter(Boolean).join(' ');
-    return '';
+    return this.guideLines().filter(Boolean).map((l) => (/[.?!]$/.test(l) ? l : `${l}.`)).join(' ');
   }
 
   /** The callout's words and buttons for the current step. */
   private renderGuideContent() {
-    const s = this.guide.step;
     const g = this.guideEl;
     if (!g) return;
+    const s = this.guide.step;
     g.dataset.step = String(s);
-    const text = s === 1 ? GUIDE_COPY.step1 : s === 2 ? (this.guideTouch() ? GUIDE_COPY.step2Touch : GUIDE_COPY.step2) : s === 3 ? GUIDE_COPY.step3 : s === 4 ? GUIDE_COPY.step4 : '';
-    const t1 = g.querySelector<HTMLElement>('.gt1')!;
-    if (t1.textContent !== text) t1.textContent = text;
-    g.querySelector<HTMLElement>('[data-guide=skip]')!.hidden = s === 4; // step 4: Keep playing already does what Skip would
-    g.querySelector<HTMLElement>('.gfour')!.hidden = s !== 4;
-    g.querySelector<HTMLElement>('.gnote')!.hidden = s !== 4;
-    g.querySelector<HTMLElement>('.gletters')!.hidden = !suggestionStore.size;
-    const next = g.querySelector<HTMLElement>('[data-guide=next]')!;
-    const hide = !(this.guideNext && s > 0 && s < 4);
-    if (hide && next.contains(this.shadowRoot!.activeElement)) g.querySelector<HTMLElement>(s === 4 ? '[data-guide=keep]' : '[data-guide=skip]')!.focus();
-    next.hidden = hide;
+    g.toggleAttribute('data-turn', !!this.guide.turn);
+    const lines = this.guideLines();
+    ['.gt1', '.gt2', '.gt3'].forEach((sel, i) => {
+      const el = g.querySelector<HTMLElement>(sel)!;
+      if (el.textContent !== lines[i]) el.textContent = lines[i];
+      if (i) el.hidden = !lines[i];
+    });
+    g.querySelector<HTMLElement>('.gt2')!.classList.toggle('gprog', s === 5);
+    const hasWord = !!this.guideWordSuggestion();
+    const active = this.shadowRoot!.activeElement;
+    const pick4 = g.querySelector<HTMLElement>('[data-pick="4"]')!, pick6 = g.querySelector<HTMLElement>('[data-pick="6"]')!;
+    const word = g.querySelector<HTMLElement>('[data-guide=word]')!, clear = g.querySelector<HTMLElement>('[data-guide=clear]')!;
+    const ctl = g.querySelector<HTMLElement>('.gctl')!, next = g.querySelector<HTMLElement>('[data-guide=next]')!;
+    pick4.hidden = s !== 4;
+    word.hidden = !hasWord;
+    clear.classList.toggle('pri', !hasWord); // alone, it is the main button
+    pick6.hidden = s !== 6;
+    ctl.hidden = !this.guideHasControls(s);
+    next.hidden = !(this.guideNext && !ctl.hidden);
+    // A focused button that just went away hands focus to the first button still showing.
+    if (active && g.contains(active) && (active as HTMLElement).closest('[hidden]')) g.querySelector<HTMLElement>('.grow:not([hidden]) button:not([hidden])')?.focus();
   }
 
   private onGuideClick(e: MouseEvent) {
     const act = (e.target as HTMLElement).closest<HTMLElement>('button[data-guide]')?.dataset.guide;
     if (!act) return;
-    if (act === 'next') this.setGuide(nextStep(this.guide, this.guideWorld()));
-    else if (act === 'skip') this.skipGuide();
+    if (act === 'next') {
+      this.guideNextFill();
+      this.scheduleGuide();
+    } else if (act === 'skip') this.skipGuide();
     else if (act === 'off') {
       writeGuideOff(() => localStorage); // if storage fails, it still ends for this visit
       this.setGuide(endGuide());
       this.say('Guide turned off. Show it again from Controls.');
-    } else if (act === 'keep') {
+    } else if (act === 'word') this.guideChooseWord();
+    else if (act === 'keep') {
       this.setGuide(endGuide());
       this.say('Guide closed.');
-    } else if (act === 'fresh') {
+    } else if (act === 'clear' || act === 'fresh') {
+      this.setGuide(endGuide()); // first: the guide is over, the clear is the visitor's
       this.selection = [];
       const had = this.composition.clear(); // ONE undoable step
-      this.setGuide(endGuide());
       this.say(had ? 'Board cleared. Undo brings it back.' : 'Guide closed.');
     }
+  }
+
+  /** The active outlines, drawn above the pieces in blueprint blue, dotted, in screen px. Never takes pointer events. */
+  private renderOutlines() {
+    const layer = this.outlinesEl;
+    if (!layer) return;
+    this.outlineZoom = this.view.zoom;
+    const s = this.guide;
+    const active = s.step ? activeOutlines(s) : [];
+    layer.replaceChildren();
+    if (!active.length) return;
+    const k = this.k * this.view.zoom; // CSS px per board unit
+    const w = n3(OUTLINE_PX / k);
+    const dash = OUTLINE_DASH.map((d) => n3(d / k)).join(' ');
+    for (const i of active) {
+      const o = s.outlines[i];
+      const sh = SHAPE_BY_ID.get(o.shapeId);
+      if (!sh) continue;
+      const g = svgEl('g', {
+        'data-outline': String(i), 'data-shape': o.shapeId,
+        transform: `translate(${n3(o.x)} ${n3(o.y)}) rotate(${n3(o.rotation)}) translate(${n3(-sh.centroid.x)} ${n3(-sh.centroid.y)})`,
+      });
+      g.innerHTML = geometryTemplate(sh).replace(
+        '{a}',
+        `fill="${OUTLINE_COLOR}" fill-opacity="0.1" stroke="${OUTLINE_COLOR}" stroke-width="${w}" stroke-dasharray="${dash}" stroke-linecap="round" stroke-linejoin="round"`,
+      );
+      layer.append(g);
+    }
+  }
+
+  /** A board point in client px (through the camera state, not the DOM, which lags by a frame). */
+  private boardToClient(p: Pt): Pt {
+    const b = this.boardEl.getBoundingClientRect();
+    const k = this.k, v = this.view;
+    return { x: b.left + (p.x * v.zoom + v.x) * k, y: b.top + (p.y * v.zoom + v.y) * k };
+  }
+
+  /** An outline's bounds on screen, client px (from the shape's real outline). */
+  private outlineRect(o: Outline): Rect {
+    const b = boundsOf(placeOutline(SHAPE_BY_ID.get(o.shapeId)?.hull ?? [], o).map((q) => this.boardToClient(q)));
+    return { x: b.x, y: b.y, w: b.w, h: b.h };
   }
 
   private scheduleGuide() {
@@ -3011,33 +3249,72 @@ export class FridgeFace extends HTMLElement {
     return out.filter((r) => r.w > 0 && r.h > 0);
   }
 
-  /** What the current step points at, what else it must leave visible, and which sides to try. */
-  private guideTargets(bounds: Rect): { target: Rect | null; avoid: Rect[]; prefer: Exclude<CalloutSide, 'centre'>[]; piece?: string }[] {
-    const s = this.guide.step;
+  private get trayPrefer(): Exclude<CalloutSide, 'centre'>[] {
+    return this.isLandscape ? ['right', 'above', 'below'] : ['above', 'right', 'left', 'below'];
+  }
+
+  /**
+   * What the current step points at and which sides to try. Steps 1 to 3 (3a): the tray shape to drag. 3b and step 5's hint:
+   * the rotate handle of the piece that needs turning (or the piece). Step 5: the tray. Steps 4 and 6: the board (centred).
+   */
+  private guideTargets(bounds: Rect): GuideTarget[] {
+    const s = this.guide;
     const visible = (r: Rect) => r.w > 0 && r.x + r.w / 2 >= bounds.x && r.x + r.w / 2 <= bounds.x + bounds.w && r.y + r.h / 2 >= bounds.y && r.y + r.h / 2 <= bounds.y + bounds.h;
-    if (s === 1) {
-      return [{ target: toRect(this.trayEl.getBoundingClientRect()), avoid: [], prefer: this.isLandscape ? ['right', 'above', 'below'] : ['above', 'right', 'left', 'below'] }];
-    }
-    if (s === 2 && this.selection.length) {
-      const hit = this.overlay.querySelector<SVGElement>('[data-handle] circle');
-      const box = this.overlay.querySelector<SVGElement>('[data-selection-box] rect');
-      const t = hit ? toRect(hit.getBoundingClientRect()) : null;
-      if (t && visible(t)) return [{ target: t, avoid: box ? [toRect(box.getBoundingClientRect())] : [], prefer: ['above', 'right', 'left', 'below'] }];
-    }
-    const board = { target: null, avoid: [], prefer: [] }; // the board itself: centred, no arrow
-    if (s === 3) {
-      // Black pieces in view, the newest first (the first one the callout fits beside wins; a few at most).
-      const out: ReturnType<FridgeFace['guideTargets']> = [];
-      const pieces = this.composition.pieces;
-      for (let i = pieces.length - 1; i >= 0 && out.length < 8; i--) {
-        if (SHAPE_BY_ID.get(pieces[i].shapeId)?.polarity !== 'positive') continue;
-        const g = this.els.get(pieces[i].id)?.g.querySelector('.bd');
-        const r = g ? toRect(g.getBoundingClientRect()) : null;
-        if (r && visible(r)) out.push({ target: r, avoid: [], prefer: ['above', 'below', 'right', 'left'], piece: pieces[i].id });
+    const board: GuideTarget = { target: null, avoid: [], prefer: [], kind: 'board' };
+    if (s.turn && (s.step === 3 || s.step === 5)) {
+      const out: GuideTarget[] = [];
+      if (this.selection.length === 1 && this.selection[0] === s.turn) {
+        const hit = this.overlay.querySelector<SVGElement>('[data-handle] circle');
+        const t = hit ? toRect(hit.getBoundingClientRect()) : null;
+        if (t && visible(t)) out.push({ target: t, avoid: [], prefer: ['above', 'right', 'left', 'below'], kind: 'handle' });
       }
-      return [...out, board];
+      const g = this.els.get(s.turn)?.g.querySelector('.bd');
+      const r = g ? toRect(g.getBoundingClientRect()) : null;
+      if (r && visible(r)) out.push({ target: r, avoid: [], prefer: ['above', 'below', 'right', 'left'], kind: 'piece', piece: s.turn });
+      if (out.length) return [...out, board];
     }
+    const tray = toRect(this.trayEl.getBoundingClientRect());
+    if (s.step >= 1 && s.step <= 3) {
+      const o = s.outlines[activeOutlines(s)[0] ?? -1];
+      const btn = o ? this.trayEl.querySelector(`button[data-shape="${o.shapeId}"]`) : null;
+      const r = btn ? toRect(btn.getBoundingClientRect()) : null;
+      // That shape's slice of the tray: its column across the tray's full height (its row, in the landscape column).
+      const slice = r && r.w > 0 ? (this.isLandscape ? { x: tray.x, y: r.y, w: tray.w, h: r.h } : { x: r.x, y: tray.y, w: r.w, h: tray.h }) : tray;
+      return [{ target: slice, avoid: [], prefer: this.trayPrefer, kind: 'tray', shape: o?.shapeId }];
+    }
+    if (s.step === 5) return [{ target: tray, avoid: [], prefer: this.trayPrefer, kind: 'tray' }];
     return [board];
+  }
+
+  /**
+   * Step 5: frame the word's outlines in the part of the visible board the callout leaves free (the callout sits by the
+   * tray, so the word gets the rest), as large as the comfortable maximum allows.
+   */
+  private fitWordBeside(cal: Rect, side: CalloutSide, bounds: Rect) {
+    const b = rotatedBounds(this.guide.outlines, (id) => SHAPE_BY_ID.get(id));
+    if (!b) return;
+    const gap = 16;
+    const reg = { ...bounds };
+    if (side === 'above') reg.h = cal.y - gap - reg.y;
+    else if (side === 'below') {
+      reg.h = reg.y + reg.h - (cal.y + cal.h + gap);
+      reg.y = cal.y + cal.h + gap;
+    } else if (side === 'right') {
+      reg.w = reg.x + reg.w - (cal.x + cal.w + gap);
+      reg.x = cal.x + cal.w + gap;
+    } else if (side === 'left') reg.w = cal.x - gap - reg.x;
+    const board = this.boardEl.getBoundingClientRect();
+    const k = this.k;
+    const top = board.top + this.topInset() * k; // phones: the docks cover the top of the board
+    if (reg.y < top) {
+      reg.h -= top - reg.y;
+      reg.y = top;
+    }
+    if (reg.w < 80 || reg.h < 60) Object.assign(reg, bounds); // no room beside it: use the whole board
+    const m = 16;
+    const zoom = Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h), FIT_MAX_COMFORT * this.comfortZoom());
+    const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
+    this.setView({ x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom });
   }
 
   /** Show, fill and place the callout, or hide it while a sheet, dialog or menu is open or a piece is in the hand. */
@@ -3056,26 +3333,46 @@ export class FridgeFace extends HTMLElement {
     g.style.left = '0px';
     g.style.top = '0px';
     const obstacles = this.guideObstacles();
-    // Prefer empty board: every piece's bounds, with a margin of breathing room (people press just beside pieces too),
-    // so the callout covers as few as it can.
-    const M = 24;
-    const pieces = [...this.els.values()].map((e) => {
-      const r = toRect(e.g.querySelector('.bd')!.getBoundingClientRect());
-      return { x: r.x - M, y: r.y - M, w: r.w + 2 * M, h: r.h + 2 * M };
-    });
     // Phones: a narrow callout (at most about 45% of the board in landscape). When a narrower one would cover less of the
     // pieces, it narrows (taller, but clear of them).
     const bw = this.boardEl.getBoundingClientRect().width;
     const widths = this.isLandscape ? [0.45, 0.37, 0.3].map((f) => Math.max(190, Math.round(bw * f))) : this.isCompact ? [Math.round(Math.min(300, bw - 32)), 240] : [0];
+    if (this.wordFitPending && s === 5) {
+      // Once: where the callout goes by the tray decides where the word is framed (beside it, never under it).
+      this.wordFitPending = false;
+      const narrow = widths[widths.length - 1]; // the narrowest callout leaves the word the most room
+      g.style.maxWidth = narrow ? `${narrow}px` : '';
+      const size = { w: g.offsetWidth, h: g.offsetHeight };
+      const tray = toRect(this.trayEl.getBoundingClientRect());
+      const p = placeCallout(size, tray, bounds, obstacles, this.trayPrefer);
+      this.fitWordBeside({ x: p.x, y: p.y, w: size.w, h: size.h }, p.side, bounds);
+      this.renderOutlines();
+    }
+    // The active outlines and the piece being turned toward one must stay in sight: the callout never covers them.
+    const st = this.guide;
+    const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));
+    const turnEl = st.turn ? this.els.get(st.turn)?.g.querySelector('.bd') : null;
+    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : [])];
+    // Steps 4 and 6 (centred): keep the finished letter or word in sight where the board allows.
+    const done = st.step === 4 || st.step === 6 ? st.filled.flatMap((id) => {
+      const e = id ? this.els.get(id)?.g.querySelector('.bd') : null;
+      const r = e ? toRect(e.getBoundingClientRect()) : null;
+      return r ? [{ x: r.x - 16, y: r.y - 16, w: r.w + 32, h: r.h + 32 }] : []; // with some air around it
+    }) : [];
+    // Prefer empty board: every piece's bounds, with a margin of breathing room (people press just beside pieces too),
+    // so the callout covers as few as it can.
+    const M = 24;
+    const pieces = [...[...this.els.values()].map((e) => toRect(e.g.querySelector('.bd')!.getBoundingClientRect())), ...outlineRects]
+      .map((r) => ({ x: r.x - M, y: r.y - M, w: r.w + 2 * M, h: r.h + 2 * M }));
     const options = this.guideTargets(bounds);
-    let best: { w: number; pick: (typeof options)[number]; p: ReturnType<typeof placeCallout>; n: number; a: number } | null = null;
+    let best: { w: number; pick: GuideTarget; p: ReturnType<typeof placeCallout>; n: number; a: number } | null = null;
     for (const w of widths) {
       g.style.maxWidth = w ? `${w}px` : '';
       const size = { w: g.offsetWidth, h: g.offsetHeight };
       let pick = options[options.length - 1];
-      let p = placeCallout(size, pick.target, bounds, obstacles, pick.prefer, pick.avoid, pieces);
+      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces);
       for (const o of options) {
-        const q = placeCallout(size, o.target, bounds, obstacles, o.prefer, o.avoid, pieces);
+        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces);
         if (q.side !== 'centre' || !o.target) {
           pick = o;
           p = q;
@@ -3089,11 +3386,12 @@ export class FridgeFace extends HTMLElement {
     }
     g.style.maxWidth = best!.w ? `${best!.w}px` : '';
     const { pick, p } = best!;
-    const { target, piece } = pick;
     g.dataset.side = p.side;
-    g.dataset.target = s === 1 ? 'tray' : target ? (s === 2 ? 'handle' : 'piece') : 'board';
-    if (piece) g.dataset.piece = piece;
+    g.dataset.target = pick.kind;
+    if (pick.piece) g.dataset.piece = pick.piece;
     else delete g.dataset.piece;
+    if (pick.shape) g.dataset.shape = pick.shape;
+    else delete g.dataset.shape;
     g.style.setProperty('--ga', `${Math.round(p.arrow)}px`);
     g.style.left = `${Math.round(p.x - host.left)}px`;
     g.style.top = `${Math.round(p.y - host.top)}px`;
@@ -3102,6 +3400,16 @@ export class FridgeFace extends HTMLElement {
       g.querySelector<HTMLElement>('.grow:not([hidden]) button:not([hidden])')?.focus();
     }
   }
+}
+
+/** What the callout points at: a rect on screen (null: centred on the board), the sides to try, and what it is. */
+interface GuideTarget {
+  target: Rect | null;
+  avoid: Rect[];
+  prefer: Exclude<CalloutSide, 'centre'>[];
+  kind: 'tray' | 'handle' | 'piece' | 'board';
+  piece?: string;
+  shape?: string;
 }
 
 function toRect(r: DOMRect): Rect {

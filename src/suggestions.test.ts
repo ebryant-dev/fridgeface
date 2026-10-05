@@ -163,8 +163,9 @@ describe('intro', () => {
     expect(introConstructions([sug('y'), sug('a'), sug('l'), sug('p')])).toHaveLength(4);
     expect(introPieces([sug('p'), sug('l'), sug('a'), sug('y')], shapeOf)).toHaveLength(4);
   });
-  it('plays only on a first visit, with no share link, no no-intro, and not when skipped', () => {
-    const base = { hasSavedComposition: false, hasShareLink: false, disabled: false };
+  it('is off by default (v1.2.0); opted in, it plays only on a first visit, with no share link, no no-intro, and not when skipped', () => {
+    const base = { enabled: true, hasSavedComposition: false, hasShareLink: false, disabled: false };
+    expect(introWanted({ ...base, enabled: false }), 'off unless the host sets the intro attribute').toBe(false);
     expect(introWanted(base)).toBe(true);
     expect(introWanted({ ...base, hasSavedComposition: true })).toBe(false);
     expect(introWanted({ ...base, hasShareLink: true })).toBe(false);

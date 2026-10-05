@@ -17,7 +17,7 @@ const desktop = { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, 
  */
 const guideOff = {
   cookies: [],
-  origins: [{ origin: `http://localhost:${PORT}`, localStorage: [{ name: 'fridgeface:guide:v1', value: 'off' }] }],
+  origins: [{ origin: `http://localhost:${PORT}`, localStorage: [{ name: 'fridgeface:guide:v2', value: 'off' }] }],
 };
 
 export default defineConfig({

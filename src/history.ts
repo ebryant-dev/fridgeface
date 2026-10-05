@@ -68,6 +68,19 @@ export class History<T> {
     return true;
   }
 
+  /**
+   * Fold `next` into the step that produced the present state (no new undo step): a follow-up that belongs to the action
+   * just recorded, such as the guide clicking a released piece into its outline. One undo then goes back past both.
+   * Returns false if it equals the present.
+   */
+  amend(next: T): boolean {
+    if (this.equals(next, this.cur)) return false;
+    this.redoStack = [];
+    this.cur = next;
+    this.lastKey = null;
+    return true;
+  }
+
   /** Step back. Returns the state to show, or undefined if there is nothing to undo. */
   undo(): T | undefined {
     if (!this.undoStack.length) return undefined;

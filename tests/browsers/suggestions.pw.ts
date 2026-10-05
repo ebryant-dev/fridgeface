@@ -146,8 +146,25 @@ const introAnims = (page: Page) =>
     };
   });
 
-test('intro: first visit only, centred, at most 1.6 s, interruptible, off with reduced motion and no-intro', async ({ page, browser }, info) => {
+/** The intro is set aside (v1.2.0): off by default; a host opts in with the `intro` attribute. */
+const optIn = (page: Page) =>
+  page.addInitScript(() => {
+    document.addEventListener('readystatechange', () => {
+      if (document.readyState === 'interactive') document.querySelector('fridge-face')?.setAttribute('intro', '');
+    });
+  });
+
+test('intro: off by default, the toy starts on a blank board', async ({ page }) => {
+  await page.goto('/?n=blank');
+  await ready(page);
+  await page.waitForTimeout(800);
+  expect(await pieceCount(page), 'blank board').toBe(0);
+  expect((await introAnims(page)).running).toBe(0);
+});
+
+test('intro (opt-in): first visit only, centred, at most 1.6 s, interruptible, off with reduced motion and no-intro', async ({ page, browser }, info) => {
   const errors = collectErrors(page);
+  await optIn(page);
   await page.goto('/?n=3');
   await ready(page);
   const want = await introExpectation(page);
@@ -195,6 +212,7 @@ test('intro: first visit only, centred, at most 1.6 s, interruptible, off with r
   delete opts.baseURL;
   const ctx1 = await browser.newContext({ ...opts, baseURL: info.project.use.baseURL });
   const p1 = await ctx1.newPage();
+  await optIn(p1);
   await p1.goto('/?n=4');
   await ready(p1);
   expect((await introAnims(p1)).running).toBeGreaterThan(0);
@@ -206,6 +224,7 @@ test('intro: first visit only, centred, at most 1.6 s, interruptible, off with r
   // Reduced motion: the word just appears.
   const ctx2 = await browser.newContext({ ...opts, baseURL: info.project.use.baseURL, reducedMotion: 'reduce' });
   const p2 = await ctx2.newPage();
+  await optIn(p2);
   await p2.goto('/?n=5');
   await ready(p2);
   expect(await pieceCount(p2)).toBe(want.count);
@@ -215,6 +234,7 @@ test('intro: first visit only, centred, at most 1.6 s, interruptible, off with r
   // no-intro: nothing at all.
   const ctx3 = await browser.newContext({ ...opts, baseURL: info.project.use.baseURL });
   const p3 = await ctx3.newPage();
+  await optIn(p3);
   await p3.addInitScript(() => {
     document.addEventListener('readystatechange', () => {
       if (document.readyState === 'interactive') document.querySelector('fridge-face')?.setAttribute('no-intro', '');

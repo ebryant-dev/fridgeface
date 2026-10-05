@@ -2,7 +2,8 @@ import { isWord, layoutWord, type AnySuggestion, type ShapeLookup } from './sugg
 import type { PlacedPiece } from './serialize';
 
 /**
- * The first-visit intro shows this word: the word composition `word-play-1.json` as it was built, when it exists;
+ * The "play" intro is set aside (v1.2.0): it is OFF by default, so the toy starts on a blank board. A host opts in with the
+ * `intro` attribute on <fridge-face>. When on, a first visit shows this word: the word composition `word-play-1.json` as it was built, when it exists;
  * otherwise variant 1 of each letter, set side by side (the fallback).
  */
 export const INTRO_WORD = 'play';
@@ -15,6 +16,8 @@ export const INTRO_TOTAL_MS = 1500;
 export const INTRO_MAX_STAGGER_MS = 80;
 
 export interface IntroConditions {
+  /** The host opted in with the `intro` attribute (off by default since v1.2.0). */
+  enabled: boolean;
   /** A valid auto-saved composition exists (even an empty one: the visitor has been here). */
   hasSavedComposition: boolean;
   hasShareLink: boolean;
@@ -25,7 +28,7 @@ export interface IntroConditions {
 }
 
 export function introWanted(c: IntroConditions): boolean {
-  return !c.hasSavedComposition && !c.hasShareLink && !c.disabled && !c.skip;
+  return c.enabled && !c.hasSavedComposition && !c.hasShareLink && !c.disabled && !c.skip;
 }
 
 /** The word composition for the intro word (variant 1), if there is one. */

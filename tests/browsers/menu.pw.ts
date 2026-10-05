@@ -97,9 +97,11 @@ test('phone: the menu button replaces share, export, letters and help; the menu 
   for (const sel of ['[data-share=copy]', '[data-share=export]', '[data-view=suggest]', '[data-view=help]']) await expect(el(page, sel)).toBeHidden();
   await expect(menu(page)).toBeHidden();
 
-  // The intro leaves the word play on the board: clear it first.
-  await press(isMobile, el(page, '[data-history=clear]'));
-  await press(isMobile, el(page, '[data-history=clear-yes]'));
+  // The board starts blank (the intro is opt-in since v1.2.0); clear it if anything is there.
+  if (await el(page, '[data-history=clear]').isEnabled()) {
+    await press(isMobile, el(page, '[data-history=clear]'));
+    await press(isMobile, el(page, '[data-history=clear-yes]'));
+  }
   await expect(el(page, '[data-history=clear]')).toBeDisabled();
 
   // Empty board: share and download are shown disabled in the menu, and do nothing.

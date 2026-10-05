@@ -216,7 +216,12 @@ test('phone: Fit and the intro centre in the visible board, below the docks', as
       const left = Math.min(...rs.map((r) => r.left)), right = Math.max(...rs.map((r) => r.right));
       return { top, bottom, dockBottom, trayTop, left, right, boardLeft: board.left, boardRight: board.right };
     });
-  // The intro (first visit, no ?n=1) leaves "play" framed in the visible board.
+  // The intro (opted in with the `intro` attribute; first visit, no ?n=1) leaves "play" framed in the visible board.
+  await page.addInitScript(() => {
+    document.addEventListener('readystatechange', () => {
+      if (document.readyState === 'interactive') document.querySelector('fridge-face')?.setAttribute('intro', ''); // opt in (off by default since v1.2.0)
+    });
+  });
   await page.goto('/');
   await page.waitForFunction(() => !!document.querySelector('fridge-face')?.shadowRoot?.querySelector('.tray button[data-shape]'));
   await page.waitForTimeout(3500);
@@ -242,8 +247,10 @@ test('phone: Fit and the intro centre in the visible board, below the docks', as
 test('phone: a suggestion placed from the letters sheet lands below the docks and above the tray', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'phone profiles only');
   await open(page);
-  await press(isMobile, el(page, '[data-history=clear]'));
-  await press(isMobile, el(page, '[data-history=clear-yes]'));
+  if (await el(page, '[data-history=clear]').isEnabled()) { // the board starts blank (no intro since v1.2.0)
+    await press(isMobile, el(page, '[data-history=clear]'));
+    await press(isMobile, el(page, '[data-history=clear-yes]'));
+  }
   await el(page, '.board svg.surface').focus();
   await page.keyboard.press('l');
   await expect(el(page, '.sugg')).toBeVisible();
