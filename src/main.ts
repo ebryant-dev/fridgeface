@@ -12,6 +12,7 @@ import { fromUpright, normalise } from './rotation';
 import { fridgeTexture, type FridgeTexture } from './texture';
 import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
 import { FONT_STACK, registerFont } from './font';
+import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } from './controls';
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
@@ -283,7 +284,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-landscape] .sugg { padding-bottom: var(--sab); }
 .root[data-landscape] .menu:not([hidden]) { width: min(520px, calc(100% - 16px - var(--sar))); }
 
-/* ---- keyboard shortcuts dialog ---- */
+/* ---- controls dialog ---- */
 .help {
   position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
   padding: calc(12px + var(--sat, 0px)) calc(12px + var(--sar, 0px)) calc(12px + var(--sab, 0px)) calc(12px + var(--sal, 0px));
@@ -297,7 +298,12 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .helphead { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px 6px 16px; border-bottom: 2px solid var(--ink); }
 .helphead h2 { margin: 0; font: 700 15px/1.2 var(--font); letter-spacing: 0.1em; text-transform: uppercase; }
 .helpbody { overflow: auto; padding: 4px 16px 16px; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-.helpbody h3 { margin: 16px 0 6px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.helpbody h3 { margin: 22px 0 4px; padding-bottom: 6px; border-bottom: 2px solid var(--ink); font: 700 14px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.helpbody section:first-of-type h3 { margin-top: 12px; }
+.helpbody h3:focus { outline: none; }
+.helpbody h4 { margin: 16px 0 6px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
+.helpbody [hidden] { display: none !important; }
+.helpbody .ctlall { margin-top: 20px; display: flex; justify-content: center; }
 .helpbody ul { margin: 0; padding: 0; list-style: none; columns: 2 340px; column-gap: 28px; }
 .helpbody li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 0; break-inside: avoid; border-bottom: 1px solid #d0d0d0; font: 500 13px/1.3 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
 .helpbody li > span:first-child { flex: 1 1 0; min-width: 0; }
@@ -312,65 +318,20 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 }
 `;
 
-/** Every keyboard shortcut, in the order the help dialog lists them. Each entry is a list of alternative key combos. */
-const SHORTCUTS: readonly { title: string; items: readonly { keys: readonly (readonly string[])[]; text: string; when?: string }[] }[] = [
-  { title: 'Add and choose', items: [
-    { keys: [['1'], ['2'], ['3'], ['4'], ['5']], text: 'Add a piece (tray order)' },
-    { keys: [['N'], ['P']], text: 'Select the next or previous piece in the stacking order' },
-    { keys: [['Ctrl', 'A'], ['Cmd', 'A']], text: 'Select every piece' },
-    { keys: [['Esc']], text: 'Close a menu, then deselect' },
-  ] },
-  { title: 'Move and rotate the selection', items: [
-    { keys: [['Arrows'], ['Shift', 'Arrows']], text: 'Move 1 unit, or 10' },
-    { keys: [[','], ['.']], text: 'Rotate 1 degree anticlockwise or clockwise (several pieces turn as one, about their centre)' },
-  ] },
-  { title: 'Stack and delete', items: [
-    { keys: [[']'], ['[']], text: 'Bring forward or send backward, past the next piece it overlaps' },
-    { keys: [['Delete'], ['Backspace']], text: 'Delete the selected pieces' },
-  ] },
-  { title: 'View', items: [
-    { keys: [['Arrows'], ['Alt', 'Arrows']], text: 'Pan the board; Shift for bigger steps. With a selection, only Alt + Arrows pans' },
-    { keys: [['+'], ['\u2212']], text: 'Zoom in or out' },
-    { keys: [['F'], ['Shift', '1']], text: 'Frame all pieces' },
-    { keys: [['Space', 'drag'], ['Middle', 'drag']], text: 'Pan with the pointer' },
-    { keys: [['Wheel'], ['Pinch']], text: 'Pan or zoom the board' },
-  ] },
-  { title: 'History, share and export', items: [
-    { keys: [['Ctrl', 'Z'], ['Cmd', 'Z']], text: 'Undo' },
-    { keys: [['Ctrl', 'Shift', 'Z'], ['Ctrl', 'Y']], text: 'Redo' },
-    { keys: [['C']], text: 'Copy the share link' },
-    { keys: [['E']], text: 'Open the export menu' },
-    { keys: [['L']], text: 'Show or hide letter suggestions', when: 'sg-only' },
-  ] },
-  { title: 'Everything else', items: [
-    { keys: [['Tab'], ['Shift', 'Tab']], text: 'Move to the next or previous control' },
-    { keys: [['?']], text: 'Show or hide this list' },
-  ] },
-  { title: 'Mouse', items: [
-    { keys: [['Drag']], text: 'Drag a shape from the tray onto the board, or move the selection' },
-    { keys: [['Drag', 'empty board']], text: 'Select the pieces a box touches; with Shift, add them' },
-    { keys: [['Shift', 'click']], text: 'Add a piece to the selection, or remove it' },
-    { keys: [['Handle']], text: 'Drag the round handle to rotate the selection' },
-  ] },
-  { title: 'Touch', items: [
-    { keys: [['Drag']], text: 'Move a piece or the selection; on the empty board, pan' },
-    { keys: [['Hold', 'drag']], text: 'Hold the empty board, then drag: select the pieces a box touches' },
-    { keys: [['Hold']], text: 'Hold a piece: add it to the selection, or remove it' },
-    { keys: [['Twist']], text: 'Two fingers, the first on the selection: rotate it' },
-    { keys: [['Pinch']], text: 'Zoom the board' },
-  ] },
-];
+/** A real key press has been seen in this page session (shared by every element on the page). */
+let keyboardSeen = false;
 
-function shortcutsHtml(): string {
+function controlsHtml(): string {
   const combo = (c: readonly string[]) => `<span class="combo">${c.map((k) => `<kbd>${k}</kbd>`).join('<span class="or" aria-hidden="true">+</span>')}</span>`;
-  return SHORTCUTS.map(
+  const list = (rows: readonly ControlRow[]) =>
+    `<ul>` + rows.map((it) => `<li${it.when ? ` class="${it.when}"` : ''}><span>${it.text}</span><span class="keys">${it.keys.map(combo).join('<span class="or">or</span>')}</span></li>`).join('') + `</ul>`;
+  const sections = CONTROL_SECTIONS.map(
     (sec) =>
-      `<h3>${sec.title}</h3><ul>` +
-      sec.items
-        .map((it) => `<li${it.when ? ` class="${it.when}"` : ''}><span>${it.text}</span><span class="keys">${it.keys.map(combo).join('<span class="or">or</span>')}</span></li>`)
-        .join('') +
-      `</ul>`,
+      `<section class="ctl" data-controls="${sec.id}" aria-labelledby="ff-ctl-${sec.id}"><h3 id="ff-ctl-${sec.id}" tabindex="-1">${sec.title}</h3>` +
+      sec.groups.map((g) => (g.title ? `<h4>${g.title}</h4>` : '') + list(g.rows)).join('') +
+      `</section>`,
   ).join('');
+  return sections + `<div class="ctlall">${btn('data-help="showall"', 'Show all controls')}</div>`;
 }
 
 /** A control button: text label on wide screens, icon on narrow ones (`i`). */
@@ -436,6 +397,15 @@ export class FridgeFace extends HTMLElement {
   private helpEl!: HTMLElement;
   private insetProbe!: HTMLElement;
   private helpOpener: HTMLElement | SVGElement | null = null;
+  private helpShowAll = false;
+  private coarseMq: MediaQueryList | null = null;
+  private fineMq: MediaQueryList | null = null;
+  private readonly onControlsEnvChange = () => this.syncControls();
+  private readonly onPhysicalKey = (e: KeyboardEvent) => {
+    if (keyboardSeen || !isPhysicalKey(e)) return;
+    keyboardSeen = true;
+    this.syncControls();
+  };
   private suggEl!: HTMLElement;
   private suggBtn!: HTMLButtonElement;
   private dockEl!: HTMLElement;
@@ -527,6 +497,14 @@ export class FridgeFace extends HTMLElement {
     window.addEventListener('hashchange', this.onHashChange);
     window.addEventListener('resize', this.onWindowResize);
     window.addEventListener('orientationchange', this.onWindowResize);
+    window.addEventListener('keydown', this.onPhysicalKey, { capture: true, passive: true });
+    if (typeof matchMedia === 'function') {
+      this.coarseMq = matchMedia('(any-pointer: coarse)');
+      this.fineMq = matchMedia('(any-pointer: fine)');
+      this.coarseMq.addEventListener?.('change', this.onControlsEnvChange);
+      this.fineMq.addEventListener?.('change', this.onControlsEnvChange);
+    }
+    this.syncControls();
     this.unsubSuggestions ??= suggestionStore.subscribe(() => this.syncSuggestions());
     if (this.shadowRoot) return;
     // A landmark for the whole toy (the host page can override either attribute).
@@ -582,7 +560,7 @@ export class FridgeFace extends HTMLElement {
             ${btn('data-view="fit" aria-label="Frame all pieces"', 'Fit', 'fit')}
             ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
             ${btn('data-view="suggest" aria-label="Letter suggestions" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="L" hidden', 'Letters', 'letters')}
-            ${btn('data-view="help" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
+            ${btn('data-view="help" aria-label="Controls" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
             ${btn('data-view="menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="ff-menu"', 'Menu', 'menu')}
           </div>
         </div>
@@ -594,7 +572,7 @@ export class FridgeFace extends HTMLElement {
             ${menuItem('svg', 'SVG', '', 'aria-label="Download SVG"')}
           </div>
           ${menuItem('letters', 'Letters', 'letters', 'aria-haspopup="dialog" aria-keyshortcuts="L" hidden')}
-          ${menuItem('help', 'Keyboard shortcuts', 'help', 'aria-haspopup="dialog" aria-keyshortcuts="?"')}
+          ${menuItem('help', 'Controls', 'help', 'aria-haspopup="dialog" aria-keyshortcuts="?"')}
         </div>
         <div class="sugg" role="dialog" aria-labelledby="ff-sugg-title" hidden>
           <div class="sghead"><h2 id="ff-sugg-title">Suggestions</h2>${btn('data-sugg="close" aria-label="Close suggestions"', 'Close', 'close')}</div>
@@ -620,12 +598,12 @@ export class FridgeFace extends HTMLElement {
     wrap.insertAdjacentHTML('afterbegin', '<div class="probe" aria-hidden="true"></div>');
     const outer = document.createElement('div'); // siblings of .root: never made inert, so the live region keeps working
     outer.innerHTML = `
-      <div class="sr" id="ff-desc">Press 1 to 5 to add a piece. N and P choose a piece; Control or Command A selects every piece. Arrow keys move the selection, comma and period rotate it, the bracket keys restack it, Delete removes it. Press question mark for every shortcut.</div>
+      <div class="sr" id="ff-desc">Press 1 to 5 to add a piece. N and P choose a piece; Control or Command A selects every piece. Arrow keys move the selection, comma and period rotate it, the bracket keys restack it, Delete removes it. Press question mark for the controls.</div>
       <div class="sr" id="ff-live" role="status" aria-live="polite" aria-atomic="true"></div>
       <div class="help" hidden>
         <div class="helpbox" role="dialog" aria-modal="true" aria-labelledby="ff-help-title">
-          <div class="helphead"><h2 id="ff-help-title">Keyboard shortcuts</h2>${btn('data-help="close" aria-label="Close keyboard shortcuts"', 'Close', 'close')}</div>
-          <div class="helpbody" tabindex="0" role="region" aria-label="Shortcut list">${shortcutsHtml()}</div>
+          <div class="helphead"><h2 id="ff-help-title">Controls</h2>${btn('data-help="close" aria-label="Close controls"', 'Close', 'close')}</div>
+          <div class="helpbody" tabindex="0" role="region" aria-label="Controls list">${controlsHtml()}</div>
         </div>
       </div>`;
     this.rootEl = wrap;
@@ -710,6 +688,7 @@ export class FridgeFace extends HTMLElement {
     this.helpEl.addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
       if (t === this.helpEl || t.closest('[data-help=close]')) this.closeHelp();
+      else if (t.closest('[data-help=showall]')) this.showAllControls();
     });
 
     this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
@@ -787,6 +766,10 @@ export class FridgeFace extends HTMLElement {
     window.removeEventListener('hashchange', this.onHashChange);
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('orientationchange', this.onWindowResize);
+    window.removeEventListener('keydown', this.onPhysicalKey, { capture: true });
+    this.coarseMq?.removeEventListener?.('change', this.onControlsEnvChange);
+    this.fineMq?.removeEventListener?.('change', this.onControlsEnvChange);
+    this.coarseMq = this.fineMq = null;
     this.unsubSuggestions?.();
     this.unsubSuggestions = null;
     this.closeMenu(false);
@@ -1535,7 +1518,7 @@ export class FridgeFace extends HTMLElement {
     this.syncTrayScale(); // the insets pad the landscape tray column
   }
 
-  // ---- keyboard shortcuts dialog -------------------------------------------------------
+  // ---- controls dialog -------------------------------------------------------
 
   private get helpOpen(): boolean {
     return !!this.helpEl && !this.helpEl.hidden;
@@ -1545,6 +1528,8 @@ export class FridgeFace extends HTMLElement {
     if (this.helpOpen) return;
     this.helpOpener = opener?.closest?.('button') ?? (this.shadowRoot!.activeElement as HTMLElement | null) ?? this.surface;
     this.showExportMenu(false);
+    this.helpShowAll = false;
+    this.syncControls();
     this.helpEl.hidden = false;
     this.rootEl.inert = true; // contains focus and hides the rest from assistive tech while the dialog is open
     this.helpEl.querySelector<HTMLElement>('[data-help=close]')!.focus();
@@ -1553,6 +1538,8 @@ export class FridgeFace extends HTMLElement {
   private closeHelp() {
     if (!this.helpOpen) return;
     this.helpEl.hidden = true;
+    this.helpShowAll = false;
+    this.syncControls();
     this.rootEl.inert = false;
     const back: HTMLElement | SVGElement = this.helpOpener && this.helpOpener.isConnected && !(this.helpOpener as HTMLButtonElement).disabled ? this.helpOpener : this.surface;
     this.helpOpener = null;
@@ -1565,7 +1552,7 @@ export class FridgeFace extends HTMLElement {
       this.closeHelp();
       e.preventDefault();
     } else if (e.key === 'Tab') {
-      const items = [...this.helpEl.querySelectorAll<HTMLElement>('button, [tabindex="0"]')];
+      const items = [...this.helpEl.querySelectorAll<HTMLElement>('button, [tabindex="0"]')].filter((el) => !el.closest('[hidden]'));
       const active = this.shadowRoot!.activeElement as HTMLElement | null;
       const i = active ? items.indexOf(active) : -1;
       const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : i < 0 || i === items.length - 1 ? 0 : i + 1;
@@ -1575,6 +1562,35 @@ export class FridgeFace extends HTMLElement {
       this.closeHelp();
       e.preventDefault();
     }
+  }
+
+  /** Show the sections this device has (see `controlSections`), plus all of them after "Show all controls". */
+  private syncControls() {
+    if (!this.helpEl) return;
+    const has = typeof matchMedia === 'function';
+    const sec = controlSections({
+      hasMatchMedia: has,
+      anyCoarse: has && matchMedia('(any-pointer: coarse)').matches,
+      anyFine: has && matchMedia('(any-pointer: fine)').matches,
+      maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0,
+      keyboardSeen,
+    });
+    const shown: Record<string, boolean> = { touch: sec.touch, pointer: sec.pointer, keyboard: sec.keyboard };
+    for (const el of this.helpEl.querySelectorAll<HTMLElement>('[data-controls]')) el.hidden = !(this.helpShowAll || shown[el.dataset.controls!]);
+    const all = this.helpEl.querySelector<HTMLElement>('.ctlall')!;
+    const hide = this.helpShowAll || sec.allShown;
+    const hadFocus = this.shadowRoot!.activeElement && all.contains(this.shadowRoot!.activeElement);
+    all.hidden = hide;
+    if (hide && hadFocus) this.helpEl.querySelector<HTMLElement>('[data-help=close]')!.focus();
+  }
+
+  private showAllControls() {
+    this.helpShowAll = true;
+    const before = new Set([...this.helpEl.querySelectorAll<HTMLElement>('[data-controls]')].filter((e) => e.hidden));
+    this.syncControls();
+    const first = [...before][0]?.querySelector<HTMLElement>('h3');
+    (first ?? this.helpEl.querySelector<HTMLElement>('[data-help=close]'))!.focus();
+    this.say('All controls shown.');
   }
 
   /** Frame every piece (rotated bounds) with a margin; with no pieces, reset to the default view. */

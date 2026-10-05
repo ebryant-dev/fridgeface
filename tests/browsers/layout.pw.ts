@@ -176,7 +176,7 @@ test('rotation snapping is gone: no snap or 15 degree buttons on any layout; the
   for (const sel of ['[data-action=snap]', '[data-action=rotate-left]', '[data-action=rotate-right]']) await expect(page.locator(`fridge-face ${sel}`)).toHaveCount(0);
   const labels = await page.locator('fridge-face .actions button').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
   expect(labels).toEqual(['Delete piece', 'Bring forward', 'Send backward']);
-  // Nothing about snapping or 15 degree steps anywhere in the toy, including the keyboard shortcuts dialog.
+  // Nothing about snapping or 15 degree steps anywhere in the toy, including the Controls dialog.
   const text = await page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.innerHTML);
   expect(text).not.toMatch(/snap|15\u00b0|15°|15 degree/i);
 });

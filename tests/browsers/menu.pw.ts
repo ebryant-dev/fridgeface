@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 /**
- * The phone menu (☰), in Chromium AND WebKit: on phones it holds share, download, letters and keyboard shortcuts;
+ * The phone menu (☰), in Chromium AND WebKit: on phones it holds share, download, letters and controls;
  * on desktop there is no menu and the original buttons are all there. Menu tests run on the phone profiles only.
  */
 
@@ -133,7 +133,7 @@ test('phone: the menu button replaces share, export, letters and help; the menu 
   const lettersShown = await item(page, 'letters').isVisible();
   if (lettersShown) await expect(item(page, 'letters')).toContainText('Letters');
   await expect(item(page, 'share')).toContainText('Copy share link');
-  await expect(item(page, 'help')).toContainText('Keyboard shortcuts');
+  await expect(item(page, 'help')).toContainText('Controls');
   await expect(item(page, 'share')).not.toHaveAttribute('aria-disabled', 'true');
 
   // The Download choices open inline and stay inside the viewport.

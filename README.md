@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.5.0 (multi-select: a drag on the empty board draws a selection box with the mouse, Shift adds, Shift+click adds or removes one piece, Ctrl/Cmd+A selects all; on touch, one finger still pans, a long-press on the empty board then a drag draws the box, a long-press on a piece adds or removes it; a selection moves, rotates (handle, twist, `,` `.`), nudges and deletes as one rigid unit and one undo step; bring forward / send backward now pass the next piece the selection actually overlaps, for single pieces too). v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v0.5.2 (the help panel is now "Controls": it lists Touch, Mouse and trackpad, and Keyboard sections, showing only the input methods the device has, with a "Show all controls" button for the rest). v0.5.0 (multi-select: a drag on the empty board draws a selection box with the mouse, Shift adds, Shift+click adds or removes one piece, Ctrl/Cmd+A selects all; on touch, one finger still pans, a long-press on the empty board then a drag draws the box, a long-press on a piece adds or removes it; a selection moves, rotates (handle, twist, `,` `.`), nudges and deletes as one rigid unit and one undo step; bring forward / send backward now pass the next piece the selection actually overlaps, for single pieces too). v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.5.1"
+npm install "github:ebryant-dev/fridgeface#v0.5.2"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.5.1"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.5.2"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
@@ -109,7 +109,7 @@ The new files are ordinary source files: commit them like any other change.
 
 ## Keyboard
 
-The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work while focus is anywhere inside the element (not in the share field), and `?` opens the in-app list.
+The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work while focus is anywhere inside the element (not in the share field), and `?` opens the in-app Controls list.
 
 | Keys | Action |
 | --- | --- |
@@ -126,7 +126,7 @@ The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work whi
 | `Ctrl`/`Cmd`+`Z`, `Ctrl`+`Shift`+`Z` or `Ctrl`+`Y` | Undo, redo |
 | `C`, `E` | Copy the share link, open the export menu |
 | `L` | Show or hide letter suggestions (only when suggestions exist) |
-| `?` | Keyboard shortcuts dialog (focus moves in, Tab stays inside, `Esc` closes and returns focus) |
+| `?` | Controls dialog (focus moves in, Tab stays inside, `Esc` closes and returns focus) |
 | `Esc` | Closes the innermost open thing first (export menu, clear confirm, share field), then deselects |
 
 ### Selecting with the pointer and touch
@@ -137,6 +137,10 @@ A **selection** (see [CONTEXT.md](CONTEXT.md)) is temporary: it is not saved in 
 - **Touch:** a tap selects a piece, a drag moves it (or the selection it belongs to; the drag starts once the finger has moved 8 px). One finger on the empty board pans, two pinch to zoom. Hold the empty board still for about 0.4 s (a ring appears around the finger), then drag to draw a selection box; lifting without dragging cancels it and leaves the selection as it was. Hold a piece still for about 0.4 s to add it to the selection or remove it. Two fingers, the first on the selection, twist it.
 - **Overlay:** one piece shows its box and round rotate handle; several show a thin outline each, one box around them all and one handle (a 44 px target). The handle sits below the box when the spot above it is off the board or under a control. Rotating several pieces turns them about the centre of their box, fixed for the whole gesture: positions orbit and rotations add, so their arrangement is kept exactly.
 - **Restacking:** bring forward moves the selection up past the next unselected piece above it that it actually overlaps (real geometry); send backward is the mirror image. The selection keeps its own stacking order and so do the other pieces. When nothing above (or below) overlaps, the button is disabled. The logic is pure and unit-tested in `src/selection.ts`.
+
+### The Controls panel
+
+The `?` button (the "Controls" item in the phone menu, or the `?` key) opens a panel with three sections: **Touch**, **Mouse and trackpad** and **Keyboard**. It shows only the ones the device has: Touch when `(any-pointer: coarse)` matches or `navigator.maxTouchPoints > 0`; Mouse and trackpad when `(any-pointer: fine)` matches; Keyboard when `(any-pointer: fine)` matches or a real key press (a trusted `keydown`, not an IME composition) has been seen on the page. Without `matchMedia`, or when neither pointer query matches, everything is shown. The sections follow changes live (for example an iPad gaining a keyboard or trackpad), and a "Show all controls" button reveals the hidden ones until the panel is closed. The rule is the pure function `controlSections` in `src/controls.ts`.
 
 Screen readers: the board is `role="application"` with a name and description, and one polite live region announces changes ("Positive stem added. 3 pieces on the board.", "Moved forward. 2 of 4 in stacking order.", "3 pieces selected.", "3 pieces moved.", "3 pieces rotated to 15 degrees.", "3 pieces deleted.", "Nothing above overlaps it."). Held or repeated keys (rotate, nudge, zoom) and pointer drags are summarised once, when they pause or end. Text comes from `src/announce.ts`.
 
