@@ -6,8 +6,12 @@
  * roughly linear falloff like the reference. Each stroke is pushed less than its own half-width, so
  * its inner half stays (almost entirely) under the shape and the core: no darker rim shows outside it.
  *
- * All numbers are SCREEN px. On screen they are multiplied by `--px` (board units per screen px,
- * set when zoom changes) so the shadow looks the same at every zoom. Exports use a fixed scale.
+ * The numbers below are in "shadow px": the shadow's size on screen at the REFERENCE view, the default desktop zoom
+ * (0.4 CSS px per board unit). The shadow is a BOARD-space property, like a real magnet's: SHADOW_BOARD_SCALE board units
+ * per shadow px, so it grows and shrinks with the pieces as the view zooms, within a clamp (`shadowFactor`): never more than
+ * SHADOW_MAX x the reference size on screen (no giant blur zoomed far in), never less than SHADOW_MIN x (zoomed far out a
+ * faint ~1 px contact edge stays, so the white shapes still read on the fridge). On screen they are multiplied by `--px`
+ * (`shadowUnit`: board units per shadow px, set when the zoom changes, never per frame). Exports use the reference scale.
  */
 export interface ShadowSpec {
   dx: number;
@@ -34,9 +38,40 @@ export const LIFT_SHADOW: ShadowSpec = { dx: 3.5, dy: 5.5, core: 0.15, layers: [
  * high-DPR screens. Exports split further (see subdivide).
  */
 export const SCREEN_SPLIT = 2;
-/** How far a lifted piece shifts up-left, screen px. */
+/** How far a lifted piece shifts up-left, shadow px (it scales with the shadow). */
 export const LIFT_SHIFT = 1.5;
 export const LIFT_MS = 140;
+
+/** Board units per shadow px: the reference view is 1 / this = 0.4 CSS px per board unit (the default desktop zoom). Exports use it. */
+export const SHADOW_BOARD_SCALE = 2.5;
+/** The shadow's on-screen size, as a multiple of its reference size, is clamped to [SHADOW_MIN, SHADOW_MAX]. */
+export const SHADOW_MIN = 0.45; // zoomed far out: the resting offset stays ~1 px (0.45 x 2.16 px), a faint contact edge
+export const SHADOW_MAX = 1.5; // zoomed far in: at most the default-zoom shadow x 1.5
+
+/**
+ * How big the shadow is on screen at `pxPerUnit` CSS px per board unit (the board scale times the zoom), as a multiple of
+ * its reference size: proportional to the pieces (1 at the reference view), clamped to [SHADOW_MIN, SHADOW_MAX].
+ */
+export function shadowFactor(pxPerUnit: number): number {
+  if (!(pxPerUnit > 0)) return 1;
+  return Math.min(SHADOW_MAX, Math.max(SHADOW_MIN, pxPerUnit * SHADOW_BOARD_SCALE));
+}
+
+/** The value of `--px` on the board: board units per shadow px at `pxPerUnit` CSS px per board unit. */
+export function shadowUnit(pxPerUnit: number): number {
+  return pxPerUnit > 0 ? shadowFactor(pxPerUnit) / pxPerUnit : SHADOW_BOARD_SCALE;
+}
+
+/**
+ * The resting shadow's reach on screen at `pxPerUnit`, CSS px: its offset, and how far its soft edge reaches past the
+ * shape along the shadow direction (offset plus the widest layer's half-width and push).
+ */
+export function shadowReach(pxPerUnit: number, s: ShadowSpec = REST_SHADOW): { offset: number; extent: number } {
+  const m = shadowFactor(pxPerUnit);
+  const w = Math.max(...s.layers.map(([lw]) => lw));
+  const offset = Math.hypot(s.dx, s.dy);
+  return { offset: offset * m, extent: (offset + (w / 2) * (1 + SPREAD)) * m };
+}
 
 const f = (n: number) => String(Math.round(n * 1000) / 1000);
 
@@ -46,7 +81,7 @@ function dir(s: ShadowSpec): [number, number] {
   return [s.dx / l, s.dy / l];
 }
 
-/** A layer's extra push along the shadow direction, screen px. */
+/** A layer's extra push along the shadow direction, shadow px. */
 export function layerPush(s: ShadowSpec, width: number): [number, number] {
   const [ux, uy] = dir(s);
   return [ux * SPREAD * (width / 2), uy * SPREAD * (width / 2)];
@@ -54,7 +89,7 @@ export function layerPush(s: ShadowSpec, width: number): [number, number] {
 
 /**
  * On-screen shadow layers for one geometry element. Each layer is a wrapper `<g class="lN">` (styled by
- * CSS, offset in SCREEN directions) around a `<g data-rot>` that takes the piece's rotation. `geom` is
+ * CSS, offset in screen directions) around a `<g data-rot>` that takes the piece's rotation. `geom` is
  * the geometry tag with an `{a}` placeholder for attributes, e.g. `<path d="..." {a}/>`; `rot` is the
  * initial rotation transform (empty for a shape at rest).
  */

@@ -1,7 +1,7 @@
 import { rotatedBounds } from './camera';
 import { normalise } from './rotation';
 import {
-  FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
+  FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
   type ShapeFrame, type SizeOf,
 } from './outline';
 
@@ -255,7 +255,7 @@ export function rigidShift(outlines: readonly Outline[], filled: readonly (strin
   if (!outlines.length || filled.length !== outlines.length || filled.some((f) => !f)) return null;
   const byId = new Map(pieces.map((p) => [p.id, p]));
   const ps = filled.map((id) => byId.get(id!));
-  if (ps.some((p, i) => !p || p.shapeId !== outlines[i].shapeId || angleGap(p.rotation, outlines[i].rotation) > FILL_ANGLE_EPS)) return null;
+  if (ps.some((p, i) => !p || p.shapeId !== outlines[i].shapeId || outlineAngleGap(outlines[i], p.rotation) > FILL_ANGLE_EPS)) return null;
   const dx = ps[0]!.x - outlines[0].x, dy = ps[0]!.y - outlines[0].y;
   if (Math.hypot(dx, dy) <= FILL_POS_EPS) return null; // still in place
   const rigid = ps.every((p, i) => Math.hypot(p!.x - outlines[i].x - dx, p!.y - outlines[i].y - dy) <= FILL_POS_EPS);
@@ -500,7 +500,7 @@ export function anchorWord(word: readonly Outline[], c: WordC, letter: readonly 
   const dx = letter[0].x - want[0].x, dy = letter[0].y - want[0].y;
   const r6 = (n: number) => Math.round(n * 1e6) / 1e6 || 0;
   const at = new Map([[c.round, letter[0]], [c.negative, letter[1]], [c.wedge, letter[2]]]);
-  const out = word.map((p, i) => at.get(i) ?? { shapeId: p.shapeId, x: r6(p.x + dx), y: r6(p.y + dy), rotation: Math.round(normalise(p.rotation) * 100) / 100 || 0 });
+  const out = word.map((p, i) => at.get(i) ?? outlineOf(p.shapeId, r6(p.x + dx), r6(p.y + dy), Math.round(normalise(p.rotation) * 100) / 100 || 0, shapeOf));
   const b = rotatedBounds(out, shapeOf);
   if (b && avoid.some((q) => rectsOverlap(b, q))) return null;
   return out.map((o) => ({ ...o }));
@@ -669,14 +669,27 @@ function onSide(
   return best?.r ?? null;
 }
 
-function centred(size: { w: number; h: number }, bounds: Rect, obstacles: readonly Rect[]): Rect | null {
+/**
+ * The spot nearest the centre of the bounds that is clear of `obstacles`. With `avoid` (what it would rather leave visible:
+ * the soft rects and the pieces, given up only because no spot clears them), the clear spot covering the fewest of them
+ * (then the least area of them) wins, nearness breaking ties.
+ */
+function centred(size: { w: number; h: number }, bounds: Rect, obstacles: readonly Rect[], avoid: readonly Rect[] = []): Rect | null {
   const xs = along(bounds.x + (bounds.w - size.w) / 2, bounds.x, bounds.x + bounds.w - size.w, 16);
   const ys = along(bounds.y + (bounds.h - size.h) / 2, bounds.y, bounds.y + bounds.h - size.h, 8);
   const cx = xs[0], cy = ys[0];
   const all: Rect[] = [];
   for (const y of ys) for (const x of xs) all.push({ x, y, w: size.w, h: size.h });
   all.sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy));
-  return all.find((r) => !obstacles.some((o) => rectsOverlap(r, o))) ?? null;
+  const clear = all.filter((r) => !obstacles.some((o) => rectsOverlap(r, o)));
+  if (!avoid.length || clear.length < 2) return clear[0] ?? null;
+  let best: { r: Rect; n: number; a: number } | null = null;
+  for (const r of clear) {
+    const n = covers(r, avoid), a = coverArea(r, avoid);
+    if (!best || n < best.n || (n === best.n && a < best.a - 1)) best = { r, n, a };
+    if (!n) break; // nearest spot clear of all of them
+  }
+  return best!.r;
 }
 
 /**
@@ -685,11 +698,13 @@ function centred(size: { w: number; h: number }, bounds: Rect, obstacles: readon
  * whose arrow is level with the target, then the one covering the fewest `pieces` (empty board over pieces; then the least
  * area of them), then the
  * side order in `prefer`, then nearness to the target's centre, stepping past obstacles. With no target, or when no side fits, it is centred in the bounds
- * (clear of the obstacles and the target where possible), with no arrow.
+ * (clear of the obstacles and the target where possible), with no arrow. `must` (a subset of the obstacles: the rotate
+ * handles and the active outlines) is the last thing given up: when no spot clears every obstacle, the centred spot still
+ * keeps clear of `must` (covering a control if it has to) before anything else is dropped.
  */
 export function placeCallout(
   size: { w: number; h: number }, target: Rect | null, bounds: Rect, obstacles: readonly Rect[],
-  prefer: readonly Exclude<CalloutSide, 'centre'>[], soft: readonly Rect[] = [], pieces: readonly Rect[] = [], gap = 22,
+  prefer: readonly Exclude<CalloutSide, 'centre'>[], soft: readonly Rect[] = [], pieces: readonly Rect[] = [], gap = 22, must: readonly Rect[] = [],
 ): CalloutPlacement {
   const firm = [...obstacles, ...soft];
   if (target) {
@@ -715,7 +730,9 @@ export function placeCallout(
     }
   }
   const t = target ? [target] : [];
-  const r = centred(size, bounds, [...firm, ...t]) ?? centred(size, bounds, [...obstacles, ...t]) ?? centred(size, bounds, t)
+  const giveUp = [...soft, ...pieces];
+  const r = centred(size, bounds, [...firm, ...t]) ?? centred(size, bounds, [...obstacles, ...t], giveUp)
+    ?? (must.length ? centred(size, bounds, [...must, ...t], giveUp) : null) ?? (must.length ? centred(size, bounds, must, giveUp) : null) ?? centred(size, bounds, t)
     ?? { x: clamp(bounds.x + (bounds.w - size.w) / 2, bounds.x, bounds.x + bounds.w), y: clamp(bounds.y + (bounds.h - size.h) / 2, bounds.y, bounds.y + bounds.h) };
   return { x: r.x, y: r.y, side: 'centre', arrow: 0 };
 }

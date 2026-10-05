@@ -5,6 +5,7 @@ import negativeRoundSvg from './shapes/negative-round.svg?raw';
 import wedgeSvg from './shapes/wedge.svg?raw';
 import { uprightBounds } from './rotation';
 import { convexHull } from './selection';
+import { symmetryOrder } from './symmetry';
 
 export type Polarity = 'positive' | 'negative';
 export type Pt = { x: number; y: number };
@@ -34,6 +35,12 @@ export interface Shape {
    * a fraction of a board unit inside the true curve). Used for selection and overlap tests, never for drawing.
    */
   hull: Pt[];
+  /**
+   * Rotational symmetry order, MEASURED from the hull at load (symmetry.ts): 2 when turning the shape 180 degrees about its
+   * centroid gives the same outline (the stems and the rounds), 1 when nothing does (the wedge). Rotations that differ by a
+   * multiple of 360 / symmetry look identical, so the guide's outlines accept them as equal.
+   */
+  symmetry: number;
 }
 
 const HULL_MAX = 120;
@@ -147,13 +154,16 @@ function build(id: string, name: string, polarity: Polarity, svg: string, uprigh
   const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
   const x = Math.min(...xs), y = Math.min(...ys);
   const centroid = areaCentroid(pts);
+  const uprightBox = uprightBounds(pts, centroid, off);
+  const hull = hullOf(pts, centroid);
   return {
     id, name, polarity, fill, geometry,
     uprightOffsetDeg: off,
     centroid,
     bbox: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y },
-    uprightBox: uprightBounds(pts, centroid, off),
-    hull: hullOf(pts, centroid),
+    uprightBox,
+    hull,
+    symmetry: symmetryOrder(hull, { x: 0, y: 0 }, Math.max(uprightBox.w, uprightBox.h)),
   };
 }
 

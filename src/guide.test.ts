@@ -260,6 +260,25 @@ describe('when it shows, Skip and "Don\'t show again"', () => {
 });
 
 describe('placeCallout', () => {
+  it('never covers a rotate handle (or an active outline) passed as `must`, even when nothing clears every obstacle', () => {
+    const size = { w: 100, h: 50 };
+    const bounds = { x: 0, y: 0, w: 300, h: 200 };
+    const control = { x: 0, y: 0, w: 150, h: 200 }; // a dock over the left half
+    const handle = { x: 160, y: 0, w: 140, h: 200 }; // a handle's hit box (and margin), stretched for the test
+    // No spot clears both: the old last resort was the plain centre, over the handle.
+    const p = placeCallout(size, null, bounds, [control, handle], [], [], [], 22, [handle]);
+    expect(rectsOverlap({ x: p.x, y: p.y, ...size }, handle)).toBe(false);
+    expect(p.side).toBe('centre');
+    // Without `must` it is the old behaviour.
+    const q = placeCallout(size, null, bounds, [control, handle], []);
+    expect(rectsOverlap({ x: q.x, y: q.y, ...size }, handle)).toBe(true);
+    // With a target: a handle beside the target pushes the callout to another side.
+    const t = { x: 140, y: 120, w: 20, h: 20 };
+    const h2 = { x: 120, y: 40, w: 60, h: 60 }; // right above the target
+    const r = placeCallout(size, t, bounds, [h2], ['above', 'below', 'left', 'right'], [], [], 22, [h2]);
+    expect(rectsOverlap({ x: r.x, y: r.y, ...size }, h2)).toBe(false);
+  });
+
   const bounds: Rect = { x: 0, y: 0, w: 800, h: 600 };
   const size = { w: 200, h: 80 };
   const within = (r: Rect, b: Rect) => r.x >= b.x && r.y >= b.y && r.x + r.w <= b.x + b.w && r.y + r.h <= b.y + b.h;

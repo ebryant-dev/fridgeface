@@ -18,6 +18,12 @@ export interface Outline {
   x: number;
   y: number;
   rotation: number;
+  /**
+   * The outline's shape's symmetry period, degrees (360 / its symmetry order; absent: 360, no symmetry). Rotations equal
+   * modulo it look identical, so a piece at any of them fits the outline (an oval turned 180 degrees is the same oval).
+   * Set from the shape by `outlinesAt` and `anchorWord`; pieces never carry it.
+   */
+  period?: number;
 }
 export interface OutlinePiece extends Outline {
   id: string;
@@ -44,6 +50,31 @@ export function angleGap(a: number, b: number): number {
   return Math.abs(normalise(a - b));
 }
 
+/** A shape's symmetry period from its symmetry order (1 or missing: 360, none). */
+export const periodOf = (symmetry: number | undefined): number => (symmetry && symmetry > 1 ? 360 / symmetry : 360);
+
+/** The outline's rotation equivalent to `rotation`'s that is nearest it (signed: `rotation` + this lands on one), degrees. */
+function offsetTo(o: Outline, rotation: number): number {
+  const period = o.period ?? 360;
+  let d = (((o.rotation - rotation) % period) + period) % period; // [0, period)
+  if (d > period / 2) d -= period;
+  return d;
+}
+
+/** The smaller angle between a piece's rotation and the outline's, modulo the outline's symmetry period, degrees. */
+export function outlineAngleGap(o: Outline, rotation: number): number {
+  return Math.abs(offsetTo(o, rotation));
+}
+
+/**
+ * Where a piece at `rotation` settles on the outline: the outline's rotation, or the equivalent one (by its symmetry)
+ * NEAREST the piece's own, so a symmetric piece never spins a half turn to click in. Normalised and rounded like the wire
+ * format (0.01 degrees), so a saved board still sits exactly on it.
+ */
+export function settleRotation(o: Outline, rotation: number): number {
+  return Math.round(normalise(rotation + offsetTo(o, rotation)) * 100) / 100 || 0;
+}
+
 /** The indices of the outlines that are not filled. */
 export function activeIndices(filled: readonly (string | null)[]): number[] {
   const out: number[] = [];
@@ -53,19 +84,20 @@ export function activeIndices(filled: readonly (string | null)[]): number[] {
   return out;
 }
 
-/** Does the piece sit exactly on the outline (same shape, same place, same rotation)? */
+/** Does the piece sit exactly on the outline (same shape, same place, same rotation, modulo the shape's symmetry)? */
 export function sitsOn(o: Outline, p: Outline): boolean {
-  return o.shapeId === p.shapeId && Math.hypot(o.x - p.x, o.y - p.y) <= FILL_POS_EPS && angleGap(o.rotation, p.rotation) <= FILL_ANGLE_EPS;
+  return o.shapeId === p.shapeId && Math.hypot(o.x - p.x, o.y - p.y) <= FILL_POS_EPS && outlineAngleGap(o, p.rotation) <= FILL_ANGLE_EPS;
 }
 
 /**
  * How a piece relates to an outline: 'fit' (right shape, close enough in position AND angle: it would click in), 'near'
- * (right shape and close enough in position, but needs turning), 'far' (wrong shape, or too far away).
+ * (right shape and close enough in position, but needs turning), 'far' (wrong shape, or too far away). Angles are compared
+ * modulo the outline's symmetry period: an oval half a turn from its outline fits it.
  */
 export function outlineMatch(o: Outline, p: Outline, sizeOf: SizeOf, tol: Tolerance = CLICK_TOLERANCE): 'fit' | 'near' | 'far' {
   if (o.shapeId !== p.shapeId) return 'far';
   if (Math.hypot(o.x - p.x, o.y - p.y) > tol.pos * sizeOf(o.shapeId)) return 'far';
-  return angleGap(o.rotation, p.rotation) <= tol.angle ? 'fit' : 'near';
+  return outlineAngleGap(o, p.rotation) <= tol.angle ? 'fit' : 'near';
 }
 
 /**
@@ -143,7 +175,8 @@ export function clickIn(
     if (i === null) continue;
     const o = outlines[i];
     filled[i] = id;
-    placements.push({ id, x: o.x, y: o.y, rotation: o.rotation, outline: i }); // exactly the outline (outlinesAt keeps it normalised)
+    // Exactly the outline's place, at its rotation or the symmetric equivalent nearest the piece's (no half-turn spin).
+    placements.push({ id, x: o.x, y: o.y, rotation: settleRotation(o, p.rotation), outline: i });
   }
   if (!placements.length) return null;
   const order = stackFix(pieces.map((p) => p.id), filled);
@@ -171,7 +204,13 @@ export function stackFix(order: readonly string[], filled: readonly (string | nu
   return out;
 }
 
-export type ShapeFrame = { bbox: Rect; centroid: { x: number; y: number } };
+export type ShapeFrame = { bbox: Rect; centroid: { x: number; y: number }; /** Rotational symmetry order (shapes.ts); absent: none. */ symmetry?: number };
+
+/** An outline for a piece of a suggestion, carrying its shape's symmetry period (when it has one). */
+export function outlineOf(shapeId: string, x: number, y: number, rotation: number, shapeOf: (id: string) => ShapeFrame | undefined): Outline {
+  const period = periodOf(shapeOf(shapeId)?.symmetry);
+  return period < 360 ? { shapeId, x, y, rotation, period } : { shapeId, x, y, rotation };
+}
 
 /**
  * A suggestion's pieces as outlines on the board, moved rigidly so the centre of their rotated bounds is at `centre` (to
@@ -184,5 +223,5 @@ export function outlinesAt(pieces: readonly Outline[], shapeOf: (id: string) => 
   const r1 = (n: number) => Math.round(n * 10) / 10 || 0;
   // The move itself is a whole number of 0.1 units, so the pieces' arrangement is kept exactly (not just to rounding).
   const dx = r1(centre.x - (b.x + b.w / 2)), dy = r1(centre.y - (b.y + b.h / 2));
-  return pieces.map((p) => ({ shapeId: p.shapeId, x: r1(p.x + dx), y: r1(p.y + dy), rotation: Math.round(normalise(p.rotation) * 100) / 100 || 0 }));
+  return pieces.map((p) => outlineOf(p.shapeId, r1(p.x + dx), r1(p.y + dy), Math.round(normalise(p.rotation) * 100) / 100 || 0, shapeOf));
 }

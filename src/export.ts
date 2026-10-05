@@ -1,5 +1,5 @@
 import { rotatedBounds, type Point, type Rect } from './camera';
-import { REST_SHADOW, staticShadowMarkup, subdivide } from './shadow';
+import { REST_SHADOW, SHADOW_BOARD_SCALE, staticShadowMarkup, subdivide } from './shadow';
 import { TEXTURE_BASE } from './texture';
 
 /**
@@ -10,8 +10,11 @@ import { TEXTURE_BASE } from './texture';
  * Units: 1 board unit = 1 SVG user unit = 1 px at 1x.
  */
 export const EXPORT_BACKGROUND = `rgb(${TEXTURE_BASE.join(',')})`; // under the texture (and the whole board if none)
-/** Board units per shadow "screen px" in exports: the on-screen look at the default desktop view (~0.39 px per unit). */
-export const EXPORT_SHADOW_SCALE = 2.5;
+/**
+ * Board units per shadow px in exports: the shadow's board-space size at the reference view (the default desktop zoom, 0.4 px
+ * per unit), the same as on screen there. Exports are not zoom-dependent, so they always use it.
+ */
+export const EXPORT_SHADOW_SCALE = SHADOW_BOARD_SCALE;
 /** The resting shadow, subdivided: exports are viewed large, where four steps would band. */
 const EXPORT_SHADOW = subdivide(REST_SHADOW);
 export const EXPORT_MIN_MARGIN = 48; // room for the shadow's soft edge (~41 units at EXPORT_SHADOW_SCALE)

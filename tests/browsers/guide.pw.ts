@@ -152,7 +152,7 @@ const onOutline = (p: P, o: O) => p.shapeId === o.shapeId && Math.hypot(p.x - o.
  * The callout: inside the viewport and the board, clear of its target, the dock panels, the action bar and the tray, and
  * (v2) clear of every active outline and of the piece being turned toward one.
  */
-async function checkCallout(page: Page, label: string) {
+async function checkCallout(page: Page, label: string, opts: { panned?: boolean } = {}) {
   await frames(page);
   const m = await page.evaluate(() => {
     const ff = document.querySelector('fridge-face') as FF;
@@ -180,8 +180,13 @@ async function checkCallout(page: Page, label: string) {
     });
     const turn = ff.guide.turn ? sr.querySelector(`[data-piece-id="${ff.guide.turn}"] .bd`) : null;
     const arrow = sr.querySelector('.gpt')!;
+    // Every rotate handle showing, as its 44 px hit box (centred on the handle).
+    const handles = [...sr.querySelectorAll('[data-handle]')].flatMap((h) => {
+      const r = h.querySelector('circle')?.getBoundingClientRect();
+      return r && r.width ? [{ x: r.x + r.width / 2 - 22, y: r.y + r.height / 2 - 22, w: 44, h: 44 }] : [];
+    });
     return {
-      kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), target, controls, outlines,
+      kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), target, controls, outlines, handles,
       turn: turn ? rect(turn) : null, tray: rect(sr.querySelector('.tray')!), board: rect(sr.querySelector('.board')!), vw: window.innerWidth, vh: window.innerHeight,
     };
   });
@@ -199,9 +204,10 @@ async function checkCallout(page: Page, label: string) {
   }
   for (const o of m.outlines) {
     expect.soft(ov(c, o), `${where} overlaps an active outline ${JSON.stringify(o)}`).toBe(false);
-    expect.soft(inView(o), `${label}: the outline ${JSON.stringify(o)} is inside the viewport`).toBe(true);
+    if (!opts.panned) expect.soft(inView(o), `${label}: the outline ${JSON.stringify(o)} is inside the viewport`).toBe(true); // a visitor's pan may take it out
   }
   if (m.turn) expect.soft(ov(c, m.turn), `${where} overlaps the piece being turned ${JSON.stringify(m.turn)}`).toBe(false);
+  for (const h of m.handles) expect.soft(ov(c, h), `${where} overlaps a rotate handle's 44px hit box ${JSON.stringify(h)}`).toBe(false);
   expect.soft(ov(c, m.tray), `${where} overlaps the tray`).toBe(false);
   for (const k of m.controls) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
   return m;
@@ -1287,4 +1293,136 @@ test('rotating or resizing mid-step switches modes without losing progress (port
   }
   expect((await shown(page)).idx).toEqual([...CREATE_SECTIONS[1]].sort((a, b) => a - b));
   await page.setViewportSize(start);
+});
+
+// ---- v1.2.4: the callout never covers a rotate handle ---------------------------------------------------------------
+
+type FFi = FF & {
+  k: number;
+  setSelection(ids: string[]): void;
+  render(): void;
+  setView(c: { x: number; y: number; zoom: number }): void;
+  composition: FF['composition'] & {
+    addPieces(items: { shapeId: string; x: number; y: number; rotation: number }[]): { id: string }[];
+    setPlacements(items: { id: string; x: number; y: number; rotation: number }[]): void;
+    getPiece(id: string): P | undefined;
+  };
+};
+
+/** A negative stem of the visitor's own (not part of the c), added in view near the board's centre: its id. */
+async function addStem(page: Page, dx = 0): Promise<string> {
+  return page.evaluate((dx) => {
+    const ff = document.querySelector('fridge-face') as unknown as FFi;
+    const b = ff.shadowRoot!.querySelector('.board')!.getBoundingClientRect();
+    const v = ff.getView();
+    const x = (b.width / 2 / ff.k - v.x) / v.zoom + dx, y = (b.height / 2 / ff.k - v.y) / v.zoom;
+    return ff.composition.addPieces([{ shapeId: 'negative-stem', x, y, rotation: 0 }])[0].id;
+  }, dx);
+}
+
+/**
+ * Select `ids` and move them (or, with `pan`, the view) so their rotate handle lands on the CENTRE of where the callout sits
+ * now; then the callout must have stepped aside: its box never intersects any handle's 44 px hit box.
+ */
+async function handleProbe(page: Page, label: string, ids: string[], pan = false) {
+  await frames(page);
+  await expect(guide(page)).toBeVisible();
+  const where = await guide(page).boundingBox();
+  const target = { x: where!.x + where!.width / 2, y: where!.y + where!.height / 2 };
+  await page.evaluate(async ({ ids, target, pan }) => {
+    const ff = document.querySelector('fridge-face') as unknown as FFi;
+    const raf = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    ff.setSelection(ids);
+    ff.render();
+    for (let i = 0; i < 5; i++) {
+      await raf();
+      const h = ff.shadowRoot!.querySelector('[data-handle] circle')!.getBoundingClientRect();
+      const dx = target.x - (h.x + h.width / 2), dy = target.y - (h.y + h.height / 2);
+      if (Math.hypot(dx, dy) < 1) break;
+      const v = ff.getView();
+      if (pan) ff.setView({ x: v.x + dx / ff.k, y: v.y + dy / ff.k, zoom: v.zoom });
+      else {
+        const s = ff.k * v.zoom;
+        ff.composition.setPlacements(ids.map((id) => {
+          const p = ff.composition.getPiece(id)!;
+          return { id, x: p.x + dx / s, y: p.y + dy / s, rotation: p.rotation };
+        }));
+        ff.render();
+      }
+    }
+  }, { ids, target, pan });
+  await frames(page);
+  await frames(page);
+  await expect(guide(page)).toBeVisible();
+  const m = await checkCallout(page, `${label} (handle moved under it${pan ? ' by panning' : ''})`, { panned: pan });
+  expect(m.handles.length, `${label}: a handle shows`).toBeGreaterThan(0);
+  const ov = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  for (const h of m.handles) expect(ov(m.callout, h), `${label}: the callout ${JSON.stringify(m.callout)} is clear of the handle ${JSON.stringify(h)}`).toBe(false);
+  return m;
+}
+
+test('the callout never covers a rotate handle: a selected piece (or a selection) moved under it, in steps 1 to 5, and by panning', async ({ page, isMobile }, info) => {
+  test.setTimeout(120_000);
+  const errors = collectErrors(page);
+  await open(page, '/?n=h');
+  const a = await addStem(page);
+  await handleProbe(page, 'step 1', [a]);
+  await handleProbe(page, 'step 1', [a], true);
+  if (info.project.name === 'webkit-iphone') await page.screenshot({ path: `${SHOT}/handle-clear-wk-iphone.png` });
+  await dropNear(page, 0);
+  await expect.poll(async () => (await state(page)).step).toBe(2);
+  await handleProbe(page, 'step 2', [a]);
+  const b = await addStem(page, 60);
+  await handleProbe(page, 'step 2, a selection of two', [a, b]);
+  await dropNear(page, 1);
+  await expect.poll(async () => (await state(page)).step).toBe(3);
+  await handleProbe(page, 'step 3a', [a]);
+  await dropNear(page, 2);
+  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
+  const wedge = (await state(page)).turn!;
+  await handleProbe(page, 'step 3b, another piece selected', [a]);
+  await page.evaluate((id) => {
+    const ff = document.querySelector('fridge-face') as unknown as FFi;
+    ff.setSelection([id]);
+    ff.render();
+  }, wedge);
+  await checkCallout(page, 'step 3b, the wedge selected');
+  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 3);
+  await expect.poll(async () => (await state(page)).step).toBe(4);
+  await handleProbe(page, 'step 4', [a, b]);
+  if (await realCreate(page)) {
+    await press(isMobile, gbtn(page, 'word'));
+    await expect(guide(page)).toHaveAttribute('data-step', '5');
+    await page.waitForTimeout(700); // phones: the view glides to the first section
+    await handleProbe(page, 'step 5', [a]);
+    await handleProbe(page, 'step 5', [a], true);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('v1.2.4 symmetry: an oval half a turn round clicks in where it is (no spin) and counts as filled; the wedge half a turn round does not', async ({ page }) => {
+  const errors = collectErrors(page);
+  await open(page, '/?n=sym');
+  const release = (shapeId: string, i: number, turn: number) => page.evaluate(({ shapeId, i, turn }) => {
+    const ff = document.querySelector('fridge-face') as unknown as FFi & { guideSnap(ids: string[]): void };
+    const o = ff.guide.outlines[i];
+    const [p] = ff.composition.addPieces([{ shapeId, x: o.x + 4, y: o.y - 3, rotation: o.rotation + turn }]);
+    const before = ff.composition.getPiece(p.id)!.rotation;
+    ff.guideSnap([p.id]); // what a drop / drag end / turn end calls
+    const after = ff.composition.getPiece(p.id)!;
+    return { id: p.id, before, after: { ...after }, outline: { ...o } };
+  }, { shapeId, i, turn });
+  const gap = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
+  const black = await release('positive-round', 0, 180 + 6);
+  expect([black.after.x, black.after.y], 'exactly in place').toEqual([black.outline.x, black.outline.y]);
+  expect(gap(black.after.rotation, black.before), 'turned only the 6 degrees it was off, not half a turn').toBeCloseTo(6, 6);
+  expect(gap(black.after.rotation, black.outline.rotation), 'half a turn from the outline: the same oval').toBeCloseTo(180, 6);
+  await expect.poll(async () => (await state(page)).step, 'the black oval counts as filled').toBe(2);
+  const white = await release('negative-round', 1, -180 - 4);
+  expect(gap(white.after.rotation, white.before)).toBeCloseTo(4, 6);
+  await expect.poll(async () => (await state(page)).step).toBe(3);
+  const wedge = await release('wedge', 2, 180);
+  expect(wedge.after.rotation, 'the wedge did not click in').toBeCloseTo(wedge.before, 6);
+  await expect.poll(async () => (await state(page)).turn, 'it needs turning (3b)').toBe(wedge.id);
+  expect(errors).toEqual([]);
 });

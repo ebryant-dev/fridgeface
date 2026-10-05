@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { EXPORT_MIN_MARGIN, exportFilename, pngSize, renderCompositionSvg, type ExportShape } from './export';
-import { REST_SHADOW } from './shadow';
+import { EXPORT_MIN_MARGIN, EXPORT_SHADOW_SCALE, exportFilename, pngSize, renderCompositionSvg, type ExportShape } from './export';
+import { REST_SHADOW, SHADOW_BOARD_SCALE, shadowUnit } from './shadow';
 
 const shape = (id: string, fill: string): ExportShape => ({
   id, fill,
@@ -34,6 +34,15 @@ describe('renderCompositionSvg', () => {
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThan(0);
     expect(Number(m![2])).toBeGreaterThan(Number(m![1]));
+  });
+
+  it('shadows keep the default-zoom proportions (unchanged in v1.2.4, when on-screen shadows began to scale with zoom)', () => {
+    expect(EXPORT_SHADOW_SCALE).toBe(2.5);
+    expect(EXPORT_SHADOW_SCALE).toBe(SHADOW_BOARD_SCALE);
+    expect(shadowUnit(0.4)).toBeCloseTo(EXPORT_SHADOW_SCALE, 9); // the board at the default desktop zoom draws it the same size
+    const r = renderCompositionSvg([{ shapeId: 'a', x: 0, y: 0, rotation: 0 }], of);
+    expect(r.svg).toContain('<g transform="translate(3 4.5)">'); // the resting offset (1.2, 1.8) x 2.5
+    expect(r.svg).toContain('stroke-width="55"'); // the widest soft layer, 22 x 2.5
   });
 
   it('embeds the texture as a data-URL pattern anchored at the board origin', () => {

@@ -10,7 +10,7 @@ import { suggestionStore } from './suggestion-store';
 import { introPieces, introSchedule, introWanted } from './intro';
 import { fromUpright, normalise } from './rotation';
 import { fridgeTexture, type FridgeTexture } from './texture';
-import { LIFT_MS, shadowCss, shadowLayersMarkup } from './shadow';
+import { LIFT_MS, shadowCss, shadowLayersMarkup, shadowUnit } from './shadow';
 import { FONT_STACK, registerFont } from './font';
 import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } from './controls';
 import { icon } from './icons';
@@ -23,7 +23,7 @@ import {
   type GuideWorld, type Rect,
 } from './guide';
 import { splitSections } from './sections';
-import { filledBy, outlinesAt, stackFix, type Outline } from './outline';
+import { filledBy, outlinesAt, settleRotation, stackFix, type Outline } from './outline';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
   announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro,
@@ -39,6 +39,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_THRESHOLD = 6; // px of pointer travel before a tray press becomes a drag
 const HANDLE_GAP = 36; // CSS px between the selection box's upright top and the rotate handle's centre
 const HANDLE_HIT = 44; // CSS px, touch target diameter
+const HANDLE_CLEAR = 8; // CSS px the guide's callout keeps clear around every rotate handle's hit box
 const SELECT_PAD = 6; // CSS px between a shape and its selection box
 const PAN_THRESHOLD = 4; // px of travel before a press on empty board becomes a pan (touch) or a selection box (mouse)
 const LONG_PRESS_MS = 400; // touch: a press held this long (and still) is a long-press
@@ -1432,7 +1433,7 @@ export class FridgeFace extends HTMLElement {
     const k = (this.kCache = this.readK());
     if (!r.width || !r.height) return;
     this.vpCache = { width: r.width / k, height: r.height / k };
-    this.pxZoom = NaN; // k may have changed: refresh the shadows' screen-px scale
+    this.pxZoom = NaN; // k may have changed: refresh the shadows' scale
     this.surface.setAttribute('viewBox', `0 0 ${r.width / k} ${r.height / k}`);
   }
 
@@ -1487,7 +1488,7 @@ export class FridgeFace extends HTMLElement {
 
   /**
    * The only per-frame work for pan and zoom: the camera transform and the texture rect's bounds. On a ZOOM
-   * change only, the screen-px scale `--px` (shadows) and the selection overlay are updated too.
+   * change only, the shadows' scale `--px` (board-space, clamped: shadow.ts) and the selection overlay are updated too.
    */
   private applyView() {
     const { x, y, zoom } = this.view;
@@ -1502,7 +1503,7 @@ export class FridgeFace extends HTMLElement {
     r.setAttribute('height', String(vp.height / zoom + 4));
     if (zoom !== this.pxZoom) {
       this.pxZoom = zoom;
-      this.cameraEl.style.setProperty('--px', `${1 / (this.k * zoom)}px`);
+      this.cameraEl.style.setProperty('--px', `${shadowUnit(this.k * zoom)}px`);
     }
     if (zoom !== this.overlayZoom) this.renderOverlay();
     if (zoom !== this.outlineZoom) this.renderOutlines(); // the outlines' dots stay the same size on screen
@@ -1846,7 +1847,7 @@ export class FridgeFace extends HTMLElement {
       prev.style.height = `${(s.bbox.h + 2 * PAD) * this.k * this.view.zoom}px`;
       prev.innerHTML = shapeSvg(s);
       prev.classList.add('lifted'); // a piece in the hand casts the lifted shadow
-      prev.style.setProperty('--px', `${1 / (this.k * this.view.zoom)}px`);
+      prev.style.setProperty('--px', `${shadowUnit(this.k * this.view.zoom)}px`); // as the piece will land
       this.shadowRoot!.appendChild(prev);
       d.preview = prev;
       this.scheduleGuide();
@@ -3298,7 +3299,7 @@ export class FridgeFace extends HTMLElement {
     const o = s.outlines[i];
     const turning = s.turn ? this.composition.getPiece(s.turn) : undefined;
     if (turning && turning.shapeId === o.shapeId) {
-      this.composition.setPlacements([{ id: turning.id, x: o.x, y: o.y, rotation: o.rotation }]);
+      this.composition.setPlacements([{ id: turning.id, x: o.x, y: o.y, rotation: settleRotation(o, turning.rotation) }]); // the short way (symmetry)
     } else {
       const [p] = this.composition.addPieces([o]);
       this.select(p.id);
@@ -3534,6 +3535,18 @@ export class FridgeFace extends HTMLElement {
     this.wordFitPending = 'instant';
     this.setGuide(withSections(s, want, this.guideWorld()));
     if (!want && s.step === 6) this.wordFitPending = false; // desktop at step 6: the view stays as it is
+  }
+
+  /** Every rotate handle showing (one piece's, or a selection's), as its 44 px hit box plus HANDLE_CLEAR, client px. */
+  private handleRects(): Rect[] {
+    const out: Rect[] = [];
+    for (const h of this.overlay.querySelectorAll<SVGGElement>('[data-handle]')) {
+      const r = h.querySelector('circle')?.getBoundingClientRect(); // the hit circle (its box is wider once turned: use its centre)
+      if (!r || !r.width) continue;
+      const half = HANDLE_HIT / 2 + HANDLE_CLEAR;
+      out.push({ x: r.left + r.width / 2 - half, y: r.top + r.height / 2 - half, w: 2 * half, h: 2 * half });
+    }
+    return out;
   }
 
   /** Where the piece action bar sits (client px) whenever something is selected, even while it is hidden; null if it cannot show. */
@@ -3797,10 +3810,12 @@ export class FridgeFace extends HTMLElement {
     const st = this.guide;
     const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));
     const turnEl = st.turn ? this.els.get(st.turn)?.g.querySelector('.bd') : null;
-    // ...and so must the round handle that turns it (when it is the one piece selected): the hint asks for it.
-    const handleEl = st.turn && this.selection.length === 1 && this.selection[0] === st.turn ? this.overlay.querySelector<SVGElement>('[data-handle] circle') : null;
-    const handle = handleEl ? toRect(handleEl.getBoundingClientRect()) : null;
-    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : []), ...(handle && handle.w > 0 ? [handle] : [])];
+    // ...and neither may any rotate handle (a single piece's or a selection's, in every step): the visitor needs it to turn
+    // what they hold, and the 3b hint asks for it. Its whole 44 px hit box, plus a margin.
+    const handles = this.handleRects();
+    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : []), ...handles];
+    // If no spot clears everything, these still win over the controls and the pieces (placeCallout's last resort).
+    const must = [...handles, ...outlineRects];
     // Steps 4 and 6 (centred): keep the finished letter or word in sight where the board allows.
     const done = st.phase === 'ask' ? [...this.els.values()].map((e) => {
       const r = toRect(e.g.querySelector('.bd')!.getBoundingClientRect());
@@ -3816,24 +3831,28 @@ export class FridgeFace extends HTMLElement {
     const pieces = [...[...this.els.values()].map((e) => toRect(e.g.querySelector('.bd')!.getBoundingClientRect())), ...outlineRects]
       .map((r) => ({ x: r.x - M, y: r.y - M, w: r.w + 2 * M, h: r.h + 2 * M }));
     const options = this.guideTargets(bounds);
-    let best: { w: number; pick: GuideTarget; p: ReturnType<typeof placeCallout>; n: number; a: number } | null = null;
+    let best: { w: number; pick: GuideTarget; p: ReturnType<typeof placeCallout>; n: number; a: number; rank: number } | null = null;
     for (const w of widths) {
       g.style.maxWidth = w ? `${w}px` : '';
       const size = { w: g.offsetWidth, h: g.offsetHeight };
       let pick = options[options.length - 1];
-      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces);
+      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces, undefined, must);
       for (const o of options) {
-        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces);
+        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces, undefined, must);
         if (q.side !== 'centre' || !o.target) {
           pick = o;
           p = q;
           break;
         }
       }
-      const c = coverage({ x: p.x, y: p.y, w: size.w, h: size.h }, pieces);
-      const better = !best || (pick.target && !best.pick.target) || (!!pick.target === !!best.pick.target && (c.n < best.n || (c.n === best.n && c.a < best.a * 0.8)));
-      if (better) best = { w, pick, p, n: c.n, a: c.a };
-      if (!c.n) break; // clear of every piece: no need to narrow further
+      const box = { x: p.x, y: p.y, w: size.w, h: size.h };
+      const c = coverage(box, pieces);
+      // First never over a handle or an active outline; then clear of every control too; then pointing at its target
+      // (a centred last resort does not); then covering the fewest pieces.
+      const rank = (must.some((q) => rectsOverlap(box, q)) ? 0 : 4) + (hard.some((q) => rectsOverlap(box, q)) ? 0 : 2) + (pick.target && p.side !== 'centre' ? 1 : 0);
+      const better = !best || rank > best.rank || (rank === best.rank && (c.n < best.n || (c.n === best.n && c.a < best.a * 0.8)));
+      if (better) best = { w, pick, p, n: c.n, a: c.a, rank };
+      if (!c.n && best!.rank >= 6) break; // clear of every piece and obstacle: no need to narrow further
     }
     g.style.maxWidth = best!.w ? `${best!.w}px` : '';
     const { pick, p } = best!;
