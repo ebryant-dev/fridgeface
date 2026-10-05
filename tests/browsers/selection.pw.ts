@@ -517,6 +517,13 @@ test.describe('phone', () => {
   test('a two-finger twist with the first finger on the selection turns it as one rigid unit; the action bar acts on the group', async ({ page, browserName }, info) => {
     await open(page);
     await load(page, PHONE);
+    // With the guide showing (FF_GUIDE=on), loading pieces brings up its step 0 question on open board, where the second
+    // finger of this twist lands: answer it out of the way first (Skip).
+    const skip = page.locator('fridge-face .guide[data-ask] [data-guide=skip]');
+    if (await skip.isVisible()) {
+      await skip.tap();
+      await expect(skip).toBeHidden();
+    }
     const t = new Touch(page, browserName);
     await t.init();
     await page.locator('fridge-face .board svg.surface').focus();

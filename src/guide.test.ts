@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, chooseWord, endGuide, guideClickIn, guideProgress,
-  guideWanted, nextOutline, observeGuide, placeCallout, readGuideOff, rectsOverlap, startGuide, writeGuideOff, type GuideState,
+  BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
+  chooseWord, endGuide, fitZoom, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
+  nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
 } from './guide';
 import type { Outline, OutlinePiece } from './outline';
@@ -25,6 +26,7 @@ describe('copy v2', () => {
     expect(GUIDE_COPY.step3a).toBe('Drag the wedge into place.');
     expect(GUIDE_COPY.step3b).toBe('Now turn it with the round handle to fit.');
     expect(GUIDE_COPY.step3bTouch).toBe('Now turn it with the round handle to fit, or twist with two fingers.');
+    expect([GUIDE_COPY.step0, GUIDE_COPY.clearStart, GUIDE_COPY.keepMine]).toEqual(['Start on a clean fridge?', 'Clear and start', 'Keep my pieces']);
     expect([GUIDE_COPY.step4, GUIDE_COPY.step4Ask]).toEqual(["That's a c.", 'Want to spell "create" next?']);
     expect([GUIDE_COPY.guideMe, GUIDE_COPY.clearFree]).toEqual(['Guide me', 'Clear for free play']);
     expect(GUIDE_COPY.step5).toBe('Fill in the outlines to spell "create".');
@@ -340,5 +342,197 @@ describe('placeCallout', () => {
     expect(p.x).toBeGreaterThanOrEqual(0);
     expect(p.y).toBe(260);
     expect(p.arrow).toBe(40);
+  });
+});
+
+describe('step 0 (v1.2.1): a board that already has pieces', () => {
+  const mine = [pc('m1', 'positive-stem', -400, 0), pc('m2', 'wedge', -300, 50, 30)];
+
+  it('asks first: running, no outlines, nothing clicks in, the board changing does not move it on', () => {
+    const s = askGuide();
+    expect([s.step, s.phase, guideRunning(s), activeOutlines(s)]).toEqual([0, 'ask', true, []]);
+    expect(guideRunning(GUIDE_IDLE)).toBe(false);
+    expect(observeGuide(s, world(mine))).toBe(s);
+    expect(guideClickIn(s, world([on('a', C[0])]), ['a'])).toBeNull();
+    expect(nextOutline(s)).toBeNull();
+  });
+
+  it('Clear and start: step 1 on the blank board; their pieces are remembered as theirs, nothing is kept', () => {
+    const s = answerAsk(askGuide(), 'clear', C, world([]), ['m1', 'm2']);
+    expect([s.step, s.phase, s.kept, s.theirs, s.built, activeOutlines(s)]).toEqual([1, 'c', false, ['m1', 'm2'], [], [0]]);
+    expect(s.letter).toBe(C);
+  });
+
+  it('Keep my pieces: step 1 with their pieces on the board, untouched; they fill nothing', () => {
+    const s = answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']);
+    expect([s.step, s.phase, s.kept, s.theirs]).toEqual([1, 'c', true, ['m1', 'm2']]);
+  });
+
+  it('only answers from step 0', () => {
+    const c = startGuide(C, world([]));
+    expect(answerAsk(c, 'keep', C, world([]), [])).toBe(c);
+    expect(answerAsk(GUIDE_IDLE, 'clear', C, world([]), [])).toBe(GUIDE_IDLE);
+  });
+
+  it('a skip or "Don\'t show again" at step 0 ends it', () => {
+    expect(guideRunning(endGuide())).toBe(false);
+  });
+
+  it('moveLetter: an untouched c moves its outlines (their pieces came back under them); never once something is filled', () => {
+    const s = answerAsk(askGuide(), 'clear', C, world([]), ['m1']);
+    const moved = C.map((o) => ({ ...o, x: o.x + 1000 }));
+    const t = moveLetter(s, moved, world(mine));
+    expect([t.step, t.outlines, t.letter, t.theirs]).toEqual([1, moved, moved, ['m1']]);
+    const filled = observeGuide(s, world([on('a', C[0])]));
+    expect(moveLetter(filled, moved, world([on('a', C[0])]))).toBe(filled);
+  });
+});
+
+describe('guide-built pieces and the scoped clear (v1.2.1)', () => {
+  const mine = [pc('m1', 'positive-stem', -400, 0), pc('m2', 'positive-round', -300, 0)];
+  const cPieces = [on('a', C[0]), on('b', C[1]), on('w', C[2])];
+
+  it('tracks pieces by id as they click in (or Next places them); never one of theirs, never twice', () => {
+    let s = answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']);
+    s = recordBuilt(s, ['a']);
+    s = recordBuilt(s, ['a', 'b', 'm1']);
+    expect(s.built).toEqual(['a', 'b']);
+    expect(recordBuilt(s, ['a'])).toBe(s);
+    expect(recordBuilt(GUIDE_IDLE, ['a'])).toBe(GUIDE_IDLE);
+  });
+
+  it('guide-built = built AND still on an outline: a built piece moved off it, or a piece the visitor added, is theirs', () => {
+    let s = answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']);
+    s = recordBuilt(s, ['a', 'b', 'w']);
+    const board = [...mine, ...cPieces, pc('x', 'wedge', 900, 900)];
+    expect(guideBuilt(s, board)).toEqual(['a', 'b', 'w']);
+    const movedOff = [...mine, on('a', C[0]), { ...on('b', C[1]), x: 700 }, on('w', C[2])];
+    expect(guideBuilt(s, movedOff)).toEqual(['a', 'w']);
+  });
+
+  it('after Keep: every guide clear removes ONLY the guide-built pieces (the c at Guide me and Clear for free play, the word at Start fresh)', () => {
+    let s = answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']);
+    s = observeGuide(recordBuilt(s, ['a', 'b', 'w']), world([...mine, ...cPieces]));
+    expect(s.step).toBe(4);
+    const extra = pc('x', 'negative-stem', 2000, 0); // added by the visitor during the guide, not clicked in: theirs
+    expect(guideClearPlan(s, [...mine, ...cPieces, extra])).toEqual({ all: false, ids: ['a', 'b', 'w'] });
+    // Guide me, then the word filled: Start fresh removes the word's pieces only.
+    let t = chooseWord(s, WORD, world([...mine, extra]));
+    const wordPieces = WORD.map((o, i) => on(`k${i}`, o));
+    t = observeGuide(recordBuilt(t, wordPieces.map((p) => p.id)), world([...mine, extra, ...wordPieces]));
+    expect(t.step).toBe(6);
+    expect(guideClearPlan(t, [...mine, extra, ...wordPieces])).toEqual({ all: false, ids: ['k0', 'k1', 'k2', 'k3'] });
+    // The c brought back by an undo during the word is still guide-built.
+    expect(guideClearPlan(t, [...mine, ...cPieces, ...wordPieces])).toEqual({ all: false, ids: ['a', 'b', 'w', 'k0', 'k1', 'k2', 'k3'] });
+  });
+
+  it('after Keep, with their pieces deleted by the visitor, the clear is still scoped (it was their choice to keep)', () => {
+    const s = recordBuilt(answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']), ['a']);
+    expect(guideClearPlan(s, [on('a', C[0]), pc('y', 'wedge', 0, 900)])).toEqual({ all: false, ids: ['a'] });
+  });
+
+  it('blank start, or Clear and start: the whole board as before', () => {
+    const blank = recordBuilt(startGuide(C, world([])), ['a', 'b', 'w']);
+    expect(guideClearPlan(blank, [...cPieces, pc('x', 'wedge', 900, 0)])).toEqual({ all: true });
+    const cleared = recordBuilt(answerAsk(askGuide(), 'clear', C, world([]), ['m1', 'm2']), ['a', 'b', 'w']);
+    expect(guideClearPlan(cleared, cPieces)).toEqual({ all: true });
+    // ...but once their pieces are back (undoing Clear and start), never touch them.
+    expect(guideClearPlan(cleared, [...mine, ...cPieces])).toEqual({ all: false, ids: ['a', 'b', 'w'] });
+  });
+});
+
+describe('besideSpot: outlines in empty board beside their work (v1.2.1)', () => {
+  const work: Rect = { x: 0, y: 0, w: 400, h: 200 };
+  const size = { w: 200, h: 150 };
+  const view = { w: 1400, h: 800 };
+  const opts = { margin: 50, view, pad: 20, minZoom: 0.5 };
+
+  it('the sides: right, below, left, above, each `margin` clear and centred on the work', () => {
+    expect(BESIDE_ORDER).toEqual(['right', 'below', 'left', 'above']);
+    expect(besideRect(work, size, 'right', 50)).toEqual({ x: 450, y: 25, w: 200, h: 150 });
+    expect(besideRect(work, size, 'below', 50)).toEqual({ x: 100, y: 250, w: 200, h: 150 });
+    expect(besideRect(work, size, 'left', 50)).toEqual({ x: -250, y: 25, w: 200, h: 150 });
+    expect(besideRect(work, size, 'above', 50)).toEqual({ x: 100, y: -200, w: 200, h: 150 });
+  });
+
+  it('prefers right when the framing of both keeps the targets big enough', () => {
+    const r = besideSpot(work, size, opts);
+    expect(r.side).toBe('right');
+    expect(rectsOverlap(r.rect, work)).toBe(false);
+    expect(r.zoom).toBeGreaterThanOrEqual(opts.minZoom);
+  });
+
+  it('falls back to below (a tall, narrow phone view: right would make the targets too small)', () => {
+    const r = besideSpot({ x: 0, y: 0, w: 400, h: 100 }, size, { ...opts, view: { w: 390, h: 800 }, minZoom: 0.55 });
+    expect(r.side).toBe('below');
+    expect(r.rect.y).toBeGreaterThanOrEqual(150);
+  });
+
+  it('falls back to left, then above, when something else is in the way on the preferred sides', () => {
+    const blockR = { x: 420, y: -500, w: 5000, h: 1200 }; // everything to the right
+    const blockB = { x: -500, y: 210, w: 1400, h: 5000 }; // everything below
+    const left = besideSpot(work, size, { ...opts, avoid: [blockR, blockB], minZoom: 0.5 });
+    expect(left.side).toBe('left');
+    const blockL = { x: -5000, y: -500, w: 4980, h: 1200 };
+    const above = besideSpot(work, size, { ...opts, avoid: [blockR, blockB, blockL], minZoom: 0.5 });
+    expect(above.side).toBe('above');
+    for (const r of [left, above]) for (const q of [work, blockR, blockB, blockL]) if (r !== left || q !== blockL) expect(rectsOverlap(r.rect, q)).toBe(false);
+  });
+
+  it('steps past an obstacle rather than overlapping it, and never overlaps the work, whatever the inputs', () => {
+    const lone = { x: 460, y: 0, w: 60, h: 60 }; // one stray piece just right of the work
+    const r = besideSpot(work, size, { ...opts, avoid: [lone] });
+    expect(r.side).toBe('right');
+    expect(rectsOverlap(r.rect, lone)).toBe(false);
+    expect(r.rect.x).toBeGreaterThanOrEqual(lone.x + lone.w);
+    let seed = 3;
+    const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+    for (let i = 0; i < 200; i++) {
+      const w: Rect = { x: rnd() * 2000 - 1000, y: rnd() * 2000 - 1000, w: 10 + rnd() * 2000, h: 10 + rnd() * 2000 };
+      const sz = { w: 50 + rnd() * 1500, h: 50 + rnd() * 600 };
+      const v = { w: 300 + rnd() * 1200, h: 300 + rnd() * 600 };
+      const out = besideSpot(w, sz, { margin: 40, view: v, pad: 10, minZoom: rnd() });
+      expect(rectsOverlap(out.rect, w)).toBe(false);
+      expect(BESIDE_ORDER).toContain(out.side);
+    }
+  });
+
+  it('when no side keeps the targets big enough, the side framing largest wins (ties: the order)', () => {
+    const r = besideSpot(work, size, { ...opts, minZoom: 99 });
+    const zooms = BESIDE_ORDER.map((s) => fitZoom(((a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.max(a.x + a.w, b.x + b.w) - Math.min(a.x, b.x), h: Math.max(a.y + a.h, b.y + b.h) - Math.min(a.y, b.y) }))(work, besideRect(work, size, s, 50)), view, 20));
+    expect(r.zoom).toBeCloseTo(Math.max(...zooms), 9);
+    expect(r.side).toBe(BESIDE_ORDER[zooms.indexOf(Math.max(...zooms))]);
+  });
+});
+
+describe('frameBeside: both in view, or the outlines first (v1.2.1)', () => {
+  const view: Rect = { x: 0, y: 100, w: 400, h: 700 }; // a phone: the docks cover the top 100
+  const inView = (r: Rect, c: { x: number; y: number; zoom: number }, pad = 0) => {
+    const a = { x: r.x * c.zoom + c.x, y: r.y * c.zoom + c.y }, b = { x: (r.x + r.w) * c.zoom + c.x, y: (r.y + r.h) * c.zoom + c.y };
+    return a.x >= view.x + pad - 1e-6 && a.y >= view.y + pad - 1e-6 && b.x <= view.x + view.w - pad + 1e-6 && b.y <= view.y + view.h - pad + 1e-6;
+  };
+
+  it('frames both in full when the targets stay big enough', () => {
+    const work = { x: 0, y: 0, w: 300, h: 200 }, out = { x: 0, y: 250, w: 300, h: 200 };
+    const c = frameBeside(work, out, view, 10, 0.5, 5);
+    expect(c.both).toBe(true);
+    expect(inView(work, c, 10) && inView(out, c, 10)).toBe(true);
+  });
+
+  it('otherwise zooms to keep the targets big enough: the outlines fully in view at the far edge, their work partly in sight', () => {
+    const work = { x: 0, y: 0, w: 2000, h: 300 }, out = { x: 2050, y: 50, w: 300, h: 200 };
+    const c = frameBeside(work, out, view, 10, 1, 5);
+    expect(c.both).toBe(false);
+    expect(c.zoom).toBeCloseTo(1, 9);
+    expect(inView(out, c, 10)).toBe(true);
+    const workRight = (work.x + work.w) * c.zoom + c.x;
+    expect(workRight, 'part of their work is still in view').toBeGreaterThan(view.x);
+  });
+
+  it('never zooms past maxZoom, nor past where the outlines alone fill the view', () => {
+    const work = { x: 0, y: 0, w: 5000, h: 300 }, out = { x: 5050, y: 0, w: 300, h: 200 };
+    expect(frameBeside(work, out, view, 10, 99, 1).zoom).toBe(1);
+    expect(frameBeside(work, out, view, 10, 99, 99).zoom).toBeCloseTo(fitZoom(out, view, 10), 9);
+    expect(frameBeside(null, out, view, 10, 0.1, 99).both).toBe(true);
   });
 });

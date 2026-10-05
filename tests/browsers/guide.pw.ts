@@ -3,11 +3,13 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 declare const process: { env: Record<string, string | undefined> }; // runs in Node; the project has no @types/node
 
 /**
- * The onboarding guide v2 (v1.2.0), in Chromium AND WebKit, desktop, iPhone portrait and iPhone landscape: a blank board,
- * the c built piece by piece onto dotted outlines that pieces click into (guide only), step 4's choice, the whole word
- * "create" from a FIXTURE word-create-1 (added to the live store at runtime: nothing is written to src/suggestions/),
- * Skip / Don't show again / Next, replay from Controls, no-guide, share links, Escape order, coexistence with the menu,
- * sheet and dialog, placement in every layout, reduced motion and axe.
+ * The onboarding guide v2 (v1.2.0, step 0 in v1.2.1), in Chromium AND WebKit, desktop, iPhone portrait and iPhone
+ * landscape: a blank board, the c built piece by piece onto dotted outlines that pieces click into (guide only), step 4's
+ * choice, the whole word "create" from Edward's REAL word-create-1 (32 pieces), Skip / Don't show again / Next, replay from
+ * Controls, no-guide, share links, Escape order, coexistence with the menu, sheet and dialog, placement in every layout,
+ * reduced motion and axe. Step 0 (a saved board): Clear and start, Keep my pieces (outlines in empty board beside their
+ * work), and the guide never touching their pieces. The "no word" case removes word-create-1 from the LIVE store at
+ * runtime (nothing in src/suggestions/ is touched).
  */
 
 // The other suites run with the guide turned off (playwright.config.ts); this one starts every visit fresh.
@@ -67,20 +69,19 @@ async function setNextMs(page: Page, ms: number) {
   await page.evaluate((ms) => { (customElements.get('fridge-face') as unknown as { guideNextMs: number }).guideNextMs = ms; }, ms);
 }
 
-/** The FIXTURE word-create-1: the c, r, a, t and e letter suggestions laid out tight, put into the live store (not a file). */
-async function addCreate(page: Page): Promise<number> {
+/** The REAL word-create-1 (src/suggestions/word-create-1.json) is in the store: its piece count. */
+async function realCreate(page: Page): Promise<number> {
   return page.evaluate(async () => {
-    const load = (u: string) => import(/* @vite-ignore */ u);
-    const { suggestionStore } = await load('/src/suggestion-store.ts');
-    const sg = await load('/src/suggestions.ts');
-    const { SHAPES } = await load('/src/shapes.ts');
-    const shapeOf = (id: string) => SHAPES.find((s: { id: string }) => s.id === id);
-    const get = (c: string) => suggestionStore.list.find((s: { char?: string; variant: number }) => s.char === c && s.variant === 1).pieces;
-    const { pieces } = sg.layoutWord([...'create'].map(get), shapeOf, 20);
-    const r = sg.validateSuggestion(sg.toWordFile('create', 1, sg.normaliseForSave(pieces, shapeOf)), 'word-create-1.json');
-    if (!r.ok) throw new Error(r.error);
-    suggestionStore.set(r.value);
-    return r.value.pieces.length as number;
+    const { suggestionStore } = await import(/* @vite-ignore */ '/src/suggestion-store.ts' as string);
+    return (suggestionStore.get('create', 1)?.pieces.length ?? 0) as number;
+  });
+}
+
+/** Take word-create-1 out of the LIVE store (this page only; the file is untouched): step 4 as if it did not exist. */
+async function dropCreate(page: Page) {
+  await page.evaluate(async () => {
+    const { suggestionStore } = await import(/* @vite-ignore */ '/src/suggestion-store.ts' as string);
+    suggestionStore.remove('word-create-1.json');
   });
 }
 
@@ -307,6 +308,7 @@ test('blank start (no intro), then the whole c: each piece clicks exactly into i
 test('step 4 without word-create-1: "That\'s a c." and only Clear for free play, which clears as ONE undoable step and ends the guide', async ({ page, isMobile }, info) => {
   const errors = collectErrors(page);
   await open(page, '/?n=4');
+  await dropCreate(page);
   await buildC(page, isMobile);
   await expect(guide(page)).toBeVisible();
   await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
@@ -329,11 +331,12 @@ test('step 4 without word-create-1: "That\'s a c." and only Clear for free play,
   expect(errors).toEqual([]);
 });
 
-test('with a FIXTURE word-create-1: Guide me, fill every outline in a shuffled order (stacking order fixed), step 6, Start fresh, one undo restores', async ({ page, isMobile }, info) => {
-  test.setTimeout(120_000);
+test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every outline in a shuffled order (stacking order fixed), step 6, Start fresh, one undo restores', async ({ page, isMobile }, info) => {
+  test.setTimeout(300_000);
   const errors = collectErrors(page);
   await open(page, '/?n=w');
-  const total = await addCreate(page);
+  const total = await realCreate(page);
+  expect(total, 'Edward\'s create (flower)').toBe(32);
   await buildC(page, isMobile);
   await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
   await expect(el(page, '.guide .gt2')).toHaveText('Want to spell "create" next?');
@@ -351,6 +354,10 @@ test('with a FIXTURE word-create-1: Guide me, fill every outline in a shuffled o
   await expect(gbtn(page, 'off')).toBeVisible();
   expect(await el(page, '[data-outline]').count(), 'the whole word at once').toBe(total);
   await checkCallout(page, 'step 5');
+  // Every target on screen, and how big the smallest is at the fitted zoom (a shape's shorter side, CSS px).
+  const small = await smallestTarget(page);
+  info.annotations.push({ type: 'smallest target', description: `${small.px.toFixed(1)} CSS px (${small.shape}) at zoom ${small.zoom.toFixed(3)}` });
+  console.log(`[${info.project.name}] smallest create target: ${small.px.toFixed(1)} CSS px (${small.shape})`);
   // Undo brings the c back but never goes back past Guide me.
   await press(isMobile, el(page, '[data-history=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(3);
@@ -384,8 +391,8 @@ test('with a FIXTURE word-create-1: Guide me, fill every outline in a shuffled o
     if (s.step === 5) await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
     if (n === 6) {
       await checkCallout(page, 'step 5 partly filled');
-      await shoot(page, info.project.name, 'step5');
-      if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g2-step5-desktop.png` });
+      const nm = NAMES[info.project.name];
+      if (nm) await page.screenshot({ path: `${SHOT}/g3-step5-real-${nm}.png` });
       expect(await el(page, '[data-outline]').count(), 'filled outlines disappear').toBe(total - 7);
     }
   }
@@ -524,7 +531,7 @@ test("Don't show again survives a reload; Show guide in Controls replays it from
   expect(await stored(page), "replaying keeps Don't show again").toBe('off');
 });
 
-test('a share-link visit still shows the guide; the loaded pieces fill nothing and the c outline is centred in view', async ({ page, browser }, info) => {
+test('a share-link visit still shows the guide: the shared pieces are on the board, so step 0 asks first; Keep puts the c beside them', async ({ page, browser }, info) => {
   await open(page);
   const url = await page.evaluate(async () => {
     const ff = document.querySelector('fridge-face') as FF;
@@ -537,10 +544,15 @@ test('a share-link visit still shows the guide; the loaded pieces fill nothing a
   await p.goto(url);
   await ready(p);
   await expect.poll(() => pieceCount(p)).toBe(2);
-  await expect(guide(p)).toHaveAttribute('data-step', '1', { timeout: 5000 });
+  await expect(guide(p)).toHaveAttribute('data-ask', '', { timeout: 5000 });
   await expect(guide(p)).toBeVisible();
+  await expect(el(p, '.guide .gt1')).toHaveText('Start on a clean fridge?');
+  await checkCallout(p, 'share link, step 0');
+  await press(!!info.project.use.isMobile, gbtn(p, 'mine'));
+  await expect(guide(p)).toHaveAttribute('data-step', '1');
   await p.waitForTimeout(300);
   await expect(guide(p), 'the loaded pieces did not complete step 1').toHaveAttribute('data-step', '1');
+  await expectBeside(p, await pieces(p));
   await checkCallout(p, 'share link');
   await ctx.close();
 });
@@ -666,7 +678,6 @@ test('reduced motion: the pointer does not move, and a click-in does not animate
 test('axe: no violations with a callout showing (steps 1, 3b, 4 and 5)', async ({ page, browserName, isMobile }) => {
   test.skip(browserName !== 'chromium', 'axe gate runs in Chromium');
   await open(page);
-  await addCreate(page);
   await page.addScriptTag({ path: 'node_modules/axe-core/axe.min.js' });
   const run = () => page.evaluate(async () => {
     const r = await (window as unknown as { axe: { run: (c: unknown) => Promise<{ violations: { id: string; nodes: unknown[] }[] }> } }).axe.run(document);
@@ -733,4 +744,254 @@ test('with a callout showing, the board still works around it: a wrong shape dro
   const at = toClient(g, (await pieces(page))[0]);
   expect(Math.hypot(at.x - spot!.x, at.y - spot!.y), 'it landed where it was dropped').toBeLessThan(2);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
+});
+
+// ---- step 0 (v1.2.1): a saved board ------------------------------------------------------------------------------
+
+/** A saved composition, preloaded into the auto-save before the page loads. */
+const SAVED = { v: 1, pieces: [
+  { s: 'positive-stem', x: 0, y: 0, r: 0 }, { s: 'positive-round', x: 170, y: -60, r: 0 }, { s: 'negative-round', x: 172, y: -58, r: 0 },
+  { s: 'wedge', x: 330, y: 40, r: 45 }, { s: 'negative-stem', x: 20, y: 0, r: 90 },
+] };
+
+async function preload(page: Page) {
+  await page.addInitScript((c) => {
+    try {
+      if (!sessionStorage.getItem('ff-test-preloaded')) {
+        localStorage.setItem('fridgeface:composition:v1', c);
+        sessionStorage.setItem('ff-test-preloaded', '1');
+      }
+    } catch { /* storage blocked: nothing preloaded */ }
+  }, JSON.stringify(SAVED));
+}
+
+/** Load the page with the saved board and wait for step 0. */
+async function openAsk(page: Page, url = '/?n=ask') {
+  await preload(page);
+  await page.goto(url);
+  await ready(page);
+  await expect(guide(page)).toHaveAttribute('data-ask', '', { timeout: 5000 });
+  await expect(guide(page)).toBeVisible();
+  await expect.poll(() => pieceCount(page)).toBe(SAVED.pieces.length);
+}
+
+/** Board-space bounds (rotated) of pieces or outlines. */
+async function boundsIn(page: Page, list: O[]) {
+  return page.evaluate(async (list) => {
+    const { rotatedBounds } = await import(/* @vite-ignore */ '/src/camera.ts' as string);
+    const { SHAPES } = await import(/* @vite-ignore */ '/src/shapes.ts' as string);
+    return rotatedBounds(list, (id: string) => SHAPES.find((s: { id: string }) => s.id === id)) as { x: number; y: number; w: number; h: number } | null;
+  }, list);
+}
+
+/** The active outlines sit in empty board: clear of the bounds of `theirs` (every one of their pieces together). */
+async function expectBeside(page: Page, theirs: P[]) {
+  const s = await state(page);
+  const active = s.outlines.filter((_, i) => !s.filled[i]);
+  const a = await boundsIn(page, theirs), b = await boundsIn(page, active);
+  expect(a && b, 'both have bounds').toBeTruthy();
+  const ov = a!.x < b!.x + b!.w && b!.x < a!.x + a!.w && a!.y < b!.y + b!.h && b!.y < a!.y + a!.h;
+  expect(ov, `the outlines ${JSON.stringify(b)} do not overlap their work ${JSON.stringify(a)}`).toBe(false);
+}
+
+/** The smallest active outline target on screen: its shape's shorter upright side, in CSS px at the current zoom. */
+async function smallestTarget(page: Page) {
+  return page.evaluate(async () => {
+    const ff = document.querySelector('fridge-face') as FF;
+    const k = parseFloat(getComputedStyle(ff.shadowRoot!.querySelector('.board')!).getPropertyValue('--k'));
+    const { SHAPES } = await import(/* @vite-ignore */ '/src/shapes.ts' as string);
+    const zoom = ff.getView().zoom;
+    let best = { px: Infinity, shape: '', zoom };
+    for (const o of ff.guide.outlines) {
+      const u = (SHAPES as { id: string; uprightBox: { w: number; h: number } }[]).find((s) => s.id === o.shapeId)!.uprightBox;
+      const px = Math.min(u.w, u.h) * zoom * k;
+      if (px < best.px) best = { px, shape: o.shapeId, zoom };
+    }
+    return best;
+  });
+}
+
+const same = (a: P[], b: P[]) => a.length === b.length && a.every((p, i) => {
+  const q = b.find((r) => r.id === p.id);
+  return !!q && q.shapeId === p.shapeId && q.x === p.x && q.y === p.y && q.rotation === p.rotation && i === b.indexOf(q);
+});
+
+test('step 0: a saved board on load asks "Start on a clean fridge?" with Clear and start, Keep my pieces, Skip and Don\'t show again', async ({ page }, info) => {
+  const errors = collectErrors(page);
+  await openAsk(page);
+  await expect(guide(page)).toHaveAttribute('data-step', '0');
+  await expect(el(page, '.guide .gt1')).toHaveText('Start on a clean fridge?');
+  await expect(el(page, '.guide .gt2')).toBeHidden();
+  await expect(gbtn(page, 'clean')).toHaveText('Clear and start');
+  await expect(gbtn(page, 'mine')).toHaveText('Keep my pieces');
+  await expect(gbtn(page, 'skip')).toBeVisible();
+  await expect(gbtn(page, 'off')).toBeVisible();
+  await expect(gbtn(page, 'next')).toBeHidden();
+  for (const b of ['word', 'clear', 'fresh', 'keep']) await expect(gbtn(page, b)).toBeHidden();
+  expect(await el(page, '[data-outline]').count(), 'no outlines on step 0').toBe(0);
+  await expect(el(page, '#ff-live')).toContainText('Start on a clean fridge?');
+  const m = await checkCallout(page, 'step 0');
+  expect(m.side).toBe('centre');
+  const nm = NAMES[info.project.name];
+  if (nm === 'desktop' || nm === 'wk-iphone') await page.screenshot({ path: `${SHOT}/g3-step0-${nm}.png` });
+  // Show guide from Controls on a board with pieces asks again; Skip at step 0 ends it.
+  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { replayGuide(): void }).replayGuide());
+  await expect(guide(page)).toHaveAttribute('data-ask', '');
+  await press(!!info.project.use.isMobile, gbtn(page, 'skip'));
+  await expect(guide(page)).toBeHidden();
+  expect(await pieceCount(page)).toBe(SAVED.pieces.length);
+  expect(errors).toEqual([]);
+});
+
+test('step 0 -> Clear and start: a blank board, the c built; undoing back past the c, ONE undo restores their pieces; the guide stays sane', async ({ page, isMobile }) => {
+  const errors = collectErrors(page);
+  await openAsk(page, '/?n=clean');
+  const theirs = await pieces(page);
+  await press(isMobile, gbtn(page, 'clean'));
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await expect(guide(page)).not.toHaveAttribute('data-ask', '');
+  expect(await pieceCount(page), 'blank board').toBe(0);
+  await expect(el(page, '#ff-live')).toContainText('Undo brings it back.');
+  await checkCallout(page, 'clear and start, step 1');
+  await buildC(page, isMobile);
+  expect(await pieceCount(page)).toBe(3);
+  // Back through the c (turn, wedge, white oval, black oval): the guide follows to step 1 on a blank board.
+  for (let i = 0; i < 4; i++) await press(isMobile, el(page, '[data-history=undo]'));
+  await expect.poll(() => pieceCount(page)).toBe(0);
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  // ONE more undo: every one of their pieces back, exactly (ids, places, rotations, stacking order).
+  await press(isMobile, el(page, '[data-history=undo]'));
+  await expect.poll(() => pieceCount(page)).toBe(theirs.length);
+  expect(same(theirs, await pieces(page)), 'their pieces restored exactly').toBe(true);
+  // Sane: still step 1, the c's outline moved beside their work (never on it), the callout well placed; redo clears again.
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await expect(guide(page)).toBeVisible();
+  await expectBeside(page, theirs);
+  await checkCallout(page, 'after undoing Clear and start');
+  await press(isMobile, el(page, '[data-history=redo]'));
+  await expect.poll(() => pieceCount(page)).toBe(0);
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  expect(errors).toEqual([]);
+});
+
+test('step 0 -> Keep my pieces: the c beside their work; Clear for free play removes ONLY the c (one undo brings it back)', async ({ page, isMobile }, info) => {
+  const errors = collectErrors(page);
+  await openAsk(page, '/?n=keepc');
+  const theirs = await pieces(page);
+  await press(isMobile, gbtn(page, 'mine'));
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  expect(same(theirs, await pieces(page)), 'their pieces untouched').toBe(true);
+  await expectBeside(page, theirs);
+  await checkCallout(page, 'keep, step 1');
+  // Both in view where that keeps the c's targets big enough (it does, for a small composition, in every layout).
+  const vis = await page.evaluate(() => {
+    const sr = document.querySelector('fridge-face')!.shadowRoot!;
+    const b = sr.querySelector('.board')!.getBoundingClientRect();
+    return [...sr.querySelectorAll('[data-pieces] > [data-piece-id] .bd')].some((e) => {
+      const r = e.getBoundingClientRect();
+      return r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
+    });
+  });
+  expect(vis, 'their work is in view').toBe(true);
+  if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g3-keep-c-desktop.png` });
+  const wedge = await buildC(page, isMobile);
+  expect(wedge).toBeTruthy();
+  const all = await pieces(page);
+  expect(all).toHaveLength(theirs.length + 3);
+  expect(same(theirs, all.filter((p) => theirs.some((t) => t.id === p.id))), 'their pieces still unchanged').toBe(true);
+  await press(isMobile, gbtn(page, 'clear'));
+  await expect(guide(page)).toBeHidden();
+  await expect.poll(() => pieceCount(page)).toBe(theirs.length);
+  expect(same(theirs, await pieces(page)), 'only the c went').toBe(true);
+  await press(isMobile, el(page, '[data-history=undo]'));
+  await expect.poll(() => pieceCount(page), 'one undo brings the c back').toBe(theirs.length + 3);
+  expect(errors).toEqual([]);
+});
+
+test('step 0 -> Keep my pieces -> the c -> Guide me: only the c goes, "create" beside their work; a few filled, then Start fresh removes ONLY the guide\'s pieces', async ({ page, isMobile }, info) => {
+  test.setTimeout(240_000);
+  const errors = collectErrors(page);
+  await openAsk(page, '/?n=keepw');
+  const theirs = await pieces(page);
+  await press(isMobile, gbtn(page, 'mine'));
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await buildC(page, isMobile);
+  // The visitor adds a piece of their own during the guide, away from any outline: it is theirs, never removed.
+  await el(page, '.board svg.surface').focus();
+  await page.keyboard.press('4'); // a negative round, added in view
+  await expect.poll(() => pieceCount(page)).toBe(theirs.length + 4);
+  const extra = (await pieces(page)).at(-1)!;
+  const mineNow = [...theirs, extra];
+  await expect(guide(page)).toHaveAttribute('data-step', '4');
+  await setNextMs(page, 50); // step 5's Next comes quickly (used for the rest of the word below)
+  await press(isMobile, gbtn(page, 'word'));
+  await expect(guide(page)).toHaveAttribute('data-step', '5');
+  await expect.poll(() => pieceCount(page), 'ONLY the c is cleared').toBe(mineNow.length);
+  const left = await pieces(page);
+  expect(same(theirs, left.filter((p) => theirs.some((t) => t.id === p.id))), 'their saved pieces unchanged').toBe(true);
+  expect(left.some((p) => p.id === extra.id && p.x === extra.x && p.y === extra.y), 'their added piece unchanged').toBe(true);
+  const total = await realCreate(page);
+  await expect(el(page, '.guide .gt2')).toHaveText(`0 of ${total}`);
+  await expectBeside(page, left);
+  await checkCallout(page, 'keep, step 5');
+  // A few outlines filled by hand (drag + turn when needed).
+  for (let n = 0; n < 3; n++) {
+    const s = await state(page);
+    const i = s.filled.findIndex((f) => !f);
+    const before = await pieceCount(page);
+    await dropNear(page, i);
+    await expect.poll(() => pieceCount(page)).toBe(before + 1);
+    const t = await state(page);
+    if (!t.filled[i]) {
+      expect(t.turn).not.toBeNull();
+      await turnTo(page, t.turn!, t.outlines[i].rotation, -4);
+      await expect.poll(async () => (await state(page)).filled[i]).not.toBeNull();
+    }
+    await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
+  }
+  // The rest by Next (shortened timer: once offered it stays on step 5).
+  await expect(gbtn(page, 'next')).toBeVisible();
+  for (let n = 3; n < total; n++) {
+    await gbtn(page, 'next').click({ force: true });
+    if (n < total - 1) await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
+  }
+  await expect(guide(page)).toHaveAttribute('data-step', '6');
+  expect(await pieceCount(page)).toBe(mineNow.length + total);
+  await press(isMobile, gbtn(page, 'fresh'));
+  await expect(guide(page)).toBeHidden();
+  await expect.poll(() => pieceCount(page), 'Start fresh removed ONLY the guide-built word').toBe(mineNow.length);
+  const end = await pieces(page);
+  expect(same(theirs, end.filter((p) => theirs.some((t) => t.id === p.id))), 'their pieces unchanged at the end').toBe(true);
+  expect(end.some((p) => p.id === extra.id)).toBe(true);
+  await press(isMobile, el(page, '[data-history=undo]'));
+  await expect.poll(() => pieceCount(page), 'one undo brings the word back').toBe(mineNow.length + total);
+  void info;
+  expect(errors).toEqual([]);
+});
+
+test('step 0: no snapping outside the guide still holds after Skip at step 0', async ({ page, isMobile }) => {
+  await openAsk(page, '/?n=asknosnap');
+  await press(isMobile, gbtn(page, 'skip'));
+  await expect(guide(page)).toBeHidden();
+  // Drop a black oval exactly where the c's first outline WOULD go (centred in view): it stays where dropped.
+  const g = await geo(page);
+  const t = await el(page, '.tray button[data-shape="positive-round"]').boundingBox();
+  const target = { x: g.left + 260, y: g.top + 240 };
+  await drag(page, { x: t!.x + t!.width / 2, y: t!.y + t!.height / 2 }, target);
+  await expect.poll(() => pieceCount(page)).toBe(SAVED.pieces.length + 1);
+  const p = (await pieces(page)).at(-1)!;
+  const c = toClient(g, p);
+  expect(Math.hypot(c.x - target.x, c.y - target.y)).toBeLessThan(2.5);
+  expect(await el(page, '[data-outline]').count()).toBe(0);
+});
+
+test('axe: no violations at step 0', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'axe gate runs in Chromium');
+  await openAsk(page, '/?n=askaxe');
+  await page.addScriptTag({ path: 'node_modules/axe-core/axe.min.js' });
+  const v = await page.evaluate(async () => {
+    const r = await (window as unknown as { axe: { run: (c: unknown) => Promise<{ violations: { id: string; nodes: unknown[] }[] }> } }).axe.run(document);
+    return r.violations.map((x) => `${x.id} (${x.nodes.length})`);
+  });
+  expect(v).toEqual([]);
 });

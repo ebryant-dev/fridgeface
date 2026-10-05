@@ -19,6 +19,16 @@ import { activeIndices, clickIn, filledBy, needsTurning, type ClickResult, type 
  *
  * Click-in (`guideClickIn`): only while a step with outlines is showing, a released piece of the right shape close to an
  * active outline clicks exactly into it (see outline.ts for the tolerance). With the guide not running, it is always null.
+ *
+ * 0. (v1.2.1) Only when the guide starts on a board that already has pieces: "Start on a clean fridge?" Clear and start
+ *    (the board is cleared as ONE undoable step, then step 1 on a blank board) or Keep my pieces (their pieces stay; the
+ *    c's outlines, and later the word's, go in EMPTY board beside them: `besideSpot`, framed by `frameBeside`).
+ *
+ * The visitor's own pieces: the pieces on the board when step 0 was answered are THEIRS (`theirs`), and so is anything they
+ * add or move during the guide that is not clicked into an outline. The guide only ever removes GUIDE-BUILT pieces
+ * (`built`: clicked into an outline, or placed by Next) still sitting on an outline (`guideBuilt`). After Keep (or when any
+ * of their pieces is back on the board, e.g. after undoing Clear and start) the guide's clears are scoped to those
+ * (`guideClearPlan`); on a blank start they clear the whole board as before.
  */
 
 export const GUIDE_STORAGE_KEY = 'fridgeface:guide:v2';
@@ -31,6 +41,9 @@ export const GUIDE_WORD = { text: 'create', variant: 1 } as const;
 
 /** Edward's approved copy v2 (creative/personal-brand/working/fridgeface/docs/guide-copy.md), word for word. */
 export const GUIDE_COPY = {
+  step0: 'Start on a clean fridge?',
+  clearStart: 'Clear and start',
+  keepMine: 'Keep my pieces',
   step1: 'Drag the black oval onto the fridge.',
   step2: 'Now drag the white oval onto the black one.',
   step3a: 'Drag the wedge into place.',
@@ -53,8 +66,11 @@ export const GUIDE_COPY = {
 } as const;
 
 export type GuideStep = 0 | 1 | 2 | 3 | 4 | 5 | 6;
-/** 'c': steps 1 to 4 (the letter). 'word': steps 5 and 6, after the visitor chose Guide me (never goes back). */
-export type GuidePhase = 'c' | 'word';
+/**
+ * 'ask': step 0 (the board already had pieces). 'c': steps 1 to 4 (the letter). 'word': steps 5 and 6, after the visitor
+ * chose Guide me (never goes back). null: the guide is not running.
+ */
+export type GuidePhase = 'ask' | 'c' | 'word';
 
 export interface GuideWorld {
   /** The composition, in stacking order (bottom first). */
@@ -62,10 +78,18 @@ export interface GuideWorld {
   sizeOf: SizeOf;
 }
 
-/** `step` 0: the guide is not running. */
+/** `phase` null: the guide is not running (`step` 0). `phase` 'ask' is step 0 showing. */
 export interface GuideState {
   step: GuideStep;
   phase: GuidePhase | null;
+  /** The c's outlines (kept through the word phase, so the c's pieces are still known as guide-built). */
+  letter: readonly Outline[];
+  /** Keep my pieces was chosen at step 0. */
+  kept: boolean;
+  /** The visitor's pieces when step 0 was answered (kept, or cleared by Clear and start): never removed by the guide. */
+  theirs: readonly string[];
+  /** Pieces the guide built: clicked into an outline, or placed by Next (never one of `theirs`). */
+  built: readonly string[];
   /** Every outline of the current phase, in the suggestion's stacking order (the c's 3, or the whole word). */
   outlines: readonly Outline[];
   /** Per outline: the piece sitting exactly on it, or null. */
@@ -74,7 +98,18 @@ export interface GuideState {
   turn: string | null;
 }
 
-export const GUIDE_IDLE: GuideState = Object.freeze({ step: 0, phase: null, outlines: Object.freeze([]), filled: Object.freeze([]), turn: null }) as GuideState;
+const NONE = Object.freeze([]) as readonly never[];
+export const GUIDE_IDLE: GuideState = Object.freeze({
+  step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, turn: null,
+}) as GuideState;
+
+/** Is the guide running (step 0's question included)? */
+export const guideRunning = (s: GuideState): boolean => s.phase !== null;
+
+/** Step 0: the guide starts on a board that already has pieces. */
+export function askGuide(): GuideState {
+  return { ...GUIDE_IDLE, phase: 'ask' };
+}
 
 /** The outlines showing (and accepting a piece) in this state: one at a time in steps 1 to 3, every unfilled one in step 5. */
 export function activeOutlines(s: GuideState): number[] {
@@ -86,11 +121,14 @@ export function activeOutlines(s: GuideState): number[] {
   return [];
 }
 
-function derive(phase: GuidePhase, outlines: readonly Outline[], w: GuideWorld): GuideState {
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built });
+
+function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld, c: Carry): GuideState {
   const filled = filledBy(outlines, w.pieces);
   const first = filled.findIndex((f) => !f);
   const step: GuideStep = phase === 'c' ? (first < 0 ? 4 : (Math.min(first + 1, 3) as GuideStep)) : first < 0 ? 6 : 5;
-  const s: GuideState = { step, phase, outlines, filled, turn: null };
+  const s: GuideState = { ...c, step, phase, outlines, filled, turn: null };
   const active = activeOutlines(s);
   // The turning hint: in step 3 (the wedge) and step 5 (any piece of the word).
   const turn = step === 3 || step === 5 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
@@ -98,11 +136,61 @@ function derive(phase: GuidePhase, outlines: readonly Outline[], w: GuideWorld):
 }
 
 const same = (a: GuideState, b: GuideState) =>
-  a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && a.filled.length === b.filled.length && a.filled.every((f, i) => f === b.filled[i]);
+  a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && a.filled.length === b.filled.length && a.filled.every((f, i) => f === b.filled[i])
+  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built;
 
-/** Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it. */
-export function startGuide(cOutlines: readonly Outline[], w: GuideWorld): GuideState {
-  return cOutlines.length ? derive('c', cOutlines, w) : GUIDE_IDLE;
+/**
+ * Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it.
+ * `from`: step 0's answer, carried on (`kept`, `theirs`); a fresh start has neither.
+ */
+export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
+  if (!cOutlines.length) return GUIDE_IDLE;
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE });
+}
+
+/**
+ * Step 0's answer. 'clear' (Clear and start): the caller clears the board (one undoable step) and the c starts on the blank
+ * board. 'keep' (Keep my pieces): the c starts with its outlines beside their work. Either way the pieces on the board now
+ * are THEIRS. Only from step 0.
+ */
+export function answerAsk(s: GuideState, answer: 'clear' | 'keep', cOutlines: readonly Outline[], w: GuideWorld, theirs: readonly string[]): GuideState {
+  if (s.phase !== 'ask') return s;
+  return startGuide(cOutlines, w, { kept: answer === 'keep', theirs: [...theirs] });
+}
+
+/** Move the c's outlines (nothing filled yet: e.g. their pieces came back on an undo and the outlines sat on them). */
+export function moveLetter(s: GuideState, cOutlines: readonly Outline[], w: GuideWorld): GuideState {
+  if (s.phase !== 'c' || s.filled.some(Boolean) || !cOutlines.length) return s;
+  return derive('c', cOutlines, w, { ...carry(s), letter: cOutlines });
+}
+
+/** Pieces that clicked into an outline (or that Next placed): guide-built, unless they are the visitor's own. */
+export function recordBuilt(s: GuideState, ids: readonly string[]): GuideState {
+  if (!guideRunning(s)) return s;
+  const add = ids.filter((id) => !s.theirs.includes(id) && !s.built.includes(id));
+  return add.length ? { ...s, built: [...s.built, ...add] } : s;
+}
+
+/**
+ * The guide-built pieces on the board now: built by the guide AND still sitting on one of its outlines (the c's or the
+ * word's). A built piece the visitor moved off its outline is theirs now.
+ */
+export function guideBuilt(s: GuideState, pieces: readonly OutlinePiece[]): string[] {
+  if (!s.built.length) return [];
+  const built = new Set(s.built);
+  const on = new Set([...filledBy(s.letter, pieces), ...(s.phase === 'word' ? filledBy(s.outlines, pieces) : [])].filter((id): id is string => !!id));
+  return pieces.filter((p) => built.has(p.id) && on.has(p.id)).map((p) => p.id);
+}
+
+/**
+ * What the guide's clears remove (Guide me, Clear for free play, Start fresh): only the guide-built pieces once the visitor
+ * kept their pieces (or any of theirs is on the board again, e.g. after undoing Clear and start); otherwise, on a blank
+ * start, the whole board as before.
+ */
+export function guideClearPlan(s: GuideState, pieces: readonly OutlinePiece[]): { all: true } | { all: false; ids: string[] } {
+  const theirs = new Set(s.theirs);
+  if (!s.kept && !pieces.some((p) => theirs.has(p.id))) return { all: true };
+  return { all: false, ids: guideBuilt(s, pieces) };
 }
 
 /**
@@ -110,18 +198,18 @@ export function startGuide(cOutlines: readonly Outline[], w: GuideWorld): GuideS
  * Returns the same object when nothing changed.
  */
 export function observeGuide(s: GuideState, w: GuideWorld): GuideState {
-  if (!s.step || !s.phase) return s;
-  const next = derive(s.phase, s.outlines, w);
+  if (!s.step || !s.phase || s.phase === 'ask') return s;
+  const next = derive(s.phase, s.outlines, w, carry(s));
   return same(s, next) ? s : next;
 }
 
 /** Step 4's Guide me: the word's outlines (already placed). Only from step 4. */
 export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld): GuideState {
   if (s.step !== 4 || !wordOutlines.length) return s;
-  return derive('word', wordOutlines, w);
+  return derive('word', wordOutlines, w, carry(s));
 }
 
-/** Skip, Don't show again, Clear for free play, Start fresh, Keep it. */
+/** Skip, Don't show again, Clear for free play, Start fresh, Keep it (and step 0's Skip / Don't show again). */
 export function endGuide(): GuideState {
   return GUIDE_IDLE;
 }
@@ -140,6 +228,103 @@ export function guideClickIn(s: GuideState, w: GuideWorld, released: readonly st
 /** Next (shown when stuck): the outline it fills for the visitor (the lowest active one), or null on steps without outlines. */
 export function nextOutline(s: GuideState): number | null {
   return activeOutlines(s)[0] ?? null;
+}
+
+// ---- outlines beside the visitor's work (Keep my pieces) --------------------------------------------------------
+
+export type Side = 'right' | 'below' | 'left' | 'above';
+/** Keep my pieces: the sides tried for the outlines, in order of preference. */
+export const BESIDE_ORDER: readonly Side[] = ['right', 'below', 'left', 'above'];
+
+/** Where an area of `size` sits on `side` of `work`, `margin` clear of it, centred on it along the other axis. */
+export function besideRect(work: Rect, size: { w: number; h: number }, side: Side, margin: number): Rect {
+  const cx = work.x + work.w / 2 - size.w / 2, cy = work.y + work.h / 2 - size.h / 2;
+  if (side === 'right') return { x: work.x + work.w + margin, y: cy, w: size.w, h: size.h };
+  if (side === 'left') return { x: work.x - margin - size.w, y: cy, w: size.w, h: size.h };
+  if (side === 'below') return { x: cx, y: work.y + work.h + margin, w: size.w, h: size.h };
+  return { x: cx, y: work.y - margin - size.h, w: size.w, h: size.h };
+}
+
+const union = (a: Rect, b: Rect): Rect => {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+};
+const grow = (r: Rect, m: number): Rect => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
+
+/** The zoom at which `r` (board units) fits a view of `view` (screen units) with `pad` on every side. */
+export function fitZoom(r: Rect, view: { w: number; h: number }, pad: number): number {
+  return Math.min(Math.max(1, view.w - 2 * pad) / Math.max(1, r.w), Math.max(1, view.h - 2 * pad) / Math.max(1, r.h));
+}
+
+export interface BesideOptions {
+  /** Board units of open board kept between their work and the outlines. */
+  margin: number;
+  /** The view the result is framed in (screen units) and its padding: decides which sides fit it well. */
+  view: { w: number; h: number };
+  pad: number;
+  /** The zoom at which the outlines' targets are big enough; a side whose framing needs less is passed over if another fits. */
+  minZoom: number;
+  /** Other board to keep clear of (e.g. every piece's own bounds), beyond the work's bounds themselves. */
+  avoid?: readonly Rect[];
+  order?: readonly Side[];
+}
+
+/**
+ * Keep my pieces: a spot of EMPTY board for an area of `size` beside the visitor's `work` (the bounds of their whole
+ * composition), `margin` clear of it, never overlapping it (nor `avoid`). Sides are tried right, then below, then left,
+ * then above: the first whose framing of work AND outlines together keeps the targets big enough (`minZoom`) wins.
+ * When none does (a long composition on a narrow phone), the side that frames largest wins (ties: the order).
+ */
+export function besideSpot(work: Rect, size: { w: number; h: number }, o: BesideOptions): { side: Side; rect: Rect; zoom: number } {
+  const order = o.order ?? BESIDE_ORDER;
+  let best: { side: Side; rect: Rect; zoom: number } | null = null;
+  for (const side of order) {
+    let rect = besideRect(work, size, side, o.margin);
+    // Step further out past anything else in the way (on that side, away from the work).
+    for (let i = 0; i < 32; i++) {
+      const hit = (o.avoid ?? []).find((q) => rectsOverlap(grow(rect, o.margin / 2), q));
+      if (!hit) break;
+      const m = o.margin;
+      if (side === 'right') rect = { ...rect, x: hit.x + hit.w + m };
+      else if (side === 'left') rect = { ...rect, x: hit.x - m - rect.w };
+      else if (side === 'below') rect = { ...rect, y: hit.y + hit.h + m };
+      else rect = { ...rect, y: hit.y - m - rect.h };
+    }
+    const zoom = fitZoom(union(work, rect), o.view, o.pad);
+    if (zoom >= o.minZoom) return { side, rect, zoom };
+    if (!best || zoom > best.zoom + 1e-9) best = { side, rect, zoom };
+  }
+  return best!;
+}
+
+/**
+ * Frame their work and the outlines: both in full when that keeps the targets big enough (`minZoom`, capped by `maxZoom`);
+ * otherwise the outlines win. Rule: zoom in only as far as the targets need (or until the outlines alone fill the view),
+ * then centre on the whole and slide just enough to bring the outlines fully into view, so the outlines hug the far edge
+ * and as much of their work as fits stays in sight on the near side (they can see it is untouched, and the targets stay
+ * big enough to see and press on a phone). Returns a camera for `view` (screen units, offset by `view.x`/`view.y`).
+ */
+export function frameBeside(
+  work: Rect | null, outlines: Rect, view: Rect, pad: number, minZoom: number, maxZoom: number,
+): { x: number; y: number; zoom: number; both: boolean } {
+  const all = work ? union(work, outlines) : outlines;
+  const zAll = fitZoom(all, view, pad);
+  const zOut = fitZoom(outlines, view, pad);
+  const both = zAll >= Math.min(minZoom, zOut) - 1e-9;
+  const zoom = Math.min(maxZoom, both ? zAll : Math.max(zAll, Math.min(minZoom, zOut)));
+  // Centre on everything, then slide so the outlines are fully inside the view (less the padding).
+  let x = view.x + view.w / 2 - (all.x + all.w / 2) * zoom;
+  let y = view.y + view.h / 2 - (all.y + all.h / 2) * zoom;
+  const fit = (lo: number, len: number, vlo: number, vlen: number, off: number) => {
+    const a = lo * zoom + off, b = (lo + len) * zoom + off;
+    if (b - a > vlen - 2 * pad) return vlo + vlen / 2 - (lo + len / 2) * zoom; // larger than the view: centre it
+    if (a < vlo + pad) return off + (vlo + pad - a);
+    if (b > vlo + vlen - pad) return off - (b - (vlo + vlen - pad));
+    return off;
+  };
+  x = fit(outlines.x, outlines.w, view.x, view.w, x);
+  y = fit(outlines.y, outlines.h, view.y, view.h, y);
+  return { x, y, zoom, both };
 }
 
 // ---- when it shows -------------------------------------------------------------------------------------------

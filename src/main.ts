@@ -16,9 +16,9 @@ import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } fro
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, chooseWord, coverage, endGuide, guideClickIn, guideProgress,
-  guideWanted, nextOutline, observeGuide, placeCallout, readGuideOff, startGuide, writeGuideOff, type CalloutSide, type GuideState,
-  type GuideWorld, type Rect,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideSpot, chooseWord, coverage, endGuide,
+  frameBeside, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextOutline, observeGuide, placeCallout,
+  readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type CalloutSide, type GuideState, type GuideWorld, type Rect,
 } from './guide';
 import { filledBy, outlinesAt, stackFix, type Outline } from './outline';
 import {
@@ -73,6 +73,12 @@ const sizeOf = (id: string): number => {
 const OUTLINE_COLOR = '#378ADD';
 const OUTLINE_PX = 2.75;
 const OUTLINE_DASH = [6, 5];
+/** Keep my pieces: the smallest outline target (a shape's shorter side) should be at least this many CSS px when framed. */
+const GUIDE_MIN_TARGET = 28;
+/** CSS px of air kept around what the guide frames. */
+const GUIDE_FRAME_PAD = 32;
+/** Keep my pieces: open board between their work and the outlines, as a fraction of a positive stem's length. */
+const GUIDE_BESIDE_MARGIN = 0.5;
 /** A piece clicking into its outline settles there over this long, ms (no motion with reduced motion). */
 const SETTLE_MS = 170;
 const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -561,6 +567,7 @@ export class FridgeFace extends HTMLElement {
   private guideFocusOnShow = false; // a replay from Controls moves focus into the callout once it shows
   private guideQueued = false; // the guide waits for the board to be laid out (its outlines are centred in it)
   private wordFitPending = false; // step 5: frame the word's outlines beside the callout, once it can be measured
+  private wordWork: Rect | null = null; // step 5 after Keep my pieces: the bounds of their work, framed with the word where it can be
   private outlineZoom = NaN;
   private keySnapTimer = 0; // `,` `.` turns click in when the keys pause
   private authoring = false;
@@ -673,6 +680,10 @@ export class FridgeFace extends HTMLElement {
       <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
         <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
         <p class="gtext"><span class="gt1"></span><span class="gt2" hidden></span><span class="gt3" hidden></span></p>
+        <div class="grow gpick" data-pick="0" hidden>
+          <button type="button" class="b" data-guide="clean"><span class="tx">${GUIDE_COPY.clearStart}</span></button>
+          <button type="button" class="b pri" data-guide="mine"><span class="tx">${GUIDE_COPY.keepMine}</span></button>
+        </div>
         <div class="grow gpick" data-pick="4" hidden>
           <button type="button" class="b pri" data-guide="word"><span class="tx">${GUIDE_COPY.guideMe}</span></button>
           <button type="button" class="b" data-guide="clear"><span class="tx">${GUIDE_COPY.clearFree}</span></button>
@@ -1017,6 +1028,7 @@ export class FridgeFace extends HTMLElement {
       this.applying = false;
     }
     this.guideObserve(); // the guide follows the board: an undone click-in shows its outline again
+    this.guideRelocate(); // their pieces back under an untouched c (undoing Clear and start): its outlines move beside them
   }
 
   private clearBoard() {
@@ -1707,7 +1719,7 @@ export class FridgeFace extends HTMLElement {
     const sec = this.inputSections();
     const shown: Record<string, boolean> = { touch: sec.touch, pointer: sec.pointer, keyboard: sec.keyboard };
     for (const el of this.helpEl.querySelectorAll<HTMLElement>('[data-controls]')) el.hidden = !(this.helpShowAll || shown[el.dataset.controls!]);
-    if (this.guide.step) this.renderGuideContent(); // step 2's touch line follows the device
+    if (guideRunning(this.guide)) this.renderGuideContent(); // step 2's touch line follows the device
     const all = this.helpEl.querySelector<HTMLElement>('.ctlall')!;
     const hide = this.helpShowAll || sec.allShown;
     const hadFocus = this.shadowRoot!.activeElement && all.contains(this.shadowRoot!.activeElement);
@@ -2340,7 +2352,7 @@ export class FridgeFace extends HTMLElement {
       } else if (this.suggOpen) {
         this.closeSuggestions();
         e.preventDefault();
-      } else if (this.guide.step) {
+      } else if (guideRunning(this.guide)) {
         this.skipGuide(); // menus, sheets and dialogs first, then the guide, then the selection
         e.preventDefault();
       } else if (this.selection.length) {
@@ -2451,7 +2463,7 @@ export class FridgeFace extends HTMLElement {
     this.helpEl.classList.toggle('has-sugg', has);
     if (!has && this.suggOpen) this.closeSuggestions();
     else if (this.suggOpen) this.renderSuggestions();
-    if (this.guide.step) this.renderGuideContent(); // the Letters mention follows the store
+    if (guideRunning(this.guide)) this.renderGuideContent(); // the Letters mention follows the store
   }
 
   private toggleSuggestions(opener?: HTMLElement | null) {
@@ -2926,22 +2938,107 @@ export class FridgeFace extends HTMLElement {
 
   /** Every visit, after the intro if one plays (or at once), unless no-guide, author mode or "Don't show again". */
   private autoStartGuide() {
-    if (!this.isConnected || !this.guideEl || this.guide.step || !guideWanted(this.guideConditions())) return;
+    if (!this.isConnected || !this.guideEl || guideRunning(this.guide) || !guideWanted(this.guideConditions())) return;
     if (!this.boardEl.clientWidth) {
       this.guideQueued = true; // the outlines are centred in the board: wait for it to be laid out
       return;
     }
     this.guideQueued = false;
-    this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
+    this.setGuide(this.firstGuideState());
   }
 
-  /** "Show guide": from step 1, even when "Don't show again" is set (which stays set). */
+  /** "Show guide": from the start (step 0 when the board has pieces, else step 1), even when "Don't show again" is set (which stays set). */
   private replayGuide() {
     if (!guideWanted(this.guideConditions(), true) || !this.guideLetter()) return;
     this.finishIntro();
     this.setGuide(GUIDE_IDLE);
     this.guideFocusOnShow = true;
-    this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
+    this.setGuide(this.firstGuideState());
+  }
+
+  /** Step 0 when the board already has pieces (and there is a c to build); otherwise step 1 on the blank board. */
+  private firstGuideState(): GuideState {
+    if (this.composition.pieces.length && this.guideLetter()) return askGuide();
+    return startGuide(this.letterOutlines(), this.guideWorld());
+  }
+
+  /** The zoom at which the smallest outline target is GUIDE_MIN_TARGET CSS px across (its shape's shorter upright side). */
+  private targetZoom(outlines: readonly Outline[]): number {
+    const min = Math.min(...outlines.map((o) => {
+      const u = SHAPE_BY_ID.get(o.shapeId)?.uprightBox;
+      return u ? Math.min(u.w, u.h) : Infinity;
+    }));
+    return Number.isFinite(min) && min > 0 ? GUIDE_MIN_TARGET / this.k / min : 0;
+  }
+
+  /** The visible board in screen units (phones: below the docks), less `inset` client px on every side. */
+  private visibleView(): Rect {
+    const vp = this.viewport();
+    const t = Math.min(this.topInset(), vp.height / 2);
+    return { x: 0, y: t, w: vp.width, h: vp.height - t };
+  }
+
+  /**
+   * Keep my pieces: a suggestion's outlines in EMPTY board beside everything on the board (right, then below, left, above:
+   * `besideSpot`), and the view framed on both (`frameBeside`). `view` is the part of the board to frame them in (screen
+   * units); default the visible board. With nothing on the board, centred in view as usual.
+   */
+  private outlinesBeside(pieces: readonly Outline[], view: Rect = this.visibleView(), frame = true): Outline[] {
+    const work = rotatedBounds(this.composition.pieces, (id) => SHAPE_BY_ID.get(id));
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
+    if (!work) return outlinesAt(pieces, shape, this.visibleCentre());
+    const own = rotatedBounds(pieces, shape)!;
+    const pad = GUIDE_FRAME_PAD / this.k;
+    const centred = outlinesAt(pieces, shape, { x: 0, y: 0 });
+    const minZoom = this.targetZoom(centred);
+    const avoid = this.composition.pieces.map((p) => rotatedBounds([p], shape)!).filter(Boolean);
+    const spot = besideSpot(work, { w: own.w, h: own.h }, { margin: GUIDE_BESIDE_MARGIN * STEM_LENGTH, view, pad, minZoom, avoid });
+    const outlines = outlinesAt(pieces, shape, { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 });
+    if (frame) {
+      const ob = rotatedBounds(outlines, shape)!;
+      const c = frameBeside(work, ob, view, pad, minZoom, FIT_MAX_COMFORT * this.comfortZoom());
+      this.setView({ x: c.x, y: c.y, zoom: c.zoom });
+    }
+    return outlines;
+  }
+
+  /** Step 0's answer: Clear and start (one undoable clear, then step 1 on the blank board) or Keep my pieces. */
+  private guideAnswer(answer: 'clear' | 'keep') {
+    if (this.guide.phase !== 'ask') return;
+    const theirs = this.composition.pieces.map((p) => p.id);
+    this.selection = [];
+    if (answer === 'clear') {
+      this.guideLoading = true; // judged once, below
+      let had = false;
+      try {
+        had = this.composition.clear(); // ONE undoable step
+      } finally {
+        this.guideLoading = false;
+      }
+      this.render();
+      this.setGuide(answerAsk(this.guide, 'clear', this.letterOutlines(), this.guideWorld(), theirs));
+      if (had) this.say('Board cleared. Undo brings it back.');
+    } else {
+      const outlines = this.outlinesBeside(this.guideLetter()!.pieces);
+      this.setGuide(answerAsk(this.guide, 'keep', outlines, this.guideWorld(), theirs));
+    }
+  }
+
+  /**
+   * Their pieces came back (an undo of Clear and start) or the board changed under an untouched c: if the c's outlines now
+   * sit on pieces, they move to empty board beside them (framed), so the guide stays usable and never builds on their work.
+   */
+  private guideRelocate() {
+    const s = this.guide;
+    if (s.phase !== 'c' || s.filled.some(Boolean) || !this.composition.pieces.length || !this.boardEl.clientWidth) return;
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
+    const ob = rotatedBounds(s.outlines, shape);
+    const m = 0.25 * STEM_LENGTH;
+    if (!ob || !this.composition.pieces.some((p) => {
+      const b = rotatedBounds([p], shape);
+      return b && rectsOverlap({ x: ob.x - m, y: ob.y - m, w: ob.w + 2 * m, h: ob.h + 2 * m }, b);
+    })) return;
+    this.setGuide(moveLetter(s, this.outlinesBeside(this.guideLetter()!.pieces), this.guideWorld()));
   }
 
   private skipGuide() {
@@ -2949,10 +3046,13 @@ export class FridgeFace extends HTMLElement {
     this.say('Guide closed.');
   }
 
-  /** After a load the view moved to frame it: an untouched c moves with the view (centred again); otherwise follow the board. */
+  /**
+   * After a load the view moved to frame it. An untouched c (nothing built yet) starts over: step 0 when the board now has
+   * pieces (a share link arriving, a load), else centred in the new view. Otherwise the guide follows the board.
+   */
   private guideAfterLoad() {
     const s = this.guide;
-    if (s.phase === 'c' && !s.filled.some(Boolean) && this.boardEl.clientWidth) this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
+    if (s.phase === 'c' && !s.filled.some(Boolean) && !s.built.length && this.boardEl.clientWidth) this.setGuide(this.firstGuideState());
     else this.guideObserve();
   }
 
@@ -2961,7 +3061,7 @@ export class FridgeFace extends HTMLElement {
     if (next === prev) return;
     this.guide = next;
     this.renderOutlines();
-    if (next.step === prev.step) {
+    if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter)) {
       // The same step: its outlines, its turning hint or its progress moved.
       const p = guideProgress(next), q = guideProgress(prev);
       if (!!next.turn !== !!prev.turn || p.done !== q.done) {
@@ -2975,7 +3075,7 @@ export class FridgeFace extends HTMLElement {
     clearTimeout(this.guideNextTimer);
     this.guideNext = false;
     const hadFocus = this.guideEl.contains(this.shadowRoot!.activeElement);
-    if (!next.step) {
+    if (!guideRunning(next)) {
       this.guideFocusOnShow = false;
       this.wordFitPending = false;
       this.guideEl.hidden = true;
@@ -2983,10 +3083,10 @@ export class FridgeFace extends HTMLElement {
       if (hadFocus) this.surface.focus();
       return;
     }
-    if (this.guideHasControls(next.step)) {
+    if (this.guideHasControls(next.step) && next.phase !== 'ask') {
       const step = next.step;
       this.guideNextTimer = window.setTimeout(() => {
-        if (this.guide.step !== step) return;
+        if (this.guide.step !== step || this.guide.phase === 'ask') return;
         this.guideNext = true;
         this.renderGuideContent();
         this.scheduleGuide();
@@ -2998,14 +3098,19 @@ export class FridgeFace extends HTMLElement {
     this.scheduleGuide();
   }
 
-  /** Steps with outlines carry Skip, Don't show again and (when stuck) Next; steps 4 and 6 have their own buttons. */
+  /** Step 0 and the steps with outlines carry Skip and Don't show again (and, with outlines, Next when stuck); steps 4 and 6 have their own buttons. */
   private guideHasControls(step: number): boolean {
-    return step === 1 || step === 2 || step === 3 || step === 5;
+    return step === 0 || step === 1 || step === 2 || step === 3 || step === 5;
   }
 
   /** The board changed (outside a gesture): the guide re-reads which outlines are filled. */
   private guideObserve() {
-    if (!this.guide.step) return;
+    if (!guideRunning(this.guide)) return;
+    if (this.guide.phase === 'ask') {
+      // The visitor emptied the board themselves (or undid back to blank): nothing left to ask about.
+      if (!this.composition.pieces.length && this.boardEl.clientWidth) this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
+      return;
+    }
     this.setGuide(observeGuide(this.guide, this.guideWorld()));
   }
 
@@ -3030,6 +3135,7 @@ export class FridgeFace extends HTMLElement {
     this.render();
     this.settle(r.placements, before);
     this.say(r.placements.length === 1 ? 'Clicked into place.' : `${r.placements.length} pieces clicked into place.`);
+    this.setGuide(recordBuilt(this.guide, r.placements.map((p) => p.id))); // guide-built (never one of theirs)
     this.guideObserve();
   }
 
@@ -3068,15 +3174,41 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** Step 4's Guide me: the board is cleared (one undoable step) and the whole word appears as outlines, framed in view. */
+  /**
+   * Step 4's Guide me: the c is cleared (one undoable step: the whole board on a blank start, ONLY the guide-built c after
+   * Keep my pieces) and the whole word appears as outlines, framed in view (beside their work, in empty board, after Keep).
+   */
   private guideChooseWord() {
     const w = this.guideWordSuggestion();
     if (!w || this.guide.step !== 4) return;
-    const outlines = outlinesAt(w.pieces, (id) => SHAPE_BY_ID.get(id), this.visibleCentre());
+    const plan = guideClearPlan(this.guide, this.composition.pieces);
+    // Where the word goes is decided on the board as it will be once the c is gone.
+    const remaining = plan.all ? [] : this.composition.pieces.filter((p) => !plan.ids.includes(p.id));
+    const shape = (id: string) => SHAPE_BY_ID.get(id);
+    let outlines: Outline[];
+    if (remaining.length) {
+      const work = rotatedBounds(remaining, shape)!;
+      const own = rotatedBounds(w.pieces, shape)!;
+      const centred = outlinesAt(w.pieces, shape, { x: 0, y: 0 });
+      const avoid = remaining.map((p) => rotatedBounds([p], shape)!);
+      const spot = besideSpot(work, { w: own.w, h: own.h }, {
+        margin: GUIDE_BESIDE_MARGIN * STEM_LENGTH, view: this.visibleView(), pad: GUIDE_FRAME_PAD / this.k, minZoom: this.targetZoom(centred), avoid,
+      });
+      outlines = outlinesAt(w.pieces, shape, { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 });
+      this.wordWork = work;
+    } else {
+      outlines = outlinesAt(w.pieces, shape, this.visibleCentre());
+      this.wordWork = null;
+    }
     this.wordFitPending = true;
     this.setGuide(chooseWord(this.guide, outlines, this.guideWorld())); // first, so clearing the c is not read as undoing it
     this.selection = [];
-    if (this.composition.clear()) this.say('Board cleared. Undo brings it back.');
+    if (this.guideClear(plan)) this.say(plan.all ? 'Board cleared. Undo brings it back.' : 'The c is cleared. Undo brings it back.');
+  }
+
+  /** Apply a clear plan as ONE undoable step: the whole board, or only the guide-built pieces. Whether anything went. */
+  private guideClear(plan: ReturnType<typeof guideClearPlan>): boolean {
+    return plan.all ? this.composition.clear() : plan.ids.length > 0 && this.composition.deletePieces(plan.ids) > 0;
   }
 
   /** Next (when stuck): fill the next outline for the visitor, as one undoable step (the piece that needs turning, else a new one). */
@@ -3094,6 +3226,7 @@ export class FridgeFace extends HTMLElement {
     }
     this.guideOrderFix();
     this.say('Placed for you.');
+    this.setGuide(recordBuilt(this.guide, [turning && turning.shapeId === o.shapeId ? turning.id : this.selection[0]].filter(Boolean)));
     this.guideObserve();
   }
 
@@ -3108,6 +3241,7 @@ export class FridgeFace extends HTMLElement {
   /** The callout's lines for the current step: the main text, a second line (step 4's question, step 5's progress) and step 5's turning hint. */
   private guideLines(): [string, string, string] {
     const s = this.guide;
+    if (s.phase === 'ask') return [GUIDE_COPY.step0, '', ''];
     switch (s.step) {
       case 1: return [GUIDE_COPY.step1, '', ''];
       case 2: return [GUIDE_COPY.step2, '', ''];
@@ -3131,7 +3265,9 @@ export class FridgeFace extends HTMLElement {
     const g = this.guideEl;
     if (!g) return;
     const s = this.guide.step;
+    const ask = this.guide.phase === 'ask';
     g.dataset.step = String(s);
+    g.toggleAttribute('data-ask', ask);
     g.toggleAttribute('data-turn', !!this.guide.turn);
     const lines = this.guideLines();
     ['.gt1', '.gt2', '.gt3'].forEach((sel, i) => {
@@ -3145,11 +3281,12 @@ export class FridgeFace extends HTMLElement {
     const pick4 = g.querySelector<HTMLElement>('[data-pick="4"]')!, pick6 = g.querySelector<HTMLElement>('[data-pick="6"]')!;
     const word = g.querySelector<HTMLElement>('[data-guide=word]')!, clear = g.querySelector<HTMLElement>('[data-guide=clear]')!;
     const ctl = g.querySelector<HTMLElement>('.gctl')!, next = g.querySelector<HTMLElement>('[data-guide=next]')!;
+    g.querySelector<HTMLElement>('[data-pick="0"]')!.hidden = !ask;
     pick4.hidden = s !== 4;
     word.hidden = !hasWord;
     clear.classList.toggle('pri', !hasWord); // alone, it is the main button
     pick6.hidden = s !== 6;
-    ctl.hidden = !this.guideHasControls(s);
+    ctl.hidden = !guideRunning(this.guide) || !this.guideHasControls(s);
     next.hidden = !(this.guideNext && !ctl.hidden);
     // A focused button that just went away hands focus to the first button still showing.
     if (active && g.contains(active) && (active as HTMLElement).closest('[hidden]')) g.querySelector<HTMLElement>('.grow:not([hidden]) button:not([hidden])')?.focus();
@@ -3166,15 +3303,19 @@ export class FridgeFace extends HTMLElement {
       writeGuideOff(() => localStorage); // if storage fails, it still ends for this visit
       this.setGuide(endGuide());
       this.say('Guide turned off. Show it again from Controls.');
-    } else if (act === 'word') this.guideChooseWord();
+    } else if (act === 'clean') this.guideAnswer('clear');
+    else if (act === 'mine') this.guideAnswer('keep');
+    else if (act === 'word') this.guideChooseWord();
     else if (act === 'keep') {
       this.setGuide(endGuide());
       this.say('Guide closed.');
     } else if (act === 'clear' || act === 'fresh') {
+      // ONE undoable step: the whole board on a blank start; ONLY the guide-built pieces once the visitor kept theirs.
+      const plan = guideClearPlan(this.guide, this.composition.pieces);
       this.setGuide(endGuide()); // first: the guide is over, the clear is the visitor's
       this.selection = [];
-      const had = this.composition.clear(); // ONE undoable step
-      this.say(had ? 'Board cleared. Undo brings it back.' : 'Guide closed.');
+      const had = this.guideClear(plan);
+      this.say(had ? (plan.all ? 'Board cleared. Undo brings it back.' : 'The guide\'s pieces are cleared; yours are kept. Undo brings them back.') : 'Guide closed.');
     }
   }
 
@@ -3220,7 +3361,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private scheduleGuide() {
-    if (!this.guideEl || this.guideFrame || !this.guide.step) return;
+    if (!this.guideEl || this.guideFrame || !guideRunning(this.guide)) return;
     this.guideFrame = requestAnimationFrame(() => {
       this.guideFrame = 0;
       this.syncGuide();
@@ -3312,6 +3453,13 @@ export class FridgeFace extends HTMLElement {
     }
     if (reg.w < 80 || reg.h < 60) Object.assign(reg, bounds); // no room beside it: use the whole board
     const m = 16;
+    if (this.wordWork) {
+      // After Keep my pieces: their work and the word together where the targets stay big enough, else the word first.
+      const view = { x: (reg.x - board.left + m) / k, y: (reg.y - board.top + m) / k, w: (reg.w - 2 * m) / k, h: (reg.h - 2 * m) / k };
+      const c = frameBeside(this.wordWork, b, view, 0, this.targetZoom(this.guide.outlines), FIT_MAX_COMFORT * this.comfortZoom());
+      this.setView({ x: c.x, y: c.y, zoom: c.zoom });
+      return;
+    }
     const zoom = Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h), FIT_MAX_COMFORT * this.comfortZoom());
     const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
     this.setView({ x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom });
@@ -3322,7 +3470,7 @@ export class FridgeFace extends HTMLElement {
     const g = this.guideEl;
     const s = this.guide.step;
     const busy = !!(this.moving?.moved || this.rotating || this.twist || this.trayDrag?.active || this.boxSel?.active);
-    const show = s > 0 && !this.helpOpen && !this.suggOpen && !this.menuOpen && !busy && !this.introAnims.length && this.boardEl.clientWidth > 0;
+    const show = guideRunning(this.guide) && !this.helpOpen && !this.suggOpen && !this.menuOpen && !busy && !this.introAnims.length && this.boardEl.clientWidth > 0;
     if (!show) {
       if (!g.hidden) g.hidden = true;
       return;
@@ -3342,7 +3490,13 @@ export class FridgeFace extends HTMLElement {
       this.wordFitPending = false;
       const narrow = widths[widths.length - 1]; // the narrowest callout leaves the word the most room
       g.style.maxWidth = narrow ? `${narrow}px` : '';
+      // Room for its tallest form (the turning hint as a third line), so the hint never has to cover the word later.
+      const t3 = g.querySelector<HTMLElement>('.gt3')!, was = [t3.textContent, t3.hidden] as const;
+      t3.textContent = this.turnText();
+      t3.hidden = false;
       const size = { w: g.offsetWidth, h: g.offsetHeight };
+      t3.textContent = was[0];
+      t3.hidden = was[1];
       const tray = toRect(this.trayEl.getBoundingClientRect());
       const p = placeCallout(size, tray, bounds, obstacles, this.trayPrefer);
       this.fitWordBeside({ x: p.x, y: p.y, w: size.w, h: size.h }, p.side, bounds);
@@ -3354,7 +3508,10 @@ export class FridgeFace extends HTMLElement {
     const turnEl = st.turn ? this.els.get(st.turn)?.g.querySelector('.bd') : null;
     const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : [])];
     // Steps 4 and 6 (centred): keep the finished letter or word in sight where the board allows.
-    const done = st.step === 4 || st.step === 6 ? st.filled.flatMap((id) => {
+    const done = st.phase === 'ask' ? [...this.els.values()].map((e) => {
+      const r = toRect(e.g.querySelector('.bd')!.getBoundingClientRect());
+      return { x: r.x - 16, y: r.y - 16, w: r.w + 32, h: r.h + 32 }; // step 0: their pieces stay in sight where the board allows
+    }) : st.step === 4 || st.step === 6 ? st.filled.flatMap((id) => {
       const e = id ? this.els.get(id)?.g.querySelector('.bd') : null;
       const r = e ? toRect(e.getBoundingClientRect()) : null;
       return r ? [{ x: r.x - 16, y: r.y - 16, w: r.w + 32, h: r.h + 32 }] : []; // with some air around it
