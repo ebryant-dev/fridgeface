@@ -16,6 +16,10 @@ import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } fro
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_NEXT_MS, coverage, endGuide, guideWanted, nextStep, observeGuide, placeCallout, readGuideOff, rebaseGuide,
+  startGuide, writeGuideOff, type CalloutSide, type GuideState, type GuideWorld, type Rect,
+} from './guide';
+import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
   announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro,
   announceSelectionCount, announceGroupMoved, announceGroupRotated, announceGroupDeleted,
@@ -303,7 +307,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .helpbody h3:focus { outline: none; }
 .helpbody h4 { margin: 16px 0 6px; font: 700 12px/1.2 var(--font); letter-spacing: 0.12em; text-transform: uppercase; }
 .helpbody [hidden] { display: none !important; }
-.helpbody .ctlall { margin-top: 20px; display: flex; justify-content: center; }
+.helpbody .ctlfoot { margin-top: 20px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .helpbody ul { margin: 0; padding: 0; list-style: none; columns: 2 340px; column-gap: 28px; }
 .helpbody li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 0; break-inside: avoid; border-bottom: 1px solid #d0d0d0; font: 500 13px/1.3 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
 .helpbody li > span:first-child { flex: 1 1 0; min-width: 0; }
@@ -311,6 +315,49 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .helpbody kbd { font: 700 12px/1 var(--font); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 6px; border: 1.5px solid var(--ink); background: #f2f2f2; min-width: 12px; text-align: center; box-sizing: content-box; }
 .helpbody .combo { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .helpbody .or { font-size: 11px; align-self: center; color: #4a4a4a; }
+
+/* ---- the guide: one small callout on the real UI, flat black and white, Jost caps (see src/guide.ts) ---- */
+.guide {
+  position: absolute; z-index: 7; left: 0; top: 0; box-sizing: border-box; width: max-content; max-width: min(340px, calc(100% - 32px));
+  padding: 12px 12px 12px 14px; background: var(--paper); color: var(--ink); border: 2px solid var(--ink);
+  box-shadow: 4px 6px 0 rgb(0 0 0 / 0.25); pointer-events: auto; touch-action: manipulation;
+}
+.guide[hidden], .guide [hidden] { display: none !important; }
+.gtext { margin: 0; font: 700 14px/1.35 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
+.grow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.grow.gctl button.b { font-size: 11px; padding: 0 10px; }
+.guide button.b.pri { background: var(--ink); color: var(--paper); }
+.guide button.b.pri:hover { background: #333; }
+.gnote { margin: 10px 0 0; font: 500 12px/1.45 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
+.gnote .gabc { display: inline-flex; vertical-align: -0.4em; }
+.gnote .gabc .ic { width: 20px; height: 20px; }
+/* The pointer: a flat black triangle (white edge, so it reads on black pieces too) just outside the callout, tip toward the target. */
+.gpt { position: absolute; width: 22px; height: 13px; pointer-events: none; line-height: 0; }
+.gpt svg { display: block; animation: ff-guide-nudge 1.2s ease-in-out infinite; }
+@keyframes ff-guide-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+.guide[data-side=above] .gpt { left: calc(var(--ga) - 13px); top: calc(100% + 6px); }
+.guide[data-side=below] .gpt { left: calc(var(--ga) - 13px); top: -19px; transform: rotate(180deg); }
+.guide[data-side=right] .gpt { left: -23.5px; top: calc(var(--ga) - 8.5px); transform: rotate(90deg); }
+.guide[data-side=left] .gpt { left: calc(100% + 1.5px); top: calc(var(--ga) - 8.5px); transform: rotate(-90deg); }
+.guide[data-side=centre] .gpt { display: none; }
+/* The row of small controls: hit areas (::after) carry the 44px touch target, not visual bulk. */
+.grow.gctl button.b { position: relative; }
+.grow.gctl button.b::after { content: ""; position: absolute; inset: -4px -2px; }
+/* Step 4: "Don't show again" is small and secondary (no Skip: Keep playing does that). */
+.guide[data-step="4"] .gctl { margin-top: 6px; }
+.guide[data-step="4"] .gctl button.b { min-height: 30px; padding: 0 2px; border-color: transparent; text-decoration: underline; text-underline-offset: 3px; }
+.guide[data-step="4"] .gctl button.b::after { inset: -7px -6px; }
+/* Phones (compact): a smaller callout, so it covers as little of the board as it can. Width is set from JS (45% of the board in landscape). */
+[data-compact] .guide { padding: 8px 10px 8px 10px; box-shadow: 3px 4px 0 rgb(0 0 0 / 0.25); }
+[data-compact] .gtext { font-size: 12px; line-height: 1.3; letter-spacing: 0.06em; }
+[data-compact] .gnote { margin-top: 6px; font-size: 10.5px; line-height: 1.35; letter-spacing: 0.06em; }
+[data-compact] .grow { margin-top: 6px; gap: 4px; }
+[data-compact] .grow.gctl { flex-wrap: nowrap; gap: 12px; margin-top: 4px; }
+[data-compact] .grow.gctl button.b { min-width: 0; min-height: 28px; padding: 0 6px; font-size: 10px; letter-spacing: 0.08em; border-width: 1.5px; white-space: nowrap; }
+[data-compact] .grow.gctl button.b::after { inset: -8px -6px; }
+[data-compact] .guide[data-step="4"] .gctl button.b { min-height: 28px; padding: 0 2px; }
+[data-compact] .gfour button.b { position: relative; min-height: 34px; font-size: 11px; padding: 0 10px; }
+[data-compact] .gfour button.b::after { content: ""; position: absolute; inset: -5px -2px; }
 
 /* ---- motion: none at all when the visitor asks for less ---- */
 @media (prefers-reduced-motion: reduce) {
@@ -331,7 +378,7 @@ function controlsHtml(): string {
       sec.groups.map((g) => (g.title ? `<h4>${g.title}</h4>` : '') + list(g.rows)).join('') +
       `</section>`,
   ).join('');
-  return sections + `<div class="ctlall">${btn('data-help="showall"', 'Show all controls')}</div>`;
+  return sections + `<div class="ctlfoot"><span class="ctlall">${btn('data-help="showall"', 'Show all controls')}</span><span class="ctlguide">${btn('data-help="guide"', GUIDE_COPY.replay)}</span></div>`;
 }
 
 /** A control button: text label on wide screens, icon on narrow ones (`i`). */
@@ -487,8 +534,24 @@ export class FridgeFace extends HTMLElement {
   private pinch: { ids: [number, number]; lastMid: { x: number; y: number }; lastDist: number } | null = null;
   private readonly onWindowKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') this.setSpace(false); };
   private readonly onWindowBlur = () => this.setSpace(false);
-  private readonly onWindowResize = () => this.syncInsets();
+  private readonly onWindowResize = () => {
+    this.syncInsets();
+    this.scheduleGuide();
+  };
   private readonly onIntroInput = () => this.finishIntro();
+
+  // The onboarding guide (src/guide.ts): one callout at a time, attached to the real UI.
+  /** Test hook: how long a step waits before it offers Next, ms. */
+  static guideNextMs = GUIDE_NEXT_MS;
+  static readonly observedAttributes = ['no-guide'];
+  private guideEl!: HTMLElement;
+  private guide: GuideState = GUIDE_IDLE;
+  private guideNext = false; // the Next button is offered
+  private guideNextTimer = 0;
+  private guideFrame = 0;
+  private guideLoading = false; // a load is replacing the board: not the visitor doing a step
+  private guideFocusOnShow = false; // a replay from Controls moves focus into the callout once it shows
+  private authoring = false;
 
   connectedCallback() {
     window.addEventListener('keyup', this.onWindowKeyUp);
@@ -594,6 +657,20 @@ export class FridgeFace extends HTMLElement {
       <div class="tray" part="tray" role="group" aria-label="Add a piece">
         <div class="grp" role="group" aria-label="Positive shapes"><div class="shapes" data-polarity="positive"></div><div class="bracket" aria-hidden="true"><span>Positive</span></div></div>
         <div class="grp" role="group" aria-label="Negative shapes"><div class="shapes" data-polarity="negative"></div><div class="bracket" aria-hidden="true"><span>Negative</span></div></div>
+      </div>
+      <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
+        <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
+        <p class="gtext"><span class="gt1"></span></p>
+        <div class="grow gfour" hidden>
+          <button type="button" class="b" data-guide="fresh"><span class="tx">${GUIDE_COPY.startFresh}</span></button>
+          <button type="button" class="b pri" data-guide="keep"><span class="tx">${GUIDE_COPY.keepPlaying}</span></button>
+        </div>
+        <p class="gnote" hidden><span class="gletters">${GUIDE_COPY.noteLetters[0]}<span class="gabc">${icon('letters')}<span class="sr">${GUIDE_COPY.noteLetters[1]}</span></span>${GUIDE_COPY.noteLetters[2]} </span>${GUIDE_COPY.noteFree}</p>
+        <div class="grow gctl">
+          <button type="button" class="b" data-guide="skip"><span class="tx">${GUIDE_COPY.skip}</span></button>
+          <button type="button" class="b" data-guide="off"><span class="tx">${GUIDE_COPY.dontShow}</span></button>
+          <button type="button" class="b pri" data-guide="next" hidden><span class="tx">${GUIDE_COPY.next}</span></button>
+        </div>
       </div>`;
     wrap.insertAdjacentHTML('afterbegin', '<div class="probe" aria-hidden="true"></div>');
     const outer = document.createElement('div'); // siblings of .root: never made inert, so the live region keeps working
@@ -627,6 +704,7 @@ export class FridgeFace extends HTMLElement {
     this.dockEl = wrap.querySelector('.dock')!;
     this.menuEl = wrap.querySelector('.menu')!;
     this.menuBtn = wrap.querySelector('[data-view=menu]')!;
+    this.guideEl = wrap.querySelector('.guide')!;
     wrap.style.setProperty('--tray-col', String(TRAY_COLUMN_W));
     this.trayEl.style.setProperty('--tex', `url("${tex.trayHref}")`); // the tray keeps its own (darker, unchanged) tone
 
@@ -689,7 +767,16 @@ export class FridgeFace extends HTMLElement {
       const t = e.target as HTMLElement;
       if (t === this.helpEl || t.closest('[data-help=close]')) this.closeHelp();
       else if (t.closest('[data-help=showall]')) this.showAllControls();
+      else if (t.closest('[data-help=guide]')) {
+        this.closeHelp();
+        this.replayGuide();
+      }
     });
+    this.guideEl.addEventListener('click', (e) => this.onGuideClick(e));
+    // The callout follows whatever opens, closes or appears around it (menus, sheets, the dialog, notices, the action bar).
+    new MutationObserver((ms) => {
+      if (ms.some((m) => !this.guideEl.contains(m.target))) this.scheduleGuide();
+    }).observe(root, { subtree: true, attributes: true, attributeFilter: ['hidden', 'data-sugg'] });
 
     this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
     this.shareEl.addEventListener('click', (e) => this.onShareClick(e));
@@ -734,7 +821,10 @@ export class FridgeFace extends HTMLElement {
     this.render();
     this.syncSuggestions();
     const authoring = import.meta.env.DEV && new URLSearchParams(location.search).has('author');
+    this.authoring = authoring;
+    this.syncGuideButton();
     this.maybeIntro(hadSaved, authoring);
+    if (!this.introAnims.length && !this.introQueued) this.autoStartGuide(); // no intro playing: the guide starts now
     void this.consumeHash();
     if (import.meta.env.DEV && authoring) {
       // Dev-only author mode: the whole module is dropped from production builds.
@@ -775,6 +865,13 @@ export class FridgeFace extends HTMLElement {
     this.closeMenu(false);
     this.finishIntro();
     this.flushSave();
+    clearTimeout(this.guideNextTimer);
+  }
+
+  attributeChangedCallback(name: string) {
+    if (name !== 'no-guide' || !this.shadowRoot) return;
+    this.syncGuideButton();
+    if (this.hasAttribute('no-guide')) this.setGuide(endGuide());
   }
 
   // ---- history, persistence, public API --------------------------------------
@@ -801,12 +898,15 @@ export class FridgeFace extends HTMLElement {
     this.coalesceKey = null;
     this.applying = !undoable;
     this.restoring = !undoable;
+    this.guideLoading = true;
     try {
       this.composition.replace(pieces);
     } finally {
       this.applying = false;
       this.restoring = false;
+      this.guideLoading = false;
     }
+    this.guideRebase();
     if (!undoable) this.history.reset(this.composition.pieces);
     else this.say(announceLoaded(this.composition.pieces.length));
     this.render();
@@ -835,6 +935,7 @@ export class FridgeFace extends HTMLElement {
   private onCompositionChange(pieces: readonly Piece[]) {
     if (this.introAnims.length) this.finishIntro();
     if (!this.applying && !this.inGesture) this.history.record(pieces, this.coalesceKey);
+    if (!this.applying && !this.inGesture && !this.guideLoading) this.guideObserve(); // a drag or turn is judged once, when it ends
     if (!this.restoring) this.scheduleSave(); // restoring what is already saved needs no write-back
     this.scheduleShareUrl();
     this.render();
@@ -895,6 +996,7 @@ export class FridgeFace extends HTMLElement {
     } finally {
       this.applying = false;
     }
+    this.guideRebase(); // undo and redo are not the visitor doing a step
   }
 
   private clearBoard() {
@@ -1350,6 +1452,7 @@ export class FridgeFace extends HTMLElement {
     }
     if (zoom !== this.overlayZoom) this.renderOverlay();
     for (const fn of this.viewListeners) fn();
+    this.scheduleGuide(); // pan and zoom move what the callout points at
   }
 
   /** The zoom at which a positive stem is COMFORT_STEM of the board's shorter visible side. */
@@ -1471,6 +1574,7 @@ export class FridgeFace extends HTMLElement {
       if (!compact) this.closeMenu(false);
       else if (this.menuOpen) this.positionMenu();
     }
+    this.scheduleGuide();
   }
 
   private get isLandscape(): boolean {
@@ -1564,19 +1668,25 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** Show the sections this device has (see `controlSections`), plus all of them after "Show all controls". */
-  private syncControls() {
-    if (!this.helpEl) return;
+  /** Which input methods the device has (the Controls panel's rule, also used by the guide's step 2). */
+  private inputSections() {
     const has = typeof matchMedia === 'function';
-    const sec = controlSections({
+    return controlSections({
       hasMatchMedia: has,
       anyCoarse: has && matchMedia('(any-pointer: coarse)').matches,
       anyFine: has && matchMedia('(any-pointer: fine)').matches,
       maxTouchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0,
       keyboardSeen,
     });
+  }
+
+  /** Show the sections this device has (see `controlSections`), plus all of them after "Show all controls". */
+  private syncControls() {
+    if (!this.helpEl) return;
+    const sec = this.inputSections();
     const shown: Record<string, boolean> = { touch: sec.touch, pointer: sec.pointer, keyboard: sec.keyboard };
     for (const el of this.helpEl.querySelectorAll<HTMLElement>('[data-controls]')) el.hidden = !(this.helpShowAll || shown[el.dataset.controls!]);
+    if (this.guide.step) this.renderGuideContent(); // step 2's touch line follows the device
     const all = this.helpEl.querySelector<HTMLElement>('.ctlall')!;
     const hide = this.helpShowAll || sec.allShown;
     const hadFocus = this.shadowRoot!.activeElement && all.contains(this.shadowRoot!.activeElement);
@@ -1682,6 +1792,7 @@ export class FridgeFace extends HTMLElement {
       prev.style.setProperty('--px', `${1 / (this.k * this.view.zoom)}px`);
       this.shadowRoot!.appendChild(prev);
       d.preview = prev;
+      this.scheduleGuide();
     }
     // Keep the shape's centroid under the pointer, matching where the piece will land.
     const s = d.shape;
@@ -1702,6 +1813,7 @@ export class FridgeFace extends HTMLElement {
     this.trayDrag = null;
     d.preview?.remove();
     if (!d.active) return; // a plain press: the click event adds the piece
+    this.scheduleGuide();
     this.suppressClick = true;
     setTimeout(() => (this.suppressClick = false), 100);
     if (commit && this.overBoard(e.clientX, e.clientY)) {
@@ -2138,7 +2250,10 @@ export class FridgeFace extends HTMLElement {
     }
     this.syncLift();
     this.commitGesture();
-    if (wasGesture && !this.inGesture) this.render(); // the action bar's restack state is refreshed once, at the end
+    if (wasGesture && !this.inGesture) {
+      this.render(); // the action bar's restack state is refreshed once, at the end
+      this.guideObserve(); // a whole drag, turn or twist is judged once, at the end
+    }
     const t = said?.();
     if (t) this.say(t);
   }
@@ -2180,7 +2295,7 @@ export class FridgeFace extends HTMLElement {
       if (k === 'y' && e.ctrlKey) { this.redo(); e.preventDefault(); return; }
       if (k === 'a' && !e.shiftKey) { this.selectAllPieces(); e.preventDefault(); return; }
     }
-    // Escape closes the innermost thing first: export menu, clear confirm, share field, then the selection.
+    // Escape closes the innermost thing first: export menu, clear confirm, share field, letters, then the guide, then the selection.
     if (e.key === 'Escape') {
       if (!this.shareEl.querySelector<HTMLElement>('.exportmenu')!.hidden) {
         this.showExportMenu(false);
@@ -2194,6 +2309,9 @@ export class FridgeFace extends HTMLElement {
         e.preventDefault();
       } else if (this.suggOpen) {
         this.closeSuggestions();
+        e.preventDefault();
+      } else if (this.guide.step) {
+        this.skipGuide(); // menus, sheets and dialogs first, then the guide, then the selection
         e.preventDefault();
       } else if (this.selection.length) {
         this.select(null);
@@ -2297,6 +2415,7 @@ export class FridgeFace extends HTMLElement {
     this.helpEl.classList.toggle('has-sugg', has);
     if (!has && this.suggOpen) this.closeSuggestions();
     else if (this.suggOpen) this.renderSuggestions();
+    if (this.guide.step) this.renderGuideContent(); // the Letters mention follows the store
   }
 
   private toggleSuggestions(opener?: HTMLElement | null) {
@@ -2502,7 +2621,10 @@ export class FridgeFace extends HTMLElement {
         ),
       );
     });
-    if (!this.introAnims.length) return;
+    if (!this.introAnims.length) {
+      this.autoStartGuide();
+      return;
+    }
     for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) window.addEventListener(t, this.onIntroInput, { capture: true, passive: true });
     const mine = this.introAnims;
     void Promise.all(mine.map((a) => a.finished)).then(() => this.endIntro(mine), () => this.endIntro(mine));
@@ -2527,6 +2649,7 @@ export class FridgeFace extends HTMLElement {
     if (this.introAnims !== anims) return;
     this.introAnims = [];
     for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) window.removeEventListener(t, this.onIntroInput, { capture: true });
+    this.autoStartGuide(); // the guide follows the intro
   }
 
   // ---- rendering ----------------------------------------------------------
@@ -2652,6 +2775,7 @@ export class FridgeFace extends HTMLElement {
     for (const id of this.liftedIds) if (!next.has(id)) this.els.get(id)?.g.classList.remove('lifted');
     for (const id of next) this.els.get(id)?.g.classList.add('lifted');
     this.liftedIds = next;
+    this.scheduleGuide(); // the callout steps aside while a piece is in the hand
     clearTimeout(this.liftTimer);
     this.liftTimer = window.setTimeout(() => {
       for (const g of this.piecesLayer.querySelectorAll('.anim')) g.classList.remove('anim');
@@ -2719,7 +2843,269 @@ export class FridgeFace extends HTMLElement {
       (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = !st.back;
       this.actions.querySelector('[data-action=delete]')!.setAttribute('aria-label', n === 1 ? 'Delete piece' : `Delete ${n} pieces`);
     }
+    this.scheduleGuide();
   }
+
+  // ---- the guide ----------------------------------------------------------------------------
+
+  private guideWorld(): GuideWorld {
+    return { pieces: this.composition.pieces, polarityOf: (id) => SHAPE_BY_ID.get(id)?.polarity, hullOf };
+  }
+
+  private guideConditions() {
+    return { disabled: this.hasAttribute('no-guide'), authoring: this.authoring, off: readGuideOff(() => localStorage) };
+  }
+
+  /** "Show guide" in the Controls panel exists only where the guide can run. */
+  private syncGuideButton() {
+    const el = this.helpEl?.querySelector<HTMLElement>('.ctlguide');
+    if (el) el.hidden = !guideWanted({ ...this.guideConditions(), off: false }, true);
+  }
+
+  /** Every visit, after the intro (or at once without one), unless no-guide, author mode or "Don't show again". */
+  private autoStartGuide() {
+    if (!this.isConnected || !this.guideEl || this.guide.step || !guideWanted(this.guideConditions())) return;
+    this.setGuide(startGuide(this.guideWorld()));
+  }
+
+  /** "Show guide": from step 1, even when "Don't show again" is set (which stays set). */
+  private replayGuide() {
+    if (!guideWanted(this.guideConditions(), true)) return;
+    this.finishIntro();
+    this.setGuide(GUIDE_IDLE);
+    this.guideFocusOnShow = true;
+    this.setGuide(startGuide(this.guideWorld()));
+  }
+
+  private skipGuide() {
+    this.setGuide(endGuide());
+    this.say('Guide closed.');
+  }
+
+  private setGuide(next: GuideState, addedPiece = false) {
+    const prev = this.guide;
+    if (next === prev) return;
+    this.guide = next;
+    if (next.step === prev.step) return; // only the baseline moved
+    clearTimeout(this.guideNextTimer);
+    this.guideNext = false;
+    const hadFocus = this.guideEl.contains(this.shadowRoot!.activeElement);
+    if (!next.step) {
+      this.guideFocusOnShow = false;
+      this.guideEl.hidden = true;
+      this.guideEl.dataset.step = '0';
+      if (hadFocus) this.surface.focus();
+      return;
+    }
+    // Step 2 points at the handle: when nothing is selected, select the piece just added (else it points at the board).
+    if (next.step === 2 && addedPiece && !this.selection.length) {
+      const top = this.composition.pieces[this.composition.pieces.length - 1];
+      if (top) this.select(top.id);
+    }
+    if (next.step < 4) {
+      const step = next.step;
+      this.guideNextTimer = window.setTimeout(() => {
+        if (this.guide.step !== step) return;
+        this.guideNext = true;
+        this.renderGuideContent();
+        this.scheduleGuide();
+      }, FridgeFace.guideNextMs);
+    }
+    this.renderGuideContent();
+    this.say(this.guideSpeech());
+    if (hadFocus) this.guideFocusOnShow = true; // a keyboard user who pressed Next stays in the callout
+    this.scheduleGuide();
+  }
+
+  /** The composition changed (outside a gesture, not a load or undo): advance when the step is done. */
+  private guideObserve() {
+    if (!this.guide.step) return;
+    const before = this.guide.step;
+    const next = observeGuide(this.guide, this.guideWorld());
+    this.setGuide(next, before === 1 && next.step === 2);
+  }
+
+  private guideRebase() {
+    if (this.guide.step) this.guide = rebaseGuide(this.guide, this.guideWorld());
+  }
+
+  private guideTouch(): boolean {
+    return this.inputSections().touch;
+  }
+
+  private guideSpeech(): string {
+    const s = this.guide.step;
+    if (s === 1) return GUIDE_COPY.step1;
+    if (s === 2) return this.guideTouch() ? GUIDE_COPY.step2Touch : GUIDE_COPY.step2;
+    if (s === 3) return GUIDE_COPY.step3;
+    if (s === 4) return [GUIDE_COPY.step4, suggestionStore.size ? GUIDE_COPY.noteLetters.join('') : '', GUIDE_COPY.noteFree].filter(Boolean).join(' ');
+    return '';
+  }
+
+  /** The callout's words and buttons for the current step. */
+  private renderGuideContent() {
+    const s = this.guide.step;
+    const g = this.guideEl;
+    if (!g) return;
+    g.dataset.step = String(s);
+    const text = s === 1 ? GUIDE_COPY.step1 : s === 2 ? (this.guideTouch() ? GUIDE_COPY.step2Touch : GUIDE_COPY.step2) : s === 3 ? GUIDE_COPY.step3 : s === 4 ? GUIDE_COPY.step4 : '';
+    const t1 = g.querySelector<HTMLElement>('.gt1')!;
+    if (t1.textContent !== text) t1.textContent = text;
+    g.querySelector<HTMLElement>('[data-guide=skip]')!.hidden = s === 4; // step 4: Keep playing already does what Skip would
+    g.querySelector<HTMLElement>('.gfour')!.hidden = s !== 4;
+    g.querySelector<HTMLElement>('.gnote')!.hidden = s !== 4;
+    g.querySelector<HTMLElement>('.gletters')!.hidden = !suggestionStore.size;
+    const next = g.querySelector<HTMLElement>('[data-guide=next]')!;
+    const hide = !(this.guideNext && s > 0 && s < 4);
+    if (hide && next.contains(this.shadowRoot!.activeElement)) g.querySelector<HTMLElement>(s === 4 ? '[data-guide=keep]' : '[data-guide=skip]')!.focus();
+    next.hidden = hide;
+  }
+
+  private onGuideClick(e: MouseEvent) {
+    const act = (e.target as HTMLElement).closest<HTMLElement>('button[data-guide]')?.dataset.guide;
+    if (!act) return;
+    if (act === 'next') this.setGuide(nextStep(this.guide, this.guideWorld()));
+    else if (act === 'skip') this.skipGuide();
+    else if (act === 'off') {
+      writeGuideOff(() => localStorage); // if storage fails, it still ends for this visit
+      this.setGuide(endGuide());
+      this.say('Guide turned off. Show it again from Controls.');
+    } else if (act === 'keep') {
+      this.setGuide(endGuide());
+      this.say('Guide closed.');
+    } else if (act === 'fresh') {
+      this.selection = [];
+      const had = this.composition.clear(); // ONE undoable step
+      this.setGuide(endGuide());
+      this.say(had ? 'Board cleared. Undo brings it back.' : 'Guide closed.');
+    }
+  }
+
+  private scheduleGuide() {
+    if (!this.guideEl || this.guideFrame || !this.guide.step) return;
+    this.guideFrame = requestAnimationFrame(() => {
+      this.guideFrame = 0;
+      this.syncGuide();
+    });
+  }
+
+  /** The visible board, minus a margin (and the safe-area insets that overlap it), clipped to the window: the callout stays inside it. */
+  private guideBounds(): Rect {
+    const b = this.boardEl.getBoundingClientRect();
+    const cs = this.rootEl.style;
+    const px = (v: string) => parseFloat(cs.getPropertyValue(v)) || 0;
+    const m = 8;
+    const vw = document.documentElement.clientWidth || window.innerWidth, vh = window.innerHeight;
+    const left = Math.max(b.left + m + (this.isLandscape ? 0 : px('--sal')), m);
+    const top = Math.max(b.top + m + px('--sat'), m);
+    const right = Math.min(b.right - m - px('--sar'), vw - m);
+    const bottom = Math.min(b.bottom - m - (this.isLandscape ? px('--sab') : 0), vh - m);
+    return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
+  }
+
+  /** The controls the callout must not cover: the dock panels, the notice and the piece action bar. */
+  private guideObstacles(): Rect[] {
+    const out: Rect[] = [];
+    const shown = (e: HTMLElement) => !e.hidden && !e.closest('[hidden]') && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
+    for (const e of [...this.dockEl.querySelectorAll<HTMLElement>(':scope > .panel'), this.noticeEl, this.actions]) if (shown(e)) out.push(toRect(e.getBoundingClientRect()));
+    return out.filter((r) => r.w > 0 && r.h > 0);
+  }
+
+  /** What the current step points at, what else it must leave visible, and which sides to try. */
+  private guideTargets(bounds: Rect): { target: Rect | null; avoid: Rect[]; prefer: Exclude<CalloutSide, 'centre'>[]; piece?: string }[] {
+    const s = this.guide.step;
+    const visible = (r: Rect) => r.w > 0 && r.x + r.w / 2 >= bounds.x && r.x + r.w / 2 <= bounds.x + bounds.w && r.y + r.h / 2 >= bounds.y && r.y + r.h / 2 <= bounds.y + bounds.h;
+    if (s === 1) {
+      return [{ target: toRect(this.trayEl.getBoundingClientRect()), avoid: [], prefer: this.isLandscape ? ['right', 'above', 'below'] : ['above', 'right', 'left', 'below'] }];
+    }
+    if (s === 2 && this.selection.length) {
+      const hit = this.overlay.querySelector<SVGElement>('[data-handle] circle');
+      const box = this.overlay.querySelector<SVGElement>('[data-selection-box] rect');
+      const t = hit ? toRect(hit.getBoundingClientRect()) : null;
+      if (t && visible(t)) return [{ target: t, avoid: box ? [toRect(box.getBoundingClientRect())] : [], prefer: ['above', 'right', 'left', 'below'] }];
+    }
+    const board = { target: null, avoid: [], prefer: [] }; // the board itself: centred, no arrow
+    if (s === 3) {
+      // Black pieces in view, the newest first (the first one the callout fits beside wins; a few at most).
+      const out: ReturnType<FridgeFace['guideTargets']> = [];
+      const pieces = this.composition.pieces;
+      for (let i = pieces.length - 1; i >= 0 && out.length < 8; i--) {
+        if (SHAPE_BY_ID.get(pieces[i].shapeId)?.polarity !== 'positive') continue;
+        const g = this.els.get(pieces[i].id)?.g.querySelector('.bd');
+        const r = g ? toRect(g.getBoundingClientRect()) : null;
+        if (r && visible(r)) out.push({ target: r, avoid: [], prefer: ['above', 'below', 'right', 'left'], piece: pieces[i].id });
+      }
+      return [...out, board];
+    }
+    return [board];
+  }
+
+  /** Show, fill and place the callout, or hide it while a sheet, dialog or menu is open or a piece is in the hand. */
+  private syncGuide() {
+    const g = this.guideEl;
+    const s = this.guide.step;
+    const busy = !!(this.moving?.moved || this.rotating || this.twist || this.trayDrag?.active || this.boxSel?.active);
+    const show = s > 0 && !this.helpOpen && !this.suggOpen && !this.menuOpen && !busy && !this.introAnims.length && this.boardEl.clientWidth > 0;
+    if (!show) {
+      if (!g.hidden) g.hidden = true;
+      return;
+    }
+    const bounds = this.guideBounds();
+    const host = this.getBoundingClientRect();
+    if (g.hidden) g.hidden = false;
+    g.style.left = '0px';
+    g.style.top = '0px';
+    const obstacles = this.guideObstacles();
+    // Prefer empty board: every piece's bounds, with a margin of breathing room (people press just beside pieces too),
+    // so the callout covers as few as it can.
+    const M = 24;
+    const pieces = [...this.els.values()].map((e) => {
+      const r = toRect(e.g.querySelector('.bd')!.getBoundingClientRect());
+      return { x: r.x - M, y: r.y - M, w: r.w + 2 * M, h: r.h + 2 * M };
+    });
+    // Phones: a narrow callout (at most about 45% of the board in landscape). When a narrower one would cover less of the
+    // pieces, it narrows (taller, but clear of them).
+    const bw = this.boardEl.getBoundingClientRect().width;
+    const widths = this.isLandscape ? [0.45, 0.37, 0.3].map((f) => Math.max(190, Math.round(bw * f))) : this.isCompact ? [Math.round(Math.min(300, bw - 32)), 240] : [0];
+    const options = this.guideTargets(bounds);
+    let best: { w: number; pick: (typeof options)[number]; p: ReturnType<typeof placeCallout>; n: number; a: number } | null = null;
+    for (const w of widths) {
+      g.style.maxWidth = w ? `${w}px` : '';
+      const size = { w: g.offsetWidth, h: g.offsetHeight };
+      let pick = options[options.length - 1];
+      let p = placeCallout(size, pick.target, bounds, obstacles, pick.prefer, pick.avoid, pieces);
+      for (const o of options) {
+        const q = placeCallout(size, o.target, bounds, obstacles, o.prefer, o.avoid, pieces);
+        if (q.side !== 'centre' || !o.target) {
+          pick = o;
+          p = q;
+          break;
+        }
+      }
+      const c = coverage({ x: p.x, y: p.y, w: size.w, h: size.h }, pieces);
+      const better = !best || (pick.target && !best.pick.target) || (!!pick.target === !!best.pick.target && (c.n < best.n || (c.n === best.n && c.a < best.a * 0.8)));
+      if (better) best = { w, pick, p, n: c.n, a: c.a };
+      if (!c.n) break; // clear of every piece: no need to narrow further
+    }
+    g.style.maxWidth = best!.w ? `${best!.w}px` : '';
+    const { pick, p } = best!;
+    const { target, piece } = pick;
+    g.dataset.side = p.side;
+    g.dataset.target = s === 1 ? 'tray' : target ? (s === 2 ? 'handle' : 'piece') : 'board';
+    if (piece) g.dataset.piece = piece;
+    else delete g.dataset.piece;
+    g.style.setProperty('--ga', `${Math.round(p.arrow)}px`);
+    g.style.left = `${Math.round(p.x - host.left)}px`;
+    g.style.top = `${Math.round(p.y - host.top)}px`;
+    if (this.guideFocusOnShow) {
+      this.guideFocusOnShow = false;
+      g.querySelector<HTMLElement>('.grow:not([hidden]) button:not([hidden])')?.focus();
+    }
+  }
+}
+
+function toRect(r: DOMRect): Rect {
+  return { x: r.left, y: r.top, w: r.width, h: r.height };
 }
 
 if (!customElements.get('fridge-face')) customElements.define('fridge-face', FridgeFace);

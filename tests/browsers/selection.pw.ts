@@ -231,6 +231,12 @@ test.describe('desktop', () => {
     await page.keyboard.press('n'); // N / P select ONE piece
     expect((await selected(page)).length).toBe(1);
     await page.keyboard.press('Control+a');
+    // With the onboarding guide showing (FF_GUIDE=on), Escape skips the guide before it deselects (by design): skip it first.
+    const skip = page.locator('fridge-face .guide [data-guide=skip]');
+    if (await skip.isVisible()) {
+      await page.keyboard.press('Escape');
+      await expect(skip).toBeHidden();
+    }
     await page.keyboard.press('Escape');
     expect(await selected(page)).toEqual([]);
     await expect(live(page)).toContainText('Selection cleared.');

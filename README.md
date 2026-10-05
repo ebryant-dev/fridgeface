@@ -6,7 +6,7 @@ Fridgeface is a modular typeface built from just five shapes. Black shapes add f
 
 Design and concept by [Edward Hamel](https://www.edwardbryanthamel.com). The domain glossary is in [CONTEXT.md](CONTEXT.md) and architecture decisions are in [docs/adr/](docs/adr/).
 
-Status: v0.5.2 (the help panel is now "Controls": it lists Touch, Mouse and trackpad, and Keyboard sections, showing only the input methods the device has, with a "Show all controls" button for the rest). v0.5.0 (multi-select: a drag on the empty board draws a selection box with the mouse, Shift adds, Shift+click adds or removes one piece, Ctrl/Cmd+A selects all; on touch, one finger still pans, a long-press on the empty board then a drag draws the box, a long-press on a piece adds or removes it; a selection moves, rotates (handle, twist, `,` `.`), nudges and deletes as one rigid unit and one undo step; bring forward / send backward now pass the next piece the selection actually overlaps, for single pieces too). v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
+Status: v1.1.0 (an onboarding guide: four learn-by-doing callouts on the real UI, shown on every visit; see "The guide" below; `no-guide` turns it off). v1.0.0 was the first production release. v0.5.2 (the help panel is now "Controls": it lists Touch, Mouse and trackpad, and Keyboard sections, showing only the input methods the device has, with a "Show all controls" button for the rest). v0.5.0 (multi-select: a drag on the empty board draws a selection box with the mouse, Shift adds, Shift+click adds or removes one piece, Ctrl/Cmd+A selects all; on touch, one finger still pans, a long-press on the empty board then a drag draws the box, a long-press on a piece adds or removes it; a selection moves, rotates (handle, twist, `,` `.`), nudges and deletes as one rigid unit and one undo step; bring forward / send backward now pass the next piece the selection actually overlaps, for single pieces too). v0.4.0 (rotation is free, as a magnet turns by hand: no snap toggle, no 15 degree buttons or step keys; on phones in landscape the tray is a vertical column along the left edge; the Letters icon is now "abc"; the board's fridge texture is a little lighter, the tray's colour is unchanged). v0.3.1 (on phones the button docks moved to the top of the board and the piece action bar to the bottom, just above the tray; the standalone page puts its credit under the tray; desktop is unchanged). v0.3.0 (on phones, share, download, letters and keyboard shortcuts move into a hamburger menu; desktop is unchanged). v0.2.0 (word compositions in author mode and the suggestions panel; the compact phone layout no longer depends on CSS container queries, and a Chromium + WebKit browser suite guards it). v0.1.0 was the first release, built up over chunks 5 to 10 (chunk 8: letter suggestions, dev-only author mode and the "play" intro; chunk 9: keyboard, screen-reader and mobile hardening; chunk 7: place, select, move, rotate, delete and restack pieces; pan and zoom the infinite board; undo/redo, clear board and auto-save; share link and PNG/SVG export; Fridgeface's visual identity: fridge-door texture, magnet shadows, Jost type).
 
 © Edward Hamel. All rights reserved (`UNLICENSED`), except the bundled typeface below.
 
@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v1.0.0"
+npm install "github:ebryant-dev/fridgeface#v1.1.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v1.0.0"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v1.1.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
@@ -37,6 +37,7 @@ import 'fridgeface'; // registers <fridge-face>
 - The import touches `customElements` and `HTMLElement`, so run it in the browser only (in Astro: a `<script>` in the page or a client-side island, not frontmatter).
 - `share-base`: the page that share links open. Default: the current URL without its hash.
 - `no-intro`: skip the first-visit "play" animation.
+- `no-guide`: never show the onboarding guide (and hide "Show guide" in the Controls panel). Adding it while the guide is showing ends it.
 - Size: the element needs a definite size (see Embedding below). It is `display: block; width: 100%; height: 100%`, so give its parent a height or size it directly.
 - Everything (styles, texture, the Jost subset) ships inside the one JS file. Nothing else to load.
 
@@ -94,6 +95,22 @@ A **suggestion** is one way to build a letter or a word. There is never a single
 - **Word layout** (`layoutWord` in `src/suggestions.ts`) puts constructions left to right on one baseline, each separated by the previous one's rotated bounds plus a gap of 60 board units (about one positive-stem width).
 - **"play" intro:** on a first visit only (no auto-saved composition, no share link), the word "play" slides in from the tray in at most 1.5 seconds. If `word-play-1.json` exists, that word composition is used exactly as built (centred); otherwise, when `lower-p-1`, `lower-l-1`, `lower-a-1` and `lower-y-1` all exist, those letters are set side by side (the fallback). With neither, there is no intro. It is a normal, editable composition, not in undo history, and auto-saved. Any pointer or key input finishes it at once; with reduced motion it just appears. Add the `no-intro` attribute to `<fridge-face>` to switch it off.
 
+## The guide
+
+A learn-by-doing onboarding guide (`src/guide.ts`, pure and unit-tested; drawn by `main.ts`). Each step is a small flat black-and-white callout in Jost caps with a pointer toward the real UI, and it moves on when the visitor actually does the thing:
+
+1. Points at the tray: "Drag a shape from the tray onto the board." Done when the piece count rises above its lowest point since the step began, by any add method (tray drag or tap, keys 1-5, a suggestion).
+2. Points at the selected piece's rotate handle (selecting the piece just added if nothing is selected; otherwise the board): "Drag the round handle to turn it." On touch devices (the Controls panel's detection) it reads "Drag the round handle to turn it, or twist with two fingers." Done when any piece's rotation changes, by handle, twist or keys.
+3. Points at a black piece on the board: "White shapes cut into black. Drop one on top of a black shape." Done only when a NEW pair appears where a negative piece overlaps a positive piece (real geometry, `piecesOverlap`) and sits above it in the stacking order. Pairs already there when the step began (the intro's "play" has some) do not count; one that is broken and made again does.
+4. Centred on the board: "Now try making your name." **Start fresh** clears the board as one undoable step; **Keep playing** ends the guide (so there is no Skip here; a small, secondary **Don't show again** stays). Under them: "Need ideas? Open Letters (abc). There's no wrong way." with the Letters icon for "abc" (the Letters part is hidden when there are no suggestions).
+
+- **When:** on every visit, share links included, right after the intro (at once when there is none: reduced motion, `no-intro`, a returning visitor). Never in dev author mode, never with `no-guide`.
+- **Every step** (step 4: only Don't show again): **Skip** (ends it for this visit) and **Don't show again** (stores `fridgeface:guide:v1` = `off` in localStorage; every access is wrapped in try/catch and a storage failure reads as not set). After about 10 seconds on a step a **Next** button appears. **Show guide** in the Controls panel (in every section state) closes the panel and replays from step 1, even when "Don't show again" is set, without unsetting it.
+- **Interaction:** only the callout itself takes pointer events. It stays inside the visible board and the viewport, never covers its target, the dock panels, the notice or the piece action bar, prefers a side where its pointer is level with the target and, among spots near the target, the one covering the fewest pieces (empty board over pieces), and follows resizes, rotation, pan and zoom and selection changes. It hides while a piece is being dragged or turned and while the Letters sheet, the phone menu or the Controls dialog is open, and comes back after. Loads (share links, `loadComposition`) and undo/redo re-baseline the current step instead of counting as doing it.
+- **Phones:** a compact callout (smaller type, Skip / Don't show again as one small row whose hit areas keep 44 px touch targets), at most about 45% of the board wide in landscape, narrowing further when that keeps it off the pieces.
+- **Accessibility:** non-modal (it never takes focus on its own; "Show guide" moves focus into it, as asked); step text goes to the polite live region; its buttons are real buttons in the Tab order; `Esc` closes menus, sheets and dialogs first, then skips the guide, then deselects. With reduced motion the pointer does not move.
+- **Browser tests:** `tests/browsers/guide.pw.ts`. The older suites start with "Don't show again" stored (`storageState` in `playwright.config.ts`) because the callout sits on the board they click on; `FF_GUIDE=on npm run test:browsers` runs them with the guide showing, and they pass that way too.
+
 ### Author workflow (for Edward, no coding needed)
 
 Author mode exists only on the dev server and is not part of any build.
@@ -127,7 +144,7 @@ The board is one Tab stop; Tab and Shift+Tab always leave it. Shortcuts work whi
 | `C`, `E` | Copy the share link, open the export menu |
 | `L` | Show or hide letter suggestions (only when suggestions exist) |
 | `?` | Controls dialog (focus moves in, Tab stays inside, `Esc` closes and returns focus) |
-| `Esc` | Closes the innermost open thing first (export menu, clear confirm, share field), then deselects |
+| `Esc` | Closes the innermost open thing first (export menu, clear confirm, share field, letters, menu, Controls), then skips the guide if it is showing, then deselects |
 
 ### Selecting with the pointer and touch
 

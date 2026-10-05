@@ -11,6 +11,14 @@ const PORT = 5199;
 const iphone = devices['iPhone 15'];
 const iphoneLandscape = devices['iPhone 15 landscape'];
 const desktop = { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false };
+/**
+ * The onboarding guide shows on every visit. The suites written before it test other features, so they start with its
+ * "Don't show again" stored (FF_GUIDE=on runs them with the guide showing). `guide.pw.ts` clears this for itself.
+ */
+const guideOff = {
+  cookies: [],
+  origins: [{ origin: `http://localhost:${PORT}`, localStorage: [{ name: 'fridgeface:guide:v1', value: 'off' }] }],
+};
 
 export default defineConfig({
   testDir: 'tests/browsers',
@@ -20,7 +28,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   reporter: [['list']],
-  use: { baseURL: `http://localhost:${PORT}`, trace: 'off' },
+  use: { baseURL: `http://localhost:${PORT}`, trace: 'off', storageState: process.env.FF_GUIDE === 'on' ? undefined : guideOff },
   webServer: {
     command: `npx vite --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}/`,
