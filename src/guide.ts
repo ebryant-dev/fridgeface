@@ -10,6 +10,10 @@ import { activeIndices, clickIn, filledBy, needsTurning, type ClickResult, type 
  * 3. outline: the wedge, at its angle. 3a "drag it into place"; 3b (a wedge is close in position but needs turning) "turn it".
  * 4. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play.
  * 5. outlines: the whole word, every piece at once, filled in any order. Progress "N of M". Same turning hint as 3b.
+ *    Phones (v1.2.2, the compact layout): the word is filled one SECTION at a time (`sections`, split by sections.ts): only
+ *    the current section's outlines show and accept a piece. The current section is the first, left to right, with an
+ *    unfilled outline, so it too is derived from the board (undoing back into an earlier section makes it current again).
+ *    The progress still counts the whole word.
  * 6. no outline. "You made "create"." Start fresh or Keep it.
  *
  * Which step shows is DERIVED from the board every time (`observeGuide`): an outline is filled when a piece of its shape
@@ -96,11 +100,16 @@ export interface GuideState {
   filled: readonly (string | null)[];
   /** A piece close to an active outline of its shape but at the wrong angle (step 3b, or the same hint in step 5), or null. */
   turn: string | null;
+  /**
+   * The word phase on phones: the word's outlines split into sections (outline indices per section, left to right), filled
+   * one section at a time. null: every outline at once (desktop, and always outside the word phase).
+   */
+  sections: readonly (readonly number[])[] | null;
 }
 
 const NONE = Object.freeze([]) as readonly never[];
 export const GUIDE_IDLE: GuideState = Object.freeze({
-  step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, turn: null,
+  step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, turn: null, sections: null,
 }) as GuideState;
 
 /** Is the guide running (step 0's question included)? */
@@ -111,24 +120,40 @@ export function askGuide(): GuideState {
   return { ...GUIDE_IDLE, phase: 'ask' };
 }
 
-/** The outlines showing (and accepting a piece) in this state: one at a time in steps 1 to 3, every unfilled one in step 5. */
+/**
+ * The section being filled (phones, step 5): the first section, left to right, that still has an unfilled outline. -1 when
+ * there are no sections (desktop) or every outline is filled.
+ */
+export function currentSection(s: GuideState): number {
+  if (s.phase !== 'word' || !s.sections) return -1;
+  return s.sections.findIndex((sec) => sec.some((i) => !s.filled[i]));
+}
+
+/**
+ * The outlines showing (and accepting a piece) in this state: one at a time in steps 1 to 3, every unfilled one in step 5
+ * (on phones, every unfilled one of the current section), lowest index (bottom of the stacking order) first.
+ */
 export function activeOutlines(s: GuideState): number[] {
   if (s.phase === 'c' && s.step >= 1 && s.step <= 3) {
     const i = s.filled.findIndex((f) => !f);
     return i < 0 ? [] : [i];
   }
-  if (s.phase === 'word' && s.step === 5) return activeIndices(s.filled);
+  if (s.phase === 'word' && s.step === 5) {
+    if (!s.sections) return activeIndices(s.filled);
+    const k = currentSection(s);
+    return k < 0 ? [] : s.sections[k].filter((i) => !s.filled[i]).sort((a, b) => a - b);
+  }
   return [];
 }
 
-type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built'>;
-const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built });
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'sections'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, sections: s.sections });
 
 function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld, c: Carry): GuideState {
   const filled = filledBy(outlines, w.pieces);
   const first = filled.findIndex((f) => !f);
   const step: GuideStep = phase === 'c' ? (first < 0 ? 4 : (Math.min(first + 1, 3) as GuideStep)) : first < 0 ? 6 : 5;
-  const s: GuideState = { ...c, step, phase, outlines, filled, turn: null };
+  const s: GuideState = { ...c, sections: phase === 'word' ? c.sections : null, step, phase, outlines, filled, turn: null };
   const active = activeOutlines(s);
   // The turning hint: in step 3 (the wedge) and step 5 (any piece of the word).
   const turn = step === 3 || step === 5 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
@@ -137,7 +162,7 @@ function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld
 
 const same = (a: GuideState, b: GuideState) =>
   a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && a.filled.length === b.filled.length && a.filled.every((f, i) => f === b.filled[i])
-  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built;
+  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.sections === b.sections;
 
 /**
  * Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it.
@@ -145,7 +170,7 @@ const same = (a: GuideState, b: GuideState) =>
  */
 export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
   if (!cOutlines.length) return GUIDE_IDLE;
-  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE });
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, sections: null });
 }
 
 /**
@@ -203,10 +228,39 @@ export function observeGuide(s: GuideState, w: GuideWorld): GuideState {
   return same(s, next) ? s : next;
 }
 
-/** Step 4's Guide me: the word's outlines (already placed). Only from step 4. */
-export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld): GuideState {
+/**
+ * Step 4's Guide me: the word's outlines (already placed). Only from step 4. `sections` (phones): the outlines split into
+ * sections, filled one at a time (see `withSections`); null: the whole word at once.
+ */
+export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld, sections: readonly (readonly number[])[] | null = null): GuideState {
   if (s.step !== 4 || !wordOutlines.length) return s;
-  return derive('word', wordOutlines, w, carry(s));
+  return derive('word', wordOutlines, w, { ...carry(s), sections: validSections(sections, wordOutlines.length) });
+}
+
+/** Sections that cover every outline exactly once, or null (anything else falls back to the whole word at once). */
+function validSections(sections: readonly (readonly number[])[] | null, n: number): readonly (readonly number[])[] | null {
+  if (!sections || !sections.length) return null;
+  const seen = new Set<number>();
+  for (const sec of sections) {
+    if (!sec.length) return null;
+    for (const i of sec) {
+      if (!Number.isInteger(i) || i < 0 || i >= n || seen.has(i)) return null;
+      seen.add(i);
+    }
+  }
+  return seen.size === n ? sections : null;
+}
+
+/**
+ * The layout changed during the word phase (a phone rotated into, or a window resized out of, the compact layout): fill
+ * by sections, or the whole word at once (null). Nothing on the board changes, so every filled outline stays filled.
+ * Only in the word phase.
+ */
+export function withSections(s: GuideState, sections: readonly (readonly number[])[] | null, w: GuideWorld): GuideState {
+  if (s.phase !== 'word') return s;
+  const next = validSections(sections, s.outlines.length);
+  if (next === s.sections) return s;
+  return derive('word', s.outlines, w, { ...carry(s), sections: next });
 }
 
 /** Skip, Don't show again, Clear for free play, Start fresh, Keep it (and step 0's Skip / Don't show again). */
@@ -325,6 +379,37 @@ export function frameBeside(
   x = fit(outlines.x, outlines.w, view.x, view.w, x);
   y = fit(outlines.y, outlines.h, view.y, view.h, y);
   return { x, y, zoom, both };
+}
+
+/**
+ * Phones, the word by sections: the largest free part of `area` (screen px) to frame content of `size` in. Each blocker
+ * (the callout, the action bar) that cuts into the area leaves four candidate strips (left of, right of, above or below
+ * it); every combination is tried and the one that shows the content largest (`scale`: screen px per content unit, less
+ * `pad` on each side) wins. Ties: the first found (blockers in order; left, right, above, below). With no blockers the
+ * whole area. Pure.
+ */
+export function freeRect(size: { w: number; h: number }, area: Rect, blockers: readonly Rect[], pad = 0): { rect: Rect; scale: number } {
+  const scaleOf = (r: Rect) => Math.min((r.w - 2 * pad) / Math.max(1e-6, size.w), (r.h - 2 * pad) / Math.max(1e-6, size.h));
+  let best: { rect: Rect; scale: number } = { rect: area, scale: -Infinity };
+  const walk = (r: Rect, i: number) => {
+    if (r.w <= 2 * pad || r.h <= 2 * pad) return;
+    const hit = blockers.slice(i).findIndex((q) => rectsOverlap(r, q));
+    if (hit < 0) {
+      const sc = scaleOf(r);
+      if (sc > best.scale + 1e-9) best = { rect: r, scale: sc };
+      return;
+    }
+    const q = blockers[i + hit];
+    const right = r.x + r.w, bottom = r.y + r.h;
+    for (const c of [
+      { x: r.x, y: r.y, w: q.x - r.x, h: r.h }, // left of it
+      { x: q.x + q.w, y: r.y, w: right - (q.x + q.w), h: r.h }, // right of it
+      { x: r.x, y: r.y, w: r.w, h: q.y - r.y }, // above it
+      { x: r.x, y: q.y + q.h, w: r.w, h: bottom - (q.y + q.h) }, // below it
+    ]) walk(c, i + hit + 1);
+  };
+  walk(area, 0);
+  return best.scale === -Infinity ? { rect: area, scale: scaleOf(area) } : best;
 }
 
 // ---- when it shows -------------------------------------------------------------------------------------------

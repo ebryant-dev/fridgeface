@@ -22,7 +22,7 @@ type FF = HTMLElement & {
   getShareUrl(): Promise<string>;
   getView(): { x: number; y: number; zoom: number };
   composition: { pieces: P[] };
-  guide: { step: number; outlines: O[]; filled: (string | null)[]; turn: string | null };
+  guide: { step: number; outlines: O[]; filled: (string | null)[]; turn: string | null; sections: number[][] | null };
 };
 
 const SHOT = '.playwright-mcp';
@@ -39,7 +39,7 @@ const pieces = (page: Page) => page.evaluate(() => (document.querySelector('frid
 const pieceCount = async (page: Page) => (await pieces(page)).length;
 const state = (page: Page) => page.evaluate(() => {
   const g = (document.querySelector('fridge-face') as FF).guide;
-  return { step: g.step, filled: [...g.filled], turn: g.turn, outlines: g.outlines.map((o) => ({ ...o })) };
+  return { step: g.step, filled: [...g.filled], turn: g.turn, outlines: g.outlines.map((o) => ({ ...o })), sections: g.sections };
 });
 const stored = (page: Page) => page.evaluate(() => localStorage.getItem('fridgeface:guide:v2'));
 const frames = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
@@ -168,7 +168,15 @@ async function checkCallout(page: Page, label: string) {
     else if (kind === 'handle') target = rect(sr.querySelector('[data-handle] circle')!);
     else if (kind === 'piece') target = rect(sr.querySelector(`[data-piece-id="${g.dataset.piece}"] .bd`)!);
     const controls = [...sr.querySelectorAll<HTMLElement>('.dock > .panel, .actions')].filter(shown).map((e) => ({ name: e.className, r: rect(e) }));
-    const outlines = [...sr.querySelectorAll('[data-outline]')].map(rect);
+    // An outline's box from its real geometry on screen (a rotated SVG element's own box overstates it), dots included.
+    const outlines = [...sr.querySelectorAll<SVGGElement>('[data-outline]')].map((g) => {
+      const geom = g.querySelector<SVGGeometryElement>('path, polygon')!;
+      const ctm = geom.getScreenCTM()!;
+      const len = geom.getTotalLength();
+      const pts = Array.from({ length: 96 }, (_, i) => geom.getPointAtLength((len * i) / 96)).map((q) => new DOMPoint(q.x, q.y).matrixTransform(ctm));
+      const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y), m = 1.5;
+      return { x: Math.min(...xs) - m, y: Math.min(...ys) - m, w: Math.max(...xs) - Math.min(...xs) + 2 * m, h: Math.max(...ys) - Math.min(...ys) + 2 * m };
+    });
     const turn = ff.guide.turn ? sr.querySelector(`[data-piece-id="${ff.guide.turn}"] .bd`) : null;
     const arrow = sr.querySelector('.gpt')!;
     return {
@@ -332,6 +340,7 @@ test('step 4 without word-create-1: "That\'s a c." and only Clear for free play,
 });
 
 test('the REAL word-create-1 (32 pieces) on a blank board: Guide me, fill every outline in a shuffled order (stacking order fixed), step 6, Start fresh, one undo restores', async ({ page, isMobile }, info) => {
+  test.skip(isMobile, 'phones fill the word one section at a time (the section tests below)');
   test.setTimeout(300_000);
   const errors = collectErrors(page);
   await open(page, '/?n=w');
@@ -933,11 +942,13 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: only the c goes, "create" b
   const total = await realCreate(page);
   await expect(el(page, '.guide .gt2')).toHaveText(`0 of ${total}`);
   await expectBeside(page, left);
+  await settled(page); // phones: the view glides to the first section
   await checkCallout(page, 'keep, step 5');
   // A few outlines filled by hand (drag + turn when needed).
   for (let n = 0; n < 3; n++) {
+    await settled(page);
     const s = await state(page);
-    const i = s.filled.findIndex((f) => !f);
+    const i = Math.min(...s.outlines.map((_, j) => j).filter((j) => !s.filled[j] && (!s.sections || s.sections.find((sec) => sec.some((q) => !s.filled[q]))!.includes(j))));
     const before = await pieceCount(page);
     await dropNear(page, i);
     await expect.poll(() => pieceCount(page)).toBe(before + 1);
@@ -994,4 +1005,200 @@ test('axe: no violations at step 0', async ({ page, browserName }) => {
     return r.violations.map((x) => `${x.id} (${x.nodes.length})`);
   });
   expect(v).toEqual([]);
+});
+
+// ---- phones (v1.2.2): the word one section at a time ------------------------------------------------------------
+
+/** The REAL word-create-1's sections (src/sections.test.ts snapshots the same split from the shapes' frames). */
+const CREATE_SECTIONS = [[1, 0, 2, 7, 4], [5, 3, 6, 8, 9], [10, 11, 13, 14, 12], [15, 24, 16, 17, 19, 18], [20, 22, 23, 21], [26, 28, 31], [25, 30, 29, 27]];
+
+/** Wait until the view is still: no section framing pending, no glide running. */
+async function settled(page: Page) {
+  await frames(page);
+  await page.waitForFunction(() => {
+    const f = document.querySelector('fridge-face') as unknown as { viewGlide: number; wordFitPending: unknown };
+    return !f.viewGlide && !f.wordFitPending;
+  });
+  await frames(page);
+}
+
+/** The outlines showing (their indices), and the smallest of them on screen (a shape's shorter side, CSS px). */
+async function shown(page: Page) {
+  return page.evaluate(async () => {
+    const ff = document.querySelector('fridge-face') as FF;
+    const sr = ff.shadowRoot!;
+    const k = parseFloat(getComputedStyle(sr.querySelector('.board')!).getPropertyValue('--k'));
+    const { SHAPES } = await import(/* @vite-ignore */ '/src/shapes.ts' as string);
+    const idx = [...sr.querySelectorAll<SVGGElement>('[data-outline]')].map((g) => Number(g.dataset.outline));
+    let min = Infinity;
+    for (const i of idx) {
+      const u = (SHAPES as { id: string; uprightBox: { w: number; h: number } }[]).find((x) => x.id === ff.guide.outlines[i].shapeId)!.uprightBox;
+      min = Math.min(min, Math.min(u.w, u.h) * ff.getView().zoom * k);
+    }
+    return { idx: idx.sort((a, b) => a - b), min };
+  });
+}
+
+/** Into step 5 on a blank board: the c by Next (it is tested above), then Guide me. */
+async function toWord(page: Page, isMobile: boolean) {
+  await open(page, '/?n=sec');
+  await page.evaluate(() => {
+    const ff = document.querySelector('fridge-face') as unknown as { guideNextFill(): void };
+    for (let i = 0; i < 3; i++) ff.guideNextFill();
+  });
+  await expect(guide(page)).toHaveAttribute('data-step', '4');
+  await press(isMobile, gbtn(page, 'word'));
+  await expect(guide(page)).toHaveAttribute('data-step', '5');
+  await expect.poll(() => pieceCount(page)).toBe(0);
+}
+
+/** Fill outline `i` by hand: drop it close from the tray, turn it in with the handle when it needs turning. */
+async function fillByHand(page: Page, i: number) {
+  const before = await pieceCount(page);
+  await dropNear(page, i);
+  await expect.poll(() => pieceCount(page)).toBe(before + 1);
+  const s = await state(page);
+  if (!s.filled[i]) {
+    expect(s.turn, `outline ${i} needs turning`).not.toBeNull();
+    await turnTo(page, s.turn!, s.outlines[i].rotation, -4);
+    await expect.poll(async () => (await state(page)).filled[i], `outline ${i} filled`).not.toBeNull();
+  }
+}
+
+test('phones: the REAL create, section by section (shuffled within each): only the current section shows, the view reframes, targets stay big, the final stacking order is the word\'s', async ({ page, isMobile }, info) => {
+  test.skip(!isMobile, 'desktop shows the whole word at once (the test above)');
+  test.setTimeout(400_000);
+  const errors = collectErrors(page);
+  await toWord(page, isMobile);
+  const total = await realCreate(page);
+  const sections = await page.evaluate(() => (document.querySelector('fridge-face') as FF).guide.sections);
+  expect(sections, 'the split of the real word').toEqual(CREATE_SECTIONS);
+  const landscape = info.project.name.endsWith('landscape');
+  const nm = NAMES[info.project.name];
+  const mins: string[] = [];
+  let lastView: { x: number; y: number; zoom: number } | null = null;
+  let done = 0;
+  let seed = 11;
+  for (let k = 0; k < CREATE_SECTIONS.length; k++) {
+    await settled(page);
+    const sec = CREATE_SECTIONS[k];
+    const sh = await shown(page);
+    expect(sh.idx, `section ${k + 1}: only its outlines show`).toEqual([...sec].sort((a, b) => a - b));
+    await expect(el(page, '.guide .gt1')).toHaveText('Fill in the outlines to spell "create".');
+    await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
+    const view = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
+    if (lastView) expect(view.x !== lastView.x || view.y !== lastView.y || view.zoom !== lastView.zoom, `section ${k + 1}: the view moved to it`).toBe(true);
+    lastView = view;
+    mins.push(sh.min.toFixed(1));
+    // The aim is 24 px (the framing zooms in that far whenever the callout, its turning hint and the action bar can stay
+    // clear). The tallest sections (about 750 board units of stems and wedges) cannot: about 18 to 20 px in portrait and
+    // 17 to 19 in landscape, where the board is only ~330 px tall. Sections without stems are far larger.
+    expect(sh.min, `section ${k + 1}: the thinnest target`).toBeGreaterThanOrEqual(landscape ? 17 : 18);
+    await checkCallout(page, `section ${k + 1}`);
+    if (nm === 'wk-iphone' && (k === 0 || k === 2)) await page.screenshot({ path: `${SHOT}/g4-section${k + 1}-wk-iphone.png` });
+    if (nm === 'wk-iphone-landscape' && k === 0) await page.screenshot({ path: `${SHOT}/g4-section1-wk-iphone-landscape.png` });
+    // A shuffled order within the section (fixed seed).
+    const order = [...sec];
+    for (let j = order.length - 1; j > 0; j--) {
+      seed = (seed * 9301 + 49297) % 233280;
+      const r = Math.floor((seed / 233280) * (j + 1));
+      [order[j], order[r]] = [order[r], order[j]];
+    }
+    for (let n = 0; n < order.length; n++) {
+      if (n) await settled(page);
+      await fillByHand(page, order[n]);
+      done++;
+      if (done < total) await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
+    }
+    // Earlier sections' pieces stay as real pieces on the board.
+    expect(await pieceCount(page)).toBe(done);
+  }
+  info.annotations.push({ type: 'smallest target per section', description: mins.join(', ') + ' CSS px' });
+  console.log(`[${info.project.name}] smallest target per section: ${mins.join(', ')} CSS px`);
+  await expect(guide(page)).toHaveAttribute('data-step', '6');
+  await settled(page);
+  const s = await state(page);
+  const ps = await pieces(page);
+  expect(ps.map((p) => s.outlines.findIndex((o) => onOutline(p, o))), 'every piece on its outline, in the word\'s stacking order').toEqual(s.outlines.map((_, i) => i));
+  // The finished word is framed: every piece in view.
+  const inView = await page.evaluate(() => {
+    const sr = document.querySelector('fridge-face')!.shadowRoot!;
+    const b = sr.querySelector('.board')!.getBoundingClientRect();
+    return [...sr.querySelectorAll('[data-pieces] > [data-piece-id] .bd')].every((e) => {
+      const r = e.getBoundingClientRect();
+      return r.left >= b.left - 1 && r.right <= b.right + 1 && r.top >= b.top - 1 && r.bottom <= b.bottom + 1;
+    });
+  });
+  expect(inView, 'the finished word is framed').toBe(true);
+  await checkCallout(page, 'step 6 (phone)');
+  if (nm === 'wk-iphone') await page.screenshot({ path: `${SHOT}/g4-done-wk-iphone.png` });
+  expect(errors).toEqual([]);
+});
+
+test('phones: undo back across a section boundary returns the view to that section; Next places the current section\'s next piece', async ({ page, isMobile }) => {
+  test.skip(!isMobile, 'phones only');
+  test.setTimeout(120_000);
+  await toWord(page, isMobile);
+  // Fill section 1 with Next (one undoable step each): Next always fills the CURRENT section's lowest outline.
+  for (let n = 0; n < CREATE_SECTIONS[0].length; n++) {
+    await settled(page);
+    const before = await state(page);
+    const want = Math.min(...CREATE_SECTIONS[0].filter((i) => !before.filled[i]));
+    await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { guideNextFill(): void }).guideNextFill());
+    await expect.poll(async () => (await state(page)).filled[want], `Next filled outline ${want}`).not.toBeNull();
+  }
+  await settled(page);
+  expect((await shown(page)).idx, 'section 2 now').toEqual([...CREATE_SECTIONS[1]].sort((a, b) => a - b));
+  const v2 = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
+  await press(isMobile, el(page, '[data-history=undo]'));
+  await settled(page);
+  const back = await shown(page);
+  expect(back.idx, 'back in section 1, its last outline showing').toHaveLength(1);
+  expect(CREATE_SECTIONS[0]).toContain(back.idx[0]);
+  const v1 = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
+  expect(v1.x !== v2.x || v1.y !== v2.y || v1.zoom !== v2.zoom, 'the view went back to section 1').toBe(true);
+  await checkCallout(page, 'undone into section 1');
+  await press(isMobile, el(page, '[data-history=redo]'));
+  await settled(page);
+  expect((await shown(page)).idx).toEqual([...CREATE_SECTIONS[1]].sort((a, b) => a - b));
+});
+
+test('rotating or resizing mid-step switches modes without losing progress (portrait, landscape, desktop and back)', async ({ page, isMobile }, info) => {
+  test.skip(info.project.name.endsWith('landscape'), 'portrait and desktop start points cover both directions');
+  test.setTimeout(120_000);
+  const start = page.viewportSize()!;
+  if (!isMobile) await page.setViewportSize({ width: 393, height: 760 }); // a phone-sized window: the compact layout
+  await toWord(page, isMobile);
+  await settled(page);
+  // Two pieces of section 1 by hand.
+  for (const i of [1, 0]) {
+    await fillByHand(page, i);
+    await settled(page);
+  }
+  const progress = async () => (await state(page)).filled.filter(Boolean).length;
+  expect(await progress()).toBe(2);
+  const sec1Rest = CREATE_SECTIONS[0].filter((i) => i !== 0 && i !== 1).sort((a, b) => a - b);
+  const sizes = [
+    { name: 'landscape', w: 852, h: 393, sections: true },
+    { name: 'desktop', w: 1280, h: 800, sections: false },
+    { name: 'portrait', w: 393, h: 760, sections: true },
+  ];
+  for (const z of sizes) {
+    await page.setViewportSize({ width: z.w, height: z.h });
+    await expect.poll(async () => !!(await page.evaluate(() => (document.querySelector('fridge-face') as FF).guide.sections)), `${z.name}: sections ${z.sections ? 'on' : 'off'}`).toBe(z.sections);
+    await settled(page);
+    expect(await progress(), `${z.name}: progress kept`).toBe(2);
+    await expect(el(page, '.guide .gt2')).toHaveText('2 of 32');
+    const sh = await shown(page);
+    if (z.sections) expect(sh.idx, `${z.name}: still section 1`).toEqual(sec1Rest);
+    else expect(sh.idx, `${z.name}: the whole word at once`).toHaveLength(30);
+    await checkCallout(page, `after switching to ${z.name}`);
+  }
+  // Pieces placed before the switches are still valid: finishing section 1 moves on to section 2.
+  for (const i of sec1Rest) {
+    await fillByHand(page, i);
+    await settled(page);
+  }
+  expect((await shown(page)).idx).toEqual([...CREATE_SECTIONS[1]].sort((a, b) => a - b));
+  await page.setViewportSize(start);
 });

@@ -16,10 +16,12 @@ import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } fro
 import { icon } from './icons';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideSpot, chooseWord, coverage, endGuide,
-  frameBeside, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextOutline, observeGuide, placeCallout,
-  readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type CalloutSide, type GuideState, type GuideWorld, type Rect,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideSpot, chooseWord, coverage,
+  currentSection, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextOutline,
+  observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type CalloutSide, type GuideState,
+  type GuideWorld, type Rect,
 } from './guide';
+import { splitSections } from './sections';
 import { filledBy, outlinesAt, stackFix, type Outline } from './outline';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
@@ -81,6 +83,14 @@ const GUIDE_FRAME_PAD = 32;
 const GUIDE_BESIDE_MARGIN = 0.5;
 /** A piece clicking into its outline settles there over this long, ms (no motion with reduced motion). */
 const SETTLE_MS = 170;
+/** Phones, the word by sections: CSS px of air kept around the framed section. */
+const SECTION_FRAME_PAD = 8;
+/** Phones, the word by sections: the thinnest current target (a shape's shorter side) should be at least this many CSS px. */
+const SECTION_MIN_TARGET = 24;
+/** Phones, the word by sections: a framed section never zooms past this multiple of the comfortable scale. */
+const SECTION_MAX_COMFORT = 4;
+/** Phones, the word by sections: the view glides to the next section over this long, ms (instantly with reduced motion). */
+const SECTION_GLIDE_MS = 450;
 const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 const STYLES = `
@@ -566,7 +576,14 @@ export class FridgeFace extends HTMLElement {
   private guideLoading = false; // a load is replacing the board: judged once, after it
   private guideFocusOnShow = false; // a replay from Controls moves focus into the callout once it shows
   private guideQueued = false; // the guide waits for the board to be laid out (its outlines are centred in it)
-  private wordFitPending = false; // step 5: frame the word's outlines beside the callout, once it can be measured
+  /**
+   * The word phase: frame the word's outlines beside the callout once it can be measured (desktop: the whole word, at once;
+   * phones: the current section, gliding there, or the finished word at step 6). false: nothing pending.
+   */
+  private wordFitPending: false | 'instant' | 'smooth' = false;
+  private viewGlide = 0; // the view gliding to a section (requestAnimationFrame id), 0 when still
+  private gliding = false; // the glide itself is moving the view (any other view change cancels it)
+  private sectionCache: { word: unknown; sections: number[][] } | null = null; // the word's sections (phones), per word
   private wordWork: Rect | null = null; // step 5 after Keep my pieces: the bounds of their work, framed with the word where it can be
   private outlineZoom = NaN;
   private keySnapTimer = 0; // `,` `.` turns click in when the keys pause
@@ -825,6 +842,8 @@ export class FridgeFace extends HTMLElement {
         // Window resize, rotation, the iOS URL bar: keep the same board point at the centre of the board.
         const z = this.view.zoom;
         this.setView({ x: after.width / 2 - centre.x * z, y: after.height / 2 - centre.y * z, zoom: z });
+        // Phones, the word by sections: frame the current section again in the new board.
+        if (this.guide.phase === 'word' && this.guide.sections) this.wordFitPending = 'instant';
       } else if (this.pendingFit && this.boardEl.clientWidth) {
         this.pendingFit = false;
         this.viewReady = true;
@@ -895,6 +914,7 @@ export class FridgeFace extends HTMLElement {
     this.flushSave();
     clearTimeout(this.guideNextTimer);
     clearTimeout(this.keySnapTimer);
+    this.stopGlide();
   }
 
   attributeChangedCallback(name: string) {
@@ -1454,6 +1474,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private setView(c: Camera) {
+    if (this.viewGlide && !this.gliding) this.stopGlide(); // the visitor (or a resize) moved the view: the glide gives way
     this.view = c;
     if (!this.frame) {
       this.frame = requestAnimationFrame(() => {
@@ -1607,6 +1628,7 @@ export class FridgeFace extends HTMLElement {
       if (!compact) this.closeMenu(false);
       else if (this.menuOpen) this.positionMenu();
     }
+    this.syncGuideSections();
     this.scheduleGuide();
   }
 
@@ -3060,6 +3082,9 @@ export class FridgeFace extends HTMLElement {
     const prev = this.guide;
     if (next === prev) return;
     this.guide = next;
+    // Phones, the word by sections: a new current section (or the finished word) is framed, gliding there.
+    if (next.phase === 'word' && next.sections && !this.wordFitPending
+      && (currentSection(next) !== currentSection(prev) || next.sections !== prev.sections || next.step !== prev.step)) this.wordFitPending = 'smooth';
     this.renderOutlines();
     if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter)) {
       // The same step: its outlines, its turning hint or its progress moved.
@@ -3078,6 +3103,7 @@ export class FridgeFace extends HTMLElement {
     if (!guideRunning(next)) {
       this.guideFocusOnShow = false;
       this.wordFitPending = false;
+      this.stopGlide();
       this.guideEl.hidden = true;
       this.guideEl.dataset.step = '0';
       if (hadFocus) this.surface.focus();
@@ -3200,8 +3226,9 @@ export class FridgeFace extends HTMLElement {
       outlines = outlinesAt(w.pieces, shape, this.visibleCentre());
       this.wordWork = null;
     }
-    this.wordFitPending = true;
-    this.setGuide(chooseWord(this.guide, outlines, this.guideWorld())); // first, so clearing the c is not read as undoing it
+    const sections = this.wordSections();
+    this.wordFitPending = sections ? 'smooth' : 'instant';
+    this.setGuide(chooseWord(this.guide, outlines, this.guideWorld(), sections)); // first, so clearing the c is not read as undoing it
     this.selection = [];
     if (this.guideClear(plan)) this.say(plan.all ? 'Board cleared. Undo brings it back.' : 'The c is cleared. Undo brings it back.');
   }
@@ -3427,6 +3454,200 @@ export class FridgeFace extends HTMLElement {
     return [board];
   }
 
+  // ---- phones: the word, one section at a time ----------------------------------------------------------------
+
+  /**
+   * Phones (the compact layout, portrait and landscape): the guided word's outlines split into sections, filled one at a
+   * time (src/sections.ts, about one per letter). null on desktop: the whole word at once. Cached per word and layout.
+   */
+  private wordSections(): number[][] | null {
+    const w = this.guideWordSuggestion();
+    if (!w || !this.isCompact) return null;
+    const c = this.sectionCache;
+    if (c && c.word === w) return c.sections;
+    const sections = splitSections(w.pieces, (id) => SHAPE_BY_ID.get(id), GUIDE_WORD.text.length);
+    this.sectionCache = { word: w, sections };
+    return sections;
+  }
+
+  /**
+   * The layout switched between compact and desktop during the word phase (a phone rotated, a window resized): fill by
+   * sections or the whole word, keeping every filled outline (nothing on the board changes), and frame it again.
+   */
+  private syncGuideSections() {
+    const s = this.guide;
+    if (s.phase !== 'word' || !this.boardEl?.clientWidth) return;
+    const want = this.wordSections();
+    if (!want === !s.sections) return;
+    this.wordFitPending = 'instant';
+    this.setGuide(withSections(s, want, this.guideWorld()));
+    if (!want && s.step === 6) this.wordFitPending = false; // desktop at step 6: the view stays as it is
+  }
+
+  /** Where the piece action bar sits (client px) whenever something is selected, even while it is hidden; null if it cannot show. */
+  private actionsRect(): Rect | null {
+    const was = this.actions.hidden;
+    this.actions.hidden = false;
+    const cs = getComputedStyle(this.actions);
+    const r = cs.display === 'none' ? null : toRect(this.actions.getBoundingClientRect());
+    this.actions.hidden = was;
+    return r && r.w > 0 && r.h > 0 ? r : null;
+  }
+
+  /** The tight bounds (board units) of outlines, from their shapes' real outlines (rotated bounding boxes overstate them). */
+  private tightBounds(list: readonly Outline[]): Rect | null {
+    const pts = list.flatMap((o) => placeOutline(SHAPE_BY_ID.get(o.shapeId)?.hull ?? [], o));
+    if (!pts.length) return null;
+    const b = boundsOf(pts);
+    return { x: b.x, y: b.y, w: b.w, h: b.h };
+  }
+
+  /**
+   * Phones: frame `b` (board units) as large as it can show in the visible board, clear of the callout (placed by the tray,
+   * at each width it may take, in its tallest form) and of the action bar (it shows after every click-in). The largest
+   * free strip wins (`freeRect`); the callout later places itself clear of the outlines.
+   */
+  private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0) {
+    const g = this.guideEl;
+    const bar = this.actionsRect();
+    const tray = toRect(this.trayEl.getBoundingClientRect());
+    const grow = (r: Rect, m: number): Rect => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
+    const t3 = g.querySelector<HTMLElement>('.gt3')!, was = [t3.textContent, t3.hidden] as const;
+    if (this.guide.step === 5) {
+      t3.textContent = this.turnText(); // room for the turning hint, so it never has to cover the outlines later
+      t3.hidden = false;
+    }
+    const sizes = widths.map((w) => {
+      g.style.maxWidth = w ? `${w}px` : '';
+      return { w: g.offsetWidth, h: g.offsetHeight };
+    });
+    t3.textContent = was[0];
+    t3.hidden = was[1];
+    const pad = SECTION_FRAME_PAD;
+    const hardBase = bar ? [...obstacles, bar] : [...obstacles];
+    // The docks (phones: along the top) block only where they are: the board between them is free (landscape).
+    const docks = obstacles.filter((r) => !bar || !rectsOverlap(r, bar)).map((r) => grow(r, 6));
+    // 1. The largest strip clear of the docks, the callout (placed by the tray) and the action bar.
+    let best: { rect: Rect; scale: number } | null = null;
+    for (const size of sizes) {
+      const p = placeCallout(size, tray, bounds, hardBase, this.trayPrefer);
+      const blockers = [grow({ x: p.x, y: p.y, w: size.w, h: size.h }, 20), ...(bar ? [grow(bar, 6)] : [])];
+      const f = freeRect({ w: b.w, h: b.h }, bounds, [...docks, ...blockers], pad);
+      if (!best || f.scale > best.scale) best = f;
+    }
+    let reg = best!.rect;
+    if (need > best!.scale) {
+      // 2. That leaves the thinnest targets too small: try larger scales, up to what they need (or the board between the
+      //    docks allows), each at a few places in that room, and take the largest at which the callout still finds a spot
+      //    by the tray clear of every outline and the action bar (empty board beside the outlines, or over finished pieces).
+      const room = freeRect({ w: b.w, h: b.h }, bounds, docks, pad);
+      const top = Math.min(need, room.scale);
+      const clear = (r: Rect, hard: readonly Rect[]) => !hard.some((q) => rectsOverlap(r, q));
+      const STEPS = 12;
+      search: for (let i = 0; i < STEPS && top > best!.scale; i++) {
+        const scale = top - ((top - best!.scale) * i) / STEPS;
+        const a = room.rect;
+        const w = b.w * scale + 2 * pad, h = b.h * scale + 2 * pad;
+        const along = (lo: number, room: number) => [0.5, 0, 1, 0.25, 0.75].map((f) => lo + Math.max(0, room) * f);
+        const xs = along(a.x, a.w - w), ys = along(a.y, a.h - h).sort((p, q) => p - q);
+        for (const y of ys) for (const x of xs) {
+          const rects = parts.map((q) => ({ x: x + pad + (q.x - b.x) * scale, y: y + pad + (q.y - b.y) * scale, w: q.w * scale, h: q.h * scale }));
+          if (bar && rects.some((r) => rectsOverlap(r, bar))) continue; // never under the action bar
+          const hard = [...hardBase, ...rects];
+          for (const size of sizes) {
+            const p = placeCallout(size, tray, bounds, hard, this.trayPrefer);
+            if (clear({ x: p.x, y: p.y, w: size.w, h: size.h }, hard)) {
+              reg = { x, y, w, h };
+              break search;
+            }
+          }
+        }
+      }
+    }
+    this.frameRect(b, reg, smooth);
+  }
+
+  /** Phones, step 5: frame the CURRENT section's outlines (see `frameClear`), gliding there unless `smooth` is false. */
+  private fitSection(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean) {
+    const s = this.guide;
+    const k = currentSection(s);
+    if (k < 0 || !s.sections) return;
+    const list = s.sections[k].map((i) => s.outlines[i]);
+    const b = this.tightBounds(list);
+    // The scale (CSS px per board unit) at which the thinnest current target is SECTION_MIN_TARGET px across.
+    const thin = Math.min(...list.map((o) => {
+      const u = SHAPE_BY_ID.get(o.shapeId)?.uprightBox;
+      return u ? Math.min(u.w, u.h) : Infinity;
+    }));
+    const parts = list.map((o) => this.tightBounds([o])!);
+    if (b) this.frameClear(b, parts, widths, bounds, obstacles, smooth, Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0);
+  }
+
+  /** Phones, step 6: the finished word, framed whole (the callout centres itself clear of it where it can). */
+  private fitFinishedWord(bounds: Rect, smooth: boolean) {
+    const b = this.tightBounds(this.guide.outlines);
+    const bw = this.boardEl.getBoundingClientRect().width;
+    if (b) this.frameClear(b, [], [this.isLandscape ? Math.max(190, Math.round(bw * 0.3)) : Math.round(Math.min(300, bw - 32))], bounds, this.guideObstacles(), smooth);
+  }
+
+  /**
+   * Frame board rect `b` centred in `reg` (client px) with SECTION_FRAME_PAD of air, as large as fits (a section is small,
+   * so up to SECTION_MAX_COMFORT times the comfortable scale: Frame all's cap would keep its thinnest targets too small).
+   */
+  private frameRect(b: Rect, reg: Rect, smooth: boolean) {
+    const board = this.boardEl.getBoundingClientRect();
+    const k = this.k;
+    const m = SECTION_FRAME_PAD;
+    const zoom = Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h), SECTION_MAX_COMFORT * this.comfortZoom());
+    const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
+    const to = { x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom };
+    if (smooth) this.glideTo(to);
+    else {
+      this.stopGlide();
+      this.setView(to);
+    }
+  }
+
+  /** The view glides to `to` (zoom eased geometrically, the centre along a line); instantly with reduced motion. */
+  private glideTo(to: Camera) {
+    this.stopGlide();
+    const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const from = { ...this.view };
+    if (reduce || !(from.zoom > 0) || typeof requestAnimationFrame !== 'function') {
+      this.setView(to);
+      return;
+    }
+    const vp = this.viewport();
+    const mid = { x: vp.width / 2, y: vp.height / 2 };
+    const c0 = screenToBoard(from, mid), c1 = screenToBoard(to, mid);
+    const t0 = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / SECTION_GLIDE_MS);
+      const e = ease(t);
+      const zoom = from.zoom * Math.pow(to.zoom / from.zoom, e);
+      const c = { x: c0.x + (c1.x - c0.x) * e, y: c0.y + (c1.y - c0.y) * e };
+      this.gliding = true;
+      try {
+        this.setView(t >= 1 ? to : { x: mid.x - c.x * zoom, y: mid.y - c.y * zoom, zoom });
+      } finally {
+        this.gliding = false;
+      }
+      if (t >= 1) {
+        this.viewGlide = 0;
+        this.scheduleGuide(); // the callout is placed again where the section now is
+      } else this.viewGlide = requestAnimationFrame(step);
+    };
+    this.viewGlide = requestAnimationFrame(step);
+  }
+
+  private stopGlide() {
+    if (!this.viewGlide) return;
+    cancelAnimationFrame(this.viewGlide);
+    this.viewGlide = 0;
+    this.scheduleGuide();
+  }
+
   /**
    * Step 5: frame the word's outlines in the part of the visible board the callout leaves free (the callout sits by the
    * tray, so the word gets the rest), as large as the comfortable maximum allows.
@@ -3475,9 +3696,12 @@ export class FridgeFace extends HTMLElement {
       if (!g.hidden) g.hidden = true;
       return;
     }
+    // While the view glides to a section the callout stays where it is (placed again when the glide ends).
+    if (this.viewGlide && !g.hidden && !this.wordFitPending) return;
     const bounds = this.guideBounds();
     const host = this.getBoundingClientRect();
     if (g.hidden) g.hidden = false;
+    const prevPos = { left: g.style.left, top: g.style.top, maxWidth: g.style.maxWidth };
     g.style.left = '0px';
     g.style.top = '0px';
     const obstacles = this.guideObstacles();
@@ -3485,8 +3709,14 @@ export class FridgeFace extends HTMLElement {
     // pieces, it narrows (taller, but clear of them).
     const bw = this.boardEl.getBoundingClientRect().width;
     const widths = this.isLandscape ? [0.45, 0.37, 0.3].map((f) => Math.max(190, Math.round(bw * f))) : this.isCompact ? [Math.round(Math.min(300, bw - 32)), 240] : [0];
-    if (this.wordFitPending && s === 5) {
+    if (this.wordFitPending && this.guide.phase === 'word' && s === 6 && this.guide.sections) {
+      // Phones: the finished word, framed whole (clear of the docks, the tray and the action bar).
+      const how = this.wordFitPending;
+      this.wordFitPending = false;
+      this.fitFinishedWord(bounds, how === 'smooth');
+    } else if (this.wordFitPending && s === 5) {
       // Once: where the callout goes by the tray decides where the word is framed (beside it, never under it).
+      const how = this.wordFitPending;
       this.wordFitPending = false;
       const narrow = widths[widths.length - 1]; // the narrowest callout leaves the word the most room
       g.style.maxWidth = narrow ? `${narrow}px` : '';
@@ -3498,10 +3728,19 @@ export class FridgeFace extends HTMLElement {
       t3.textContent = was[0];
       t3.hidden = was[1];
       const tray = toRect(this.trayEl.getBoundingClientRect());
-      const p = placeCallout(size, tray, bounds, obstacles, this.trayPrefer);
-      this.fitWordBeside({ x: p.x, y: p.y, w: size.w, h: size.h }, p.side, bounds);
+      if (this.guide.sections) {
+        // Phones: the action bar shows whenever a piece is selected (after every click-in): keep its place free too.
+        this.fitSection(widths, bounds, obstacles, how === 'smooth');
+      } else {
+        const p = placeCallout(size, tray, bounds, obstacles, this.trayPrefer);
+        this.fitWordBeside({ x: p.x, y: p.y, w: size.w, h: size.h }, p.side, bounds);
+      }
       this.renderOutlines();
-    }
+      if (this.viewGlide) {
+        Object.assign(g.style, prevPos); // it stays where it was while the view glides; placed again once the glide ends
+        return;
+      }
+    } else if (this.wordFitPending && this.guide.phase !== 'word') this.wordFitPending = false;
     // The active outlines and the piece being turned toward one must stay in sight: the callout never covers them.
     const st = this.guide;
     const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));

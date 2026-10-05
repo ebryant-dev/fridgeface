@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
-  chooseWord, endGuide, fitZoom, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
-  nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type GuideState,
+  chooseWord, currentSection, endGuide, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
+  nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
 } from './guide';
 import type { Outline, OutlinePiece } from './outline';
@@ -534,5 +534,79 @@ describe('frameBeside: both in view, or the outlines first (v1.2.1)', () => {
     expect(frameBeside(work, out, view, 10, 99, 1).zoom).toBe(1);
     expect(frameBeside(work, out, view, 10, 99, 99).zoom).toBeCloseTo(fitZoom(out, view, 10), 9);
     expect(frameBeside(null, out, view, 10, 0.1, 99).both).toBe(true);
+  });
+});
+
+describe('phones: the word one section at a time (v1.2.2)', () => {
+  const at4 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
+  // Two sections: the stem and the round with its negative round (indices 0 to 2), then the wedge (index 3).
+  const SECTIONS = [[0, 2, 1], [3]];
+  const ps = (...is: number[]) => is.map((i) => on(`p${i}`, WORD[i]));
+
+  it('only the current section shows and accepts pieces; it moves on when complete; progress counts the whole word', () => {
+    let s = chooseWord(at4(), WORD, world([]), SECTIONS);
+    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s)]).toEqual([5, 0, [0, 1, 2], { done: 0, total: 4 }]);
+    // A wedge dropped right on the (hidden) next section's outline does not click in.
+    expect(guideClickIn(s, world([pc('w', 'wedge', 701, 31, 40)]), ['w'])).toBeNull();
+    s = observeGuide(s, world(ps(2)));
+    expect([currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [0, 1], 1]);
+    expect(nextOutline(s), 'Next: the lowest outline of the CURRENT section').toBe(0);
+    s = observeGuide(s, world(ps(2, 0, 1)));
+    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([5, 1, [3], 3]);
+    expect(nextOutline(s)).toBe(3);
+    expect(guideClickIn(s, world([...ps(2, 0, 1), pc('w', 'wedge', 701, 31, 40)]), ['w'])!.placements.map((p) => p.outline)).toEqual([3]);
+    s = observeGuide(s, world(ps(0, 1, 2, 3)));
+    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([6, -1, []]);
+  });
+
+  it('undo back across a section boundary returns to the earlier section (derived from the board)', () => {
+    const h = new History<readonly OutlinePiece[]>([]);
+    let s = chooseWord(at4(), WORD, world([]), SECTIONS);
+    for (const i of [0, 1, 2, 3]) {
+      h.record([...h.present, ...ps(i)]);
+      s = observeGuide(s, world(h.present));
+    }
+    expect(s.step).toBe(6);
+    s = observeGuide(s, world(h.undo()!)); // the wedge goes: section 2 again
+    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([5, 1, [3]]);
+    s = observeGuide(s, world(h.undo()!)); // the negative round goes: back into section 1
+    expect([currentSection(s), activeOutlines(s)]).toEqual([0, [2]]);
+    s = observeGuide(s, world(h.redo()!));
+    expect(currentSection(s)).toBe(1);
+  });
+
+  it('switching layouts mid-step keeps progress: sections on and off, filled outlines stay filled', () => {
+    let s = observeGuide(chooseWord(at4(), WORD, world([]), SECTIONS), world(ps(3)));
+    expect([activeOutlines(s), guideProgress(s).done]).toEqual([[0, 1, 2], 1]); // the wedge, filled early, still counts
+    const desk = withSections(s, null, world(ps(3)));
+    expect([desk.sections, desk.step, activeOutlines(desk), guideProgress(desk).done]).toEqual([null, 5, [0, 1, 2], 1]);
+    s = withSections(desk, SECTIONS, world(ps(3)));
+    expect([currentSection(s), activeOutlines(s)]).toEqual([0, [0, 1, 2]]);
+    expect(withSections(at4(), SECTIONS, world([])).sections, 'only in the word phase').toBeNull();
+  });
+
+  it('sections that do not cover every outline exactly once fall back to the whole word', () => {
+    for (const bad of [[[0, 1], [3]], [[0, 1, 2], [2, 3]], [[0, 1, 2, 3], []], [[0, 1, 2, 9], [3]]]) {
+      const s = chooseWord(at4(), WORD, world([]), bad);
+      expect([s.sections, activeOutlines(s)]).toEqual([null, [0, 1, 2, 3]]);
+    }
+  });
+});
+
+describe('freeRect: the largest free strip to frame a section in (v1.2.2)', () => {
+  const area = { x: 0, y: 0, w: 400, h: 600 };
+  it('no blockers: the whole area', () => {
+    const f = freeRect({ w: 100, h: 100 }, area, [], 10);
+    expect(f.rect).toEqual(area);
+    expect(f.scale).toBeCloseTo(3.8);
+  });
+  it('a callout along the bottom: the strip above it', () => {
+    const f = freeRect({ w: 100, h: 100 }, area, [{ x: 20, y: 450, w: 360, h: 120 }]);
+    expect(f.rect).toEqual({ x: 0, y: 0, w: 400, h: 450 });
+  });
+  it('docks at the top corners: a tall content takes the column between them', () => {
+    const f = freeRect({ w: 100, h: 590 }, area, [{ x: 0, y: 0, w: 150, h: 70 }, { x: 250, y: 0, w: 150, h: 70 }]);
+    expect(f.rect).toEqual({ x: 150, y: 0, w: 100, h: 600 });
+    expect(rectsOverlap(f.rect, { x: 0, y: 0, w: 150, h: 70 })).toBe(false);
   });
 });
