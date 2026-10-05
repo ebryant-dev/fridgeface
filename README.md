@@ -21,10 +21,10 @@ The controls use [Jost](https://github.com/indestructible-type/Jost) (weights 50
 Install a pinned tag. `npm install` builds `dist/` for you (the `prepare` script runs `vite build`; npm installs the dev dependencies it needs for that), so no prebuilt files live in git.
 
 ```sh
-npm install "github:ebryant-dev/fridgeface#v0.5.2"
+npm install "github:ebryant-dev/fridgeface#v1.0.0"
 ```
 
-or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v0.5.2"`. Then, in client-side code:
+or in `package.json`: `"fridgeface": "github:ebryant-dev/fridgeface#v1.0.0"`. Then, in client-side code:
 
 ```js
 import 'fridgeface'; // registers <fridge-face>
