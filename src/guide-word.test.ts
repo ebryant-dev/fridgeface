@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BESIDE_ORDER, adoptTheirs, anchorWord, askGuide, answerAsk, activeOutlines, besideSpot, chooseWord, cOutlines, currentSection, findWordC, guideBuilt,
+  BESIDE_ORDER, adoptTheirs, anchorWord, askGuide, answerAsk, activeOutlines, besideSpot, chooseWord, cOutlines, currentBatch, findWordC, guideBuilt,
   guideClearPlan, guideProgress, observeGuide, placeWordC, recordBuilt, rectsOverlap, rigidShift, startGuide, type GuideState, type GuideWorld, type Rect,
 } from './guide';
 import { filledBy, type Outline, type OutlinePiece, type ShapeFrame } from './outline';
 import { rotatedBounds } from './camera';
-import { splitSections } from './sections';
 import { History } from './history';
+import { HULLS } from './hulls.testdata';
+import { boundsOf, convexIntersect, placeOutline } from './selection';
 
 /**
  * v1.2.3: the guided c is the c INSIDE word-create-1, so it stays in place as the start of "create" at Guide me.
  *
  * The five shapes' frames (bounding box and area centroid, source units) as src/shapes.ts computes them in a browser (the
- * same snapshot as src/sections.test.ts; the browser suite checks the live behaviour).
+ * same snapshot as src/batches.test.ts; the browser suite checks the live behaviour), and their real convex outlines
+ * (src/hulls.testdata.ts) for the overlaps the batches follow.
  */
 const FRAMES: Record<string, ShapeFrame> = {
   'positive-stem': { bbox: { x: 192.47, y: 29.13, w: 115.06, h: 441.74 }, centroid: { x: 249.9985901053713, y: 249.9945337615658 } },
@@ -23,7 +25,10 @@ const FRAMES: Record<string, ShapeFrame> = {
 };
 const shapeOf = (id: string) => FRAMES[id];
 const sizeOf = (id: string) => Math.max(FRAMES[id].bbox.w, FRAMES[id].bbox.h);
-const world = (pieces: readonly OutlinePiece[]): GuideWorld => ({ pieces, sizeOf });
+const overlaps = (a: Outline, b: Outline) => convexIntersect(placeOutline(HULLS[a.shapeId], a), placeOutline(HULLS[b.shapeId], b));
+const world = (pieces: readonly OutlinePiece[]): GuideWorld => ({ pieces, sizeOf, overlaps });
+/** The batches' locality as the component measures it: real outline bounds, 1.6 positive stems (BATCH_SPAN_STEMS). */
+const PLAN = { boxOf: (o: Outline) => boundsOf(placeOutline(HULLS[o.shapeId], o)), span: 1.6 * 438.9067888515738 };
 
 // Edward's REAL word-create-1 (read only; nothing in src/suggestions/ is touched).
 const files = import.meta.glob('./suggestions/word-create-1.json', { eager: true, import: 'default' }) as Record<string, { pieces: { s: string; x: number; y: number; r: number }[] }>;
@@ -124,11 +129,13 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
     const outlines = anchorWord(CREATE, c, s4.letter, shapeOf)!;
     expect(outlines).toEqual(planned);
     expect([outlines[0], outlines[1], outlines[2]], 'the c\'s outlines are the built c').toEqual(letter);
-    const s5 = chooseWord(s4, outlines, world(built));
+    const s5 = chooseWord(s4, outlines, world(built), PLAN);
     expect([s5.step, s5.phase]).toEqual([6, 'word']);
     expect(guideProgress(s5)).toEqual({ done: 3, total: 32 });
     expect(s5.filled.slice(0, 3)).toEqual(['a', 'b', 'w']);
-    expect(activeOutlines(s5), 'the c\'s outlines are not shown').toEqual(Array.from({ length: 29 }, (_, i) => i + 3));
+    expect(s5.batches![0], 'the c is batch 0, already done').toEqual([0, 1, 2]);
+    expect(currentBatch(s5)).toBe(1);
+    expect(activeOutlines(s5), 'the c\'s outlines are not shown: the first batch after it').toEqual([3]);
     // Nothing on the board changed (no clear): the same pieces, still guide-built.
     expect(guideBuilt(s5, built)).toEqual(['a', 'b', 'w']);
   });
@@ -142,18 +149,6 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
     s = observeGuide(recordBuilt(s, rest.map((p) => p.id)), world([...mine, ...built, ...rest]));
     expect(s.step).toBe(7);
     expect(guideClearPlan(s, [...mine, ...built, ...rest])).toEqual({ all: false, ids: [...built, ...rest].map((p) => p.id) });
-  });
-
-  it('phones: section 1 holds the c, already filled, so it shows only its remaining outlines', () => {
-    const sections = splitSections(CREATE, shapeOf, 6);
-    expect(sections[0]).toEqual(expect.arrayContaining([0, 1, 2]));
-    const s5 = chooseWord(at5(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), sections);
-    expect(currentSection(s5)).toBe(0);
-    expect(activeOutlines(s5)).toEqual(sections[0].filter((i) => i > 2).sort((a, b) => a - b));
-    expect(activeOutlines(s5)).toEqual([4, 7]);
-    // A word whose first section is only the c starts at the next one.
-    const only = chooseWord(at5(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), [[0, 1, 2], CREATE.slice(3).map((_, i) => i + 3)]);
-    expect([currentSection(only), activeOutlines(only).length]).toEqual([1, 29]);
   });
 
   it('undo across the step 5 -> 6 boundary keeps the c: Guide me adds no undo step; an undo there takes back the c\'s last action only, and the guide stays on the word', () => {
@@ -172,7 +167,7 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
     s = observeGuide(s, world(h.undo()!));
     expect(h.present.map((p) => p.id), 'the c is still on the board').toEqual(['a', 'b', 'w']);
     expect([s.step, s.phase, guideProgress(s).done, s.turn]).toEqual([6, 'word', 2, 'w']);
-    expect(activeOutlines(s)[0], 'the wedge\'s outline shows again').toBe(2);
+    expect([currentBatch(s), activeOutlines(s)], 'the wedge\'s outline shows again: batch 0 (the c) is current').toEqual([0, [2]]);
     s = observeGuide(s, world(h.redo()!));
     expect([s.step, guideProgress(s).done]).toEqual([6, 3]);
   });

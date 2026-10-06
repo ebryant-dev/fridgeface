@@ -7,7 +7,7 @@ declare const process: { env: Record<string, string | undefined> }; // runs in N
  *  - free play: about four black ovals fit side to side across the visible board's shorter side (the default view, resets,
  *    and the reference Frame all caps against); desktop is unchanged;
  *  - the guide's c (steps 1 to 3) keeps the close-up it had before the free-play change.
- * (The guided "create" by sections is in guide.pw.ts.) Screenshots go to .playwright-mcp/ (gitignored).
+ * (The guided "create", batch by batch, is in guide.pw.ts.) Screenshots go to .playwright-mcp/ (gitignored).
  */
 
 const SHOT = '.playwright-mcp';

@@ -18,11 +18,10 @@ import { columnTrayScale, layoutState } from './layout';
 import {
   GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
   findWordC, placeWordC, type WordC,
-  currentSection, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
-  observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type CalloutSide, type GuideState,
+  contextOutlines, currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
+  observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type CalloutSide, type GuideState,
   type GuideWorld, type Rect,
 } from './guide';
-import { lettersZoom, sectionOffsetX, splitSections } from './sections';
 import { outlinesAt, settleRotation, type Outline } from './outline';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
@@ -87,16 +86,30 @@ const GUIDE_FRAME_PAD = 32;
 const GUIDE_BESIDE_MARGIN = 0.5;
 /** A piece clicking into its outline settles there over this long, ms (no motion with reduced motion). */
 const SETTLE_MS = 170;
-/** Phones, the word by sections: CSS px of air kept around the framed section. */
+/** Phones, the c and the word's batches: CSS px of air kept around what is framed. */
 const SECTION_FRAME_PAD = 8;
-/** Phones, the word by sections: the thinnest current target (a shape's shorter side) should be at least this many CSS px. */
+/** Phones, the word's batches: the thinnest current target (a shape's shorter side) should be at least this many CSS px. */
 const SECTION_MIN_TARGET = 24;
-/** Phones, the word by sections: a framed section never zooms past this multiple of the comfortable scale. */
+/**
+ * Phones in landscape (a board only ~340 px tall): a tall batch keeps room above it for its rotate handle down to targets
+ * this many CSS px across (a stem framed edge to edge would leave the handle under the docks, nowhere to turn it).
+ */
+const SECTION_MIN_TARGET_SHORT = 20;
+/** Phones: a framed batch (or the finished word) never zooms past this multiple of the comfortable scale. */
 const SECTION_MAX_COMFORT = 4;
-/** Phones, the word by sections: the view glides to the next section over this long, ms (instantly with reduced motion). */
+/** The view glides to the next batch over this long, ms (instantly with reduced motion). */
 const SECTION_GLIDE_MS = 450;
-/** Phones, the word by sections: the zoom cap and the built section before it (board x range) a section is framed with. */
-interface SectionContext { maxZoom: number; prev: [number, number] | null; /** Fraction of the zoom that fits the room to use (default 1): spare room for the callout to step aside into. */ slack?: number }
+/** The word's batches (v1.4.0): a batch's outlines together fit a square this many positive stems long (batches.ts). */
+const BATCH_SPAN_STEMS = 1.6;
+/** Phones, the word's batches: board context kept around a framed batch (where the targets allow), as a fraction of a positive stem's length. */
+const BATCH_CONTEXT_STEMS = 0.1;
+/** Desktop, the word's batches: CSS px of air a batch keeps from the visible board's edges before the view moves. */
+const BATCH_DESKTOP_PAD = 48;
+/** Desktop, step 6: the word's other outlines are drawn this faintly (stroke opacity), thinner, as context only. */
+const CONTEXT_OPACITY = 0.2;
+const CONTEXT_PX = 1.5;
+/** Phones, framing: the zoom cap, and the fraction of the zoom that fits the room to use (default 1). */
+interface SectionContext { maxZoom: number; /** CSS px kept free above what is framed (room for a rotate handle on the board), and the zoom it may not push below. */ vpad?: number; minZoom?: number; /** Fraction of the zoom that fits the room to use (default 1): spare room for the callout to step aside into. */ slack?: number }
 /** Phones, the guide's c: it uses this share of the zoom that just fits the room, so the callout can step aside (a rotate handle pushes it) without covering the c. */
 const C_FIT_SLACK = 0.9;
 const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -585,16 +598,15 @@ export class FridgeFace extends HTMLElement {
   private guideFocusOnShow = false; // a replay from Controls moves focus into the callout once it shows
   private guideQueued = false; // the guide waits for the board to be laid out (its outlines are centred in it)
   /**
-   * The word phase: frame the word's outlines beside the callout once it can be measured (desktop: the whole word, at once;
-   * phones: the current section, gliding there, or the finished word at step 7). false: nothing pending.
+   * The word phase: frame the current batch once the callout can be measured (phones: close up, clear of the callout;
+   * desktop: only if it is not already in view, never closer than the comfortable zoom), or the finished word at step 7,
+   * gliding there unless 'instant'. false: nothing pending.
    */
   private wordFitPending: false | 'instant' | 'smooth' = false;
   /** Phones, steps 1 to 4: the c is framed once the callout can be measured (see `fitC`). */
   private cFitPending = false;
-  private viewGlide = 0; // the view gliding to a section (requestAnimationFrame id), 0 when still
+  private viewGlide = 0; // the view gliding to a batch (requestAnimationFrame id), 0 when still
   private gliding = false; // the glide itself is moving the view (any other view change cancels it)
-  private sectionCache: { word: unknown; sections: number[][] } | null = null; // the word's sections (phones), per word
-  private wordWork: Rect | null = null; // step 6 after Keep my pieces: the bounds of their work, framed with the word where it can be
   private outlineZoom = NaN;
   private keySnapTimer = 0; // `,` `.` turns click in when the keys pause
   private authoring = false;
@@ -852,8 +864,8 @@ export class FridgeFace extends HTMLElement {
         // Window resize, rotation, the iOS URL bar: keep the same board point at the centre of the board.
         const z = this.view.zoom;
         this.setView({ x: after.width / 2 - centre.x * z, y: after.height / 2 - centre.y * z, zoom: z });
-        // Phones, the word by sections: frame the current section again in the new board.
-        if (this.guide.phase === 'word' && this.guide.sections) this.wordFitPending = 'instant';
+        // The word: frame the current batch again in the new board.
+        if (this.guide.phase === 'word') this.wordFitPending = 'instant';
         if (this.guide.phase === 'c' && this.isCompact && this.guide.step >= 1 && this.guide.step <= 4) this.cFitPending = true;
       } else if (this.pendingFit && this.boardEl.clientWidth) {
         this.pendingFit = false;
@@ -1666,7 +1678,7 @@ export class FridgeFace extends HTMLElement {
       if (!compact) this.closeMenu(false);
       else if (this.menuOpen) this.positionMenu();
     }
-    this.syncGuideSections();
+    this.syncGuideLayout();
     this.scheduleGuide();
   }
 
@@ -3175,9 +3187,9 @@ export class FridgeFace extends HTMLElement {
     const prev = this.guide;
     if (next === prev) return;
     this.guide = next;
-    // Phones, the word by sections: a new current section (or the finished word) is framed, gliding there.
-    if (next.phase === 'word' && next.sections && !this.wordFitPending
-      && (currentSection(next) !== currentSection(prev) || next.sections !== prev.sections || next.step !== prev.step)) this.wordFitPending = 'smooth';
+    // The word: a new current batch (or the finished word) is framed, gliding there.
+    if (next.phase === 'word' && !this.wordFitPending
+      && (currentBatch(next) !== currentBatch(prev) || next.batches !== prev.batches || next.step !== prev.step)) this.wordFitPending = 'smooth';
     this.renderOutlines();
     if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter || next.step === 5)) {
       // (Step 5 with a new letter: the finished c moved as one and its outlines followed it; nothing new to say.)
@@ -3343,17 +3355,14 @@ export class FridgeFace extends HTMLElement {
     const wc = findWordC(w.pieces, shape);
     let outlines = wc ? anchorWord(w.pieces, wc, s0.letter, shape, others.map((p) => rotatedBounds([p], shape)!)) : null;
     let s = s0;
-    if (outlines) this.wordWork = rotatedBounds(others, shape);
-    else {
+    if (!outlines) {
       s = adoptTheirs(s0, cIds);
       const work = rotatedBounds(this.composition.pieces, shape)!;
       outlines = outlinesAt(w.pieces, shape, this.besideCentre(w.pieces, work));
-      this.wordWork = work;
     }
-    const sections = this.wordSections();
-    this.wordFitPending = sections ? 'smooth' : 'instant';
+    this.wordFitPending = 'smooth';
     this.select(null);
-    this.setGuide(chooseWord(s, outlines, this.guideWorld(), sections));
+    this.setGuide(chooseWord(s, outlines, this.guideWorld(), { boxOf: (o) => this.tightBounds([o])!, span: BATCH_SPAN_STEMS * STEM_LENGTH }));
   }
 
   /** Apply a clear plan as ONE undoable step: the whole board, or only the guide-built pieces. Whether anything went. */
@@ -3492,26 +3501,34 @@ export class FridgeFace extends HTMLElement {
     this.outlineZoom = this.view.zoom;
     const s = this.guide;
     const active = s.step ? activeOutlines(s) : [];
+    // Desktop, step 6: the rest of the word, very faint, so the visitor sees what the batches are building (phones show the
+    // current batch alone: their close-up has no room for it). Context only: never a target, never clicked into.
+    const context = s.step && !this.isCompact ? contextOutlines(s) : [];
     layer.replaceChildren();
-    if (!active.length) return;
+    if (!active.length && !context.length) return;
     const k = this.k * this.view.zoom; // CSS px per board unit
-    const w = n3(OUTLINE_PX / k);
-    const dash = OUTLINE_DASH.map((d) => n3(d / k)).join(' ');
-    for (const i of active) {
+    const draw = (i: number, ctx: boolean) => {
       const o = s.outlines[i];
       const sh = SHAPE_BY_ID.get(o.shapeId);
-      if (!sh) continue;
+      if (!sh) return;
       const solid = sh.polarity === 'positive';
+      const w = n3((ctx ? CONTEXT_PX : OUTLINE_PX) / k);
+      const dash = OUTLINE_DASH.map((d) => n3((ctx ? d * 0.7 : d) / k)).join(' ');
       const g = svgEl('g', {
-        'data-outline': String(i), 'data-shape': o.shapeId, 'data-line': solid ? 'solid' : 'dotted',
+        [ctx ? 'data-context' : 'data-outline']: String(i), 'data-shape': o.shapeId, 'data-line': solid ? 'solid' : 'dotted',
         transform: `translate(${n3(o.x)} ${n3(o.y)}) rotate(${n3(o.rotation)}) translate(${n3(-sh.centroid.x)} ${n3(-sh.centroid.y)})`,
       });
+      const look = ctx
+        ? `fill="none" stroke="${OUTLINE_COLOR}" stroke-opacity="${CONTEXT_OPACITY}"`
+        : `fill="${OUTLINE_COLOR}" fill-opacity="0.1" stroke="${OUTLINE_COLOR}"`;
       g.innerHTML = geometryTemplate(sh).replace(
         '{a}',
-        `fill="${OUTLINE_COLOR}" fill-opacity="0.1" stroke="${OUTLINE_COLOR}" stroke-width="${w}"${solid ? '' : ` stroke-dasharray="${dash}"`} stroke-linecap="round" stroke-linejoin="round"`,
+        `${look} stroke-width="${w}"${solid ? '' : ` stroke-dasharray="${dash}"`} stroke-linecap="round" stroke-linejoin="round"`,
       );
       layer.append(g);
-    }
+    };
+    for (const i of context) draw(i, true); // beneath the batch's own outlines
+    for (const i of active) draw(i, false);
   }
 
   /** A board point in client px (through the camera state, not the DOM, which lags by a frame). */
@@ -3608,35 +3625,24 @@ export class FridgeFace extends HTMLElement {
     return [board];
   }
 
-  // ---- phones: the word, one section at a time ----------------------------------------------------------------
+  // ---- the word, one batch at a time ---------------------------------------------------------------------------
 
   /**
-   * Phones (the compact layout, portrait and landscape): the guided word's outlines split into sections, filled one at a
-   * time (src/sections.ts, about one per letter). null on desktop: the whole word at once. Cached per word and layout.
+   * The layout switched between compact and desktop (a phone rotated, a window resized): the batches are the same on every
+   * layout (nothing on the board or in the guide changes); only the framing does, so the current batch is framed again,
+   * and the outlines are redrawn (desktop draws the rest of the word faintly as context, phones do not).
    */
-  private wordSections(): number[][] | null {
-    const w = this.guideWordSuggestion();
-    if (!w || !this.isCompact) return null;
-    const c = this.sectionCache;
-    if (c && c.word === w) return c.sections;
-    const sections = splitSections(w.pieces, (id) => SHAPE_BY_ID.get(id), GUIDE_WORD.text.length);
-    this.sectionCache = { word: w, sections };
-    return sections;
-  }
-
-  /**
-   * The layout switched between compact and desktop during the word phase (a phone rotated, a window resized): fill by
-   * sections or the whole word, keeping every filled outline (nothing on the board changes), and frame it again.
-   */
-  private syncGuideSections() {
+  private syncGuideLayout() {
     const s = this.guide;
     if (s.phase !== 'word' || !this.boardEl?.clientWidth) return;
-    const want = this.wordSections();
-    if (!want === !s.sections) return;
+    const compact = this.isCompact;
+    if (compact === this.lastCompact) return;
+    this.lastCompact = compact;
     this.wordFitPending = 'instant';
-    this.setGuide(withSections(s, want, this.guideWorld()));
-    if (!want && s.step === 7) this.wordFitPending = false; // desktop at step 7: the view stays as it is
+    this.renderOutlines();
   }
+
+  private lastCompact: boolean | null = null;
 
   /** Every rotate handle showing (one piece's, or a selection's), as its 44 px hit box plus HANDLE_CLEAR, client px. */
   private handleRects(): Rect[] {
@@ -3733,30 +3739,83 @@ export class FridgeFace extends HTMLElement {
     this.frameRect(b, reg, smooth, ctx);
   }
 
-  /** Phones, step 6: frame the CURRENT section's outlines (see `frameClear`), gliding there unless `smooth` is false. */
-  private fitSection(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean) {
+  /** The current batch's outlines (all of them, filled or not, so the framing holds still while it is filled). */
+  private batchOutlines(): Outline[] {
     const s = this.guide;
-    const k = currentSection(s);
-    if (k < 0 || !s.sections) return;
-    const list = s.sections[k].map((i) => s.outlines[i]);
-    const b = this.tightBounds(list);
+    const k = currentBatch(s);
+    return k < 0 || !s.batches ? [] : s.batches[k].map((i) => s.outlines[i]);
+  }
+
+  /**
+   * Phones, step 6: frame the CURRENT batch with a little board around it (BATCH_CONTEXT_STEMS), as large as the room
+   * clear of the docks, the callout and the action bar allows (`frameClear`), gliding there unless `smooth` is false. Never
+   * closer than the c's close-up (`cFrameZoom`'s 45% oval), so a batch of one small piece still shows where it goes.
+   */
+  private fitBatch(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean) {
+    const list = this.batchOutlines();
+    const tight = this.tightBounds(list);
+    if (!tight) return;
     // The scale (CSS px per board unit) at which the thinnest current target is SECTION_MIN_TARGET px across.
     const thin = Math.min(...list.map((o) => {
       const u = SHAPE_BY_ID.get(o.shapeId)?.uprightBox;
       return u ? Math.min(u.w, u.h) : Infinity;
     }));
+    const v = this.visibleView();
+    // The context around it (room for the rotate handles, and a glimpse of the built pieces), given up where it would cost a
+    // wide or tall batch its SECTION_MIN_TARGET targets in the visible board.
+    const need = Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0;
+    const roomW = need ? (v.w * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity, roomH = need ? (v.h * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity;
+    const m = Math.max(0, Math.min(BATCH_CONTEXT_STEMS * STEM_LENGTH, (roomW - tight.w) / 2, (roomH - tight.h) / 2));
+    const b = { x: tight.x - m, y: tight.y - m, w: tight.w + 2 * m, h: tight.h + 2 * m };
     const parts = list.map((o) => this.tightBounds([o])!);
-    if (!b) return;
-    // About two letters in view (v1.2.5): the view is SECTION_LETTERS_IN_VIEW average sections wide (src/sections.ts), the
-    // current section with the built one before it as context. The zoom is that, or less where the section would not fit
-    // the room the callout leaves (a tall section on a short landscape board).
-    const widths2 = s.sections.map((sec) => this.tightBounds(sec.map((i) => s.outlines[i]))?.w ?? 0);
-    const vw = this.viewport().width;
-    const two = lettersZoom(vw, widths2);
-    const prev = k > 0 ? this.tightBounds(s.sections[k - 1].map((i) => s.outlines[i])) : null;
-    const ctx: SectionContext = { maxZoom: two > 0 ? two : Infinity, prev: prev ? [prev.x, prev.x + prev.w] : null };
-    const want = Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0;
-    this.frameClear(b, parts, widths, bounds, obstacles, smooth, want, ctx);
+    const maxZoom = cFrameZoom({ width: v.w, height: v.h }, OVAL_WIDTH, { w: 0, h: 0 }, 0);
+    // As large as the free strip beside the callout allows (up to the cap); where that leaves the thinnest target under
+    // SECTION_MIN_TARGET, larger, as far as the callout can still step aside clear of the outlines.
+    // Room above and below for a rotate handle (a tall stem framed edge to edge would leave its handle nowhere to go).
+    this.frameClear(b, parts, widths, bounds, obstacles, smooth, need, { maxZoom, vpad: HANDLE_GAP + HANDLE_HIT / 2, minZoom: (this.isLandscape ? SECTION_MIN_TARGET_SHORT / SECTION_MIN_TARGET : 1) * need / this.k });
+  }
+
+  /**
+   * Desktop, step 6 (and the finished word at step 7): `b` (board units) in view with BATCH_DESKTOP_PAD of air, clear of the
+   * docks and the tray. When it already is, the view does not move. Otherwise it slides just enough to bring it in, and
+   * zooms out only if it cannot fit at the current zoom, never zooming in past the comfortable zoom (zoomed in further by
+   * the visitor, it comes back to the comfortable zoom).
+   */
+  private fitDesktop(b: Rect, smooth: boolean) {
+    const k = this.k;
+    const top = this.topInset(); // board units of screen covered at the top (docks)
+    const pad = BATCH_DESKTOP_PAD / k;
+    const vp = this.viewport();
+    const view = { x: 0, y: Math.min(top, vp.height / 2), w: vp.width, h: vp.height - Math.min(top, vp.height / 2) };
+    // The callout's own room by the tray (its tallest form) is left free along the bottom edge on desktop.
+    const cal = this.guideEl.offsetHeight ? (this.guideEl.offsetHeight + 24) / k : 0;
+    const room = { x: view.x + pad, y: view.y + pad, w: view.w - 2 * pad, h: view.h - 2 * pad - cal };
+    const cur = this.view;
+    const zFit = Math.min(room.w / Math.max(1, b.w), room.h / Math.max(1, b.h));
+    const zoom = Math.min(cur.zoom, this.comfortZoom(), zFit);
+    let x = cur.x, y = cur.y;
+    if (zoom !== cur.zoom) {
+      // Zooming: keep the board point at the view's centre where it is, then slide.
+      const c = screenToBoard(cur, { x: view.x + view.w / 2, y: view.y + view.h / 2 });
+      x = view.x + view.w / 2 - c.x * zoom;
+      y = view.y + view.h / 2 - c.y * zoom;
+    }
+    const slide = (lo: number, len: number, rlo: number, rlen: number, off: number) => {
+      const a = lo * zoom + off, e = (lo + len) * zoom + off;
+      if (e - a > rlen) return rlo + rlen / 2 - (lo + len / 2) * zoom; // larger than the room: centre it
+      if (a < rlo) return off + (rlo - a);
+      if (e > rlo + rlen) return off - (e - (rlo + rlen));
+      return off;
+    };
+    x = slide(b.x, b.w, room.x, room.w, x);
+    y = slide(b.y, b.h, room.y, room.h, y);
+    if (Math.abs(x - cur.x) < 0.5 / k && Math.abs(y - cur.y) < 0.5 / k && zoom === cur.zoom) return; // already in view: still
+    const to = { x, y, zoom };
+    if (smooth) this.glideTo(to);
+    else {
+      this.stopGlide();
+      this.setView(to);
+    }
   }
 
   /**
@@ -3770,14 +3829,16 @@ export class FridgeFace extends HTMLElement {
     if (!b) return;
     const v = this.visibleView();
     const maxZoom = cFrameZoom({ width: v.w, height: v.h }, OVAL_WIDTH, { w: 0, h: 0 }, 0); // the 45% zoom, whatever the room
-    this.frameClear(b, list.map((o) => this.tightBounds([o])!), widths, bounds, obstacles, false, 0, { maxZoom, prev: null, slack: C_FIT_SLACK });
+    this.frameClear(b, list.map((o) => this.tightBounds([o])!), widths, bounds, obstacles, false, 0, { maxZoom, slack: C_FIT_SLACK });
   }
 
-  /** Phones, step 7: the finished word, framed whole (the callout centres itself clear of it where it can). */
+  /** Step 7: the finished word, framed whole (phones: the callout centres itself clear of it where it can; desktop: `fitDesktop`). */
   private fitFinishedWord(bounds: Rect, smooth: boolean) {
     const b = this.tightBounds(this.guide.outlines);
+    if (!b) return;
+    if (!this.isCompact) return this.fitDesktop(b, smooth);
     const bw = this.boardEl.getBoundingClientRect().width;
-    if (b) this.frameClear(b, [], [this.isLandscape ? Math.max(190, Math.round(bw * 0.3)) : Math.round(Math.min(300, bw - 32))], bounds, this.guideObstacles(), smooth);
+    this.frameClear(b, [], [this.isLandscape ? Math.max(190, Math.round(bw * 0.3)) : Math.round(Math.min(300, bw - 32))], bounds, this.guideObstacles(), smooth);
   }
 
   /**
@@ -3788,18 +3849,18 @@ export class FridgeFace extends HTMLElement {
     const board = this.boardEl.getBoundingClientRect();
     const k = this.k;
     const m = SECTION_FRAME_PAD;
-    const zoom = Math.min((ctx?.slack ?? 1) * Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h)), SECTION_MAX_COMFORT * this.comfortZoom(), ctx?.maxZoom ?? Infinity);
+    const fitIn = (h: number) => Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((h - 2 * m) / k) / Math.max(1, b.h));
+    // Room for a rotate handle above (`vpad`), given up only as far as it would cost the targets their minimum (`minZoom`).
+    const vfit = ctx?.vpad ? Math.min(fitIn(reg.h), Math.max(fitIn(reg.h - ctx.vpad), ctx.minZoom ?? 0)) : fitIn(reg.h);
+    const zoom = Math.min((ctx?.slack ?? 1) * vfit, SECTION_MAX_COMFORT * this.comfortZoom(), ctx?.maxZoom ?? Infinity);
     const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
     const to = { x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom };
     if (ctx) {
       // Vertically: where the view is zoomed out past what the room needs, the section sits at the top of it, leaving the
       // spare room below it for the callout to move into (a rotate handle can push the callout up from the tray).
-      to.y = (reg.y - board.top) / k + m / k - b.y * zoom + (reg.h / k - 2 * m / k - b.h * zoom) * 0.25;
-    }
-    if (ctx?.prev) {
-      // Horizontally: the built section before this one shows as context where the view has room (sectionOffsetX).
-      const vp = this.viewport();
-      to.x = sectionOffsetX([b.x, b.x + b.w], ctx.prev, zoom, [0, vp.width], [(reg.x - board.left) / k, (reg.x + reg.w - board.left) / k], m / k);
+      const spare = reg.h / k - 2 * m / k - b.h * zoom; // board's screen units left over in the room
+      const top = Math.min(spare, Math.max(spare * 0.25, (ctx.vpad ?? 0) / k)); // the handle's room above it first, where it fits
+      to.y = (reg.y - board.top) / k + m / k - b.y * zoom + top;
     }
     if (smooth) this.glideTo(to);
     else {
@@ -3848,44 +3909,6 @@ export class FridgeFace extends HTMLElement {
     this.scheduleGuide();
   }
 
-  /**
-   * Step 6: frame the word's outlines in the part of the visible board the callout leaves free (the callout sits by the
-   * tray, so the word gets the rest), as large as the comfortable maximum allows.
-   */
-  private fitWordBeside(cal: Rect, side: CalloutSide, bounds: Rect) {
-    const b = rotatedBounds(this.guide.outlines, (id) => SHAPE_BY_ID.get(id));
-    if (!b) return;
-    const gap = 16;
-    const reg = { ...bounds };
-    if (side === 'above') reg.h = cal.y - gap - reg.y;
-    else if (side === 'below') {
-      reg.h = reg.y + reg.h - (cal.y + cal.h + gap);
-      reg.y = cal.y + cal.h + gap;
-    } else if (side === 'right') {
-      reg.w = reg.x + reg.w - (cal.x + cal.w + gap);
-      reg.x = cal.x + cal.w + gap;
-    } else if (side === 'left') reg.w = cal.x - gap - reg.x;
-    const board = this.boardEl.getBoundingClientRect();
-    const k = this.k;
-    const top = board.top + this.topInset() * k; // phones: the docks cover the top of the board
-    if (reg.y < top) {
-      reg.h -= top - reg.y;
-      reg.y = top;
-    }
-    if (reg.w < 80 || reg.h < 60) Object.assign(reg, bounds); // no room beside it: use the whole board
-    const m = 16;
-    if (this.wordWork) {
-      // After Keep my pieces: their work and the word together where the targets stay big enough, else the word first.
-      const view = { x: (reg.x - board.left + m) / k, y: (reg.y - board.top + m) / k, w: (reg.w - 2 * m) / k, h: (reg.h - 2 * m) / k };
-      const c = frameBeside(this.wordWork, b, view, 0, this.targetZoom(this.guide.outlines), FIT_MAX_COMFORT * this.comfortZoom());
-      this.setView({ x: c.x, y: c.y, zoom: c.zoom });
-      return;
-    }
-    const zoom = Math.min(((reg.w - 2 * m) / k) / Math.max(1, b.w), ((reg.h - 2 * m) / k) / Math.max(1, b.h), FIT_MAX_COMFORT * this.comfortZoom());
-    const cx = (reg.x + reg.w / 2 - board.left) / k, cy = (reg.y + reg.h / 2 - board.top) / k;
-    this.setView({ x: cx - (b.x + b.w / 2) * zoom, y: cy - (b.y + b.h / 2) * zoom, zoom });
-  }
-
   /** Show, fill and place the callout, or hide it while a sheet, dialog or menu is open or a piece is in the hand. */
   private syncGuide() {
     const g = this.guideEl;
@@ -3909,31 +3932,19 @@ export class FridgeFace extends HTMLElement {
     // pieces, it narrows (taller, but clear of them).
     const bw = this.boardEl.getBoundingClientRect().width;
     const widths = this.isLandscape ? [0.45, 0.37, 0.3].map((f) => Math.max(190, Math.round(bw * f))) : this.isCompact ? [Math.round(Math.min(300, bw - 32)), 240] : [0];
-    if (this.wordFitPending && this.guide.phase === 'word' && s === 7 && this.guide.sections) {
-      // Phones: the finished word, framed whole (clear of the docks, the tray and the action bar).
+    if (this.wordFitPending && this.guide.phase === 'word' && s === 7) {
+      // The finished word, framed whole (phones: clear of the docks, the tray and the action bar).
       const how = this.wordFitPending;
       this.wordFitPending = false;
       this.fitFinishedWord(bounds, how === 'smooth');
     } else if (this.wordFitPending && s === 6) {
-      // Once: where the callout goes by the tray decides where the word is framed (beside it, never under it).
+      // Once per batch: frame it (phones: beside the callout by the tray, never under it, nor under the action bar).
       const how = this.wordFitPending;
       this.wordFitPending = false;
-      const narrow = widths[widths.length - 1]; // the narrowest callout leaves the word the most room
-      g.style.maxWidth = narrow ? `${narrow}px` : '';
-      // Room for its tallest form (the turning hint as a third line), so the hint never has to cover the word later.
-      const t3 = g.querySelector<HTMLElement>('.gt3')!, was = [t3.textContent, t3.hidden] as const;
-      t3.textContent = this.turnText();
-      t3.hidden = false;
-      const size = { w: g.offsetWidth, h: g.offsetHeight };
-      t3.textContent = was[0];
-      t3.hidden = was[1];
-      const tray = toRect(this.trayEl.getBoundingClientRect());
-      if (this.guide.sections) {
-        // Phones: the action bar shows whenever a piece is selected (after every click-in): keep its place free too.
-        this.fitSection(widths, bounds, obstacles, how === 'smooth');
-      } else {
-        const p = placeCallout(size, tray, bounds, obstacles, this.trayPrefer);
-        this.fitWordBeside({ x: p.x, y: p.y, w: size.w, h: size.h }, p.side, bounds);
+      if (this.isCompact) this.fitBatch(widths, bounds, obstacles, how === 'smooth');
+      else {
+        const b = this.tightBounds(this.batchOutlines());
+        if (b) this.fitDesktop(b, how === 'smooth');
       }
       this.renderOutlines();
       if (this.viewGlide) {

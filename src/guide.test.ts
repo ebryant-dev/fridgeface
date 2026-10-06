@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
-  cSequence, chooseWord, currentSection, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
-  nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type GuideState,
+  cSequence, chooseWord, contextOutlines, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
+  nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
 } from './guide';
 import type { Outline, OutlinePiece } from './outline';
@@ -183,14 +183,15 @@ describe('click-in (guide only)', () => {
 describe('step machine v3: the word (steps 6 and 7)', () => {
   const at5 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
   // WORD's overlapping pairs (rough overlap, 100-unit shapes): the round and its negative round (1, 2), and the negative
-  // round and the wedge (2, 3). The stem (0) overlaps nothing.
+  // round and the wedge (2, 3). The stem (0) overlaps nothing. Its batches (v1.4.0): [0, 1], then [2], then [3].
 
-  it('Guide me: from step 5 only; every outline shows at once; done = placed AND stacked right; progress N of M; then step 7', () => {
+  it('Guide me: from step 5 only; the first batch shows; done = placed AND stacked right; progress N of M; then step 7', () => {
     expect(chooseWord(startGuide(C, world([])), WORD, world([])).step, 'not from step 1').toBe(1);
     let s = chooseWord(at5(), WORD, world([]));
-    expect([s.step, s.phase, activeOutlines(s), guideProgress(s)]).toEqual([6, 'word', [0, 1, 2, 3], { done: 0, total: 4 }]);
-    s = observeGuide(s, world([on('w', WORD[3])])); // the last piece first
-    expect([s.step, activeOutlines(s), guideProgress(s), s.stack]).toEqual([6, [0, 1, 2], { done: 1, total: 4 }, null]);
+    expect([s.step, s.phase, s.batches, activeOutlines(s), guideProgress(s)]).toEqual([6, 'word', [[0, 1], [2], [3]], [0, 1], { done: 0, total: 4 }]);
+    // (Out of the plan: the last piece first, as a load or a hand-placed piece could put it; the board is read as it is.)
+    s = observeGuide(s, world([on('w', WORD[3])]));
+    expect([s.step, activeOutlines(s), guideProgress(s), s.stack]).toEqual([6, [0, 1], { done: 1, total: 4 }, null]);
     s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2])])); // the negative round lands ON TOP of the wedge
     expect(guideProgress(s).done, 'placed but mis-stacked: neither counts').toBe(0);
     expect(s.filled.filter(Boolean)).toHaveLength(2);
@@ -221,9 +222,12 @@ describe('step machine v3: the word (steps 6 and 7)', () => {
     expect([s.step, activeOutlines(s)]).toEqual([6, [0]]);
   });
 
-  it('the turning hint in step 6: a piece close to its outline but mis-angled', () => {
-    const s = observeGuide(chooseWord(at5(), WORD, world([])), world([pc('x', 'wedge', 705, 30, 0)]));
-    expect([s.step, s.turn]).toEqual([6, 'x']);
+  it('the turning hint in step 6: a piece close to an outline of the current batch but mis-angled (only the current batch)', () => {
+    const s0 = chooseWord(at5(), WORD, world([]));
+    expect(observeGuide(s0, world([pc('x', 'wedge', 705, 30, 0)])).turn, 'the wedge is not in the current batch yet').toBeNull();
+    const before = [on('s', WORD[0]), on('r', WORD[1]), on('n', WORD[2])];
+    const s = observeGuide(s0, world([...before, pc('x', 'wedge', 705, 30, 0)]));
+    expect([s.step, currentBatch(s), s.turn]).toEqual([6, 2, 'x']);
   });
 
   it('no auto-reorder on click-in: a positive clicked in after its negative stays on top, and is prompted instead', () => {
@@ -237,10 +241,10 @@ describe('step machine v3: the word (steps 6 and 7)', () => {
     expect([guideProgress(s).done, s.stack?.id, s.stack?.dir]).toEqual([0, 'r', 'back']);
   });
 
-  it('two pieces released together each click into their own outline', () => {
+  it('two pieces released together each click into their own outline (both in the current batch)', () => {
     const s = chooseWord(at5(), WORD, world([]));
-    const r = guideClickIn(s, world([pc('s', 'positive-stem', 502, 1, -3), pc('w', 'wedge', 698, 31, 45)]), ['s', 'w'])!;
-    expect(r.placements.map((p) => [p.id, p.outline])).toEqual([['s', 0], ['w', 3]]);
+    const r = guideClickIn(s, world([pc('s', 'positive-stem', 502, 1, -3), pc('r', 'positive-round', 603, 2, 4)]), ['s', 'r'])!;
+    expect(r.placements.map((p) => [p.id, p.outline])).toEqual([['s', 0], ['r', 1]]);
   });
 
   it('Next: fills the lowest active outline, or (first) fixes the prompted piece\'s stacking; nothing on steps 5 and 7', () => {
@@ -707,63 +711,72 @@ describe('frameBeside: both in view, or the outlines first (v1.2.1)', () => {
   });
 });
 
-describe('phones: the word one section at a time (v1.2.2)', () => {
+describe('the word in batches (v1.4.0, every layout)', () => {
   const at5 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
-  // Two sections: the stem and the round with its negative round (indices 0 to 2), then the wedge (index 3).
-  const SECTIONS = [[0, 2, 1], [3]];
+  // WORD's batches: [0, 1] (the stem and the round: both ready, apart), [2] (the negative round, on the round), [3] (the
+  // wedge, on the negative round).
   const ps = (...is: number[]) => is.map((i) => on(`p${i}`, WORD[i]));
 
-  it('only the current section shows and accepts pieces; it moves on when complete; progress counts the whole word', () => {
-    let s = chooseWord(at5(), WORD, world([]), SECTIONS);
-    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s)]).toEqual([6, 0, [0, 1, 2], { done: 0, total: 4 }]);
-    // A wedge dropped right on the (hidden) next section's outline does not click in.
+  it('only the current batch shows and accepts pieces; it moves on when complete; progress counts the whole word', () => {
+    let s = chooseWord(at5(), WORD, world([]));
+    expect([s.step, currentBatch(s), activeOutlines(s), guideProgress(s)]).toEqual([6, 0, [0, 1], { done: 0, total: 4 }]);
+    // A wedge dropped right on a later batch's (hidden) outline does not click in.
     expect(guideClickIn(s, world([pc('w', 'wedge', 701, 31, 40)]), ['w'])).toBeNull();
-    s = observeGuide(s, world(ps(2)));
-    expect([currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [0, 1], 1]);
-    expect(nextOutline(s), 'Next: the lowest outline of the CURRENT section').toBe(0);
-    // All three placed, but the round landed on top of its negative round: the section is not complete until it is restacked.
-    s = observeGuide(s, world(ps(2, 0, 1)));
-    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done, s.stack?.id]).toEqual([6, 0, [], 1, 'p1']);
-    expect(nextAction(s)?.kind, 'Next restacks it').toBe('stack');
-    s = observeGuide(s, world(ps(1, 2, 0)));
-    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([6, 1, [3], 3]);
-    expect(nextOutline(s)).toBe(3);
-    expect(guideClickIn(s, world([...ps(1, 2, 0), pc('w', 'wedge', 701, 31, 40)]), ['w'])!.placements.map((p) => p.outline)).toEqual([3]);
-    s = observeGuide(s, world(ps(0, 1, 2, 3)));
-    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([7, -1, []]);
+    s = observeGuide(s, world(ps(1)));
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [0], 1]);
+    expect(nextOutline(s), 'Next: the lowest outline of the CURRENT batch').toBe(0);
+    s = observeGuide(s, world(ps(1, 0)));
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done, s.stack]).toEqual([1, [2], 2, null]);
+    s = observeGuide(s, world(ps(1, 0, 2)));
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done, s.stack]).toEqual([2, [3], 3, null]);
+    expect(guideClickIn(s, world([...ps(1, 0, 2), pc('w', 'wedge', 701, 31, 40)]), ['w'])!.placements.map((p) => p.outline)).toEqual([3]);
+    s = observeGuide(s, world(ps(1, 0, 2, 3)));
+    expect([s.step, currentBatch(s), activeOutlines(s), s.stack]).toEqual([7, -1, [], null]);
   });
 
-  it('undo back across a section boundary returns to the earlier section (derived from the board)', () => {
+  it('safety net: a placed piece the visitor brings forward over one that belongs above it is prompted, and its batch is current again until fixed', () => {
+    let s = observeGuide(chooseWord(at5(), WORD, world([])), world(ps(0, 1, 2)));
+    expect([currentBatch(s), s.stack]).toEqual([2, null]);
+    s = observeGuide(s, world(ps(0, 2, 1))); // the round brought forward over its negative round
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [], 1]);
+    expect([s.stack?.id, s.stack?.dir], 'the most recently placed of the pair, one press').toEqual(['p2', 'forward']);
+    expect(nextAction(s)?.kind, 'Next restacks it').toBe('stack');
+    s = observeGuide(s, world(ps(0, 1, 2))); // sent back
+    expect([currentBatch(s), activeOutlines(s), s.stack]).toEqual([2, [3], null]);
+  });
+
+  it('undo back across a batch boundary returns to the earlier batch (derived from the board); redo returns', () => {
     const h = new History<readonly OutlinePiece[]>([]);
-    let s = chooseWord(at5(), WORD, world([]), SECTIONS);
-    for (const i of [0, 1, 2, 3]) {
+    let s = chooseWord(at5(), WORD, world([]));
+    for (const i of [1, 0, 2, 3]) {
       h.record([...h.present, ...ps(i)]);
       s = observeGuide(s, world(h.present));
     }
     expect(s.step).toBe(7);
-    s = observeGuide(s, world(h.undo()!)); // the wedge goes: section 2 again
-    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([6, 1, [3]]);
-    s = observeGuide(s, world(h.undo()!)); // the negative round goes: back into section 1
-    expect([currentSection(s), activeOutlines(s)]).toEqual([0, [2]]);
+    s = observeGuide(s, world(h.undo()!)); // the wedge goes: its batch again
+    expect([s.step, currentBatch(s), activeOutlines(s)]).toEqual([6, 2, [3]]);
+    s = observeGuide(s, world(h.undo()!)); // the negative round goes
+    expect([currentBatch(s), activeOutlines(s)]).toEqual([1, [2]]);
+    s = observeGuide(s, world(h.undo()!)); // the stem goes: back into the first batch
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [0], 1]);
     s = observeGuide(s, world(h.redo()!));
-    expect(currentSection(s)).toBe(1);
+    expect(currentBatch(s)).toBe(1);
+    expect(s.batches, 'the plan itself never changes').toEqual([[0, 1], [2], [3]]);
   });
 
-  it('switching layouts mid-step keeps progress: sections on and off, filled outlines stay filled', () => {
-    let s = observeGuide(chooseWord(at5(), WORD, world([]), SECTIONS), world(ps(3)));
-    expect([activeOutlines(s), guideProgress(s).done]).toEqual([[0, 1, 2], 1]); // the wedge, filled early, still counts
-    const desk = withSections(s, null, world(ps(3)));
-    expect([desk.sections, desk.step, activeOutlines(desk), guideProgress(desk).done]).toEqual([null, 6, [0, 1, 2], 1]);
-    s = withSections(desk, SECTIONS, world(ps(3)));
-    expect([currentSection(s), activeOutlines(s)]).toEqual([0, [0, 1, 2]]);
-    expect(withSections(at5(), SECTIONS, world([])).sections, 'only in the word phase').toBeNull();
+  it('context: the word\'s other unfilled outlines (desktop draws them faintly), never the current batch\'s, only in step 6', () => {
+    let s = chooseWord(at5(), WORD, world([]));
+    expect(contextOutlines(s)).toEqual([2, 3]);
+    s = observeGuide(s, world(ps(1, 0)));
+    expect([activeOutlines(s), contextOutlines(s)]).toEqual([[2], [3]]);
+    expect(contextOutlines(at5())).toEqual([]);
+    expect(contextOutlines(observeGuide(s, world(ps(1, 0, 2, 3))))).toEqual([]);
   });
 
-  it('sections that do not cover every outline exactly once fall back to the whole word', () => {
-    for (const bad of [[[0, 1], [3]], [[0, 1, 2], [2, 3]], [[0, 1, 2, 3], []], [[0, 1, 2, 9], [3]]]) {
-      const s = chooseWord(at5(), WORD, world([]), bad);
-      expect([s.sections, activeOutlines(s)]).toEqual([null, [0, 1, 2, 3]]);
-    }
+  it('the pieces already placed at Guide me are batch 0 (done); the plan follows on from them', () => {
+    const s = chooseWord(at5(), WORD, world(ps(1)));
+    expect(s.batches, 'the stem and the negative round: both ready once the round is in, and apart').toEqual([[1], [0, 2], [3]]);
+    expect([currentBatch(s), activeOutlines(s), guideProgress(s).done]).toEqual([1, [0, 2], 1]);
   });
 });
 

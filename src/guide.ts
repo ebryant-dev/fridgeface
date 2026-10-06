@@ -5,6 +5,7 @@ import {
   type ShapeFrame, type SizeOf,
 } from './outline';
 import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stacking';
+import { planBatches, type BatchOptions } from './batches';
 
 /**
  * The onboarding guide (copy v3, v1.3.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
@@ -22,13 +23,15 @@ import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stac
  * 4. outline: the wedge, at its angle. 4a "drag it into place"; 4b (a wedge is close in position but needs turning) "turn it".
  * 5. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
  *    (rigidly, not turned) keeps step 5: its outlines follow it (`rigidShift`).
- * 6. outlines: the whole word, every piece at once, filled in any order. A word piece is DONE when it is placed AND stacked
- *    right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. A mis-stacked piece
- *    gets a prompt (`stack`: Send it back / Bring it forward, the most recently placed first). Same turning hint as 4b.
- *    Nothing is cleared at Guide me; the word's outlines are in the c's board frame, so the c's pieces fill theirs.
- *    Phones (the compact layout): the word is filled one SECTION at a time (`sections`, split by sections.ts): only the
- *    current section's outlines show and accept a piece. The current section is the first, left to right, with a piece not
- *    done (unplaced, or mis-stacked), so it too is derived from the board. The progress still counts the whole word.
+ * 6. outlines: the word, built in STACKING ORDER one small BATCH at a time (v1.4.0, every layout; batches.ts): only the
+ *    current batch's outlines show and accept a piece, filled in any order. Every outline of a batch is ready (each lower
+ *    piece it overlaps is already placed) and no two of a batch overlap, so a visitor who takes each piece from the tray
+ *    (it lands on top) can never stack one wrongly (proved in batches.ts). The current batch is the first with a piece not
+ *    done, so it too is derived from the board (undo and redo move between batches). A word piece is DONE when it is placed
+ *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. The
+ *    stacking prompts (`stack`: Send it back / Bring it forward, the most recently placed first) remain only as a safety net,
+ *    for a visitor who reorders pieces themselves. Same turning hint as 4b. Nothing is cleared at Guide me; the word's
+ *    outlines are in the c's board frame, so the c's pieces fill theirs (they are batch 0, already done).
  * 7. no outline. "You made "create"." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
  *
@@ -139,16 +142,16 @@ export interface GuideState {
   /** A piece close to an active outline of its shape but at the wrong angle (step 4b, or the same hint in step 6), or null. */
   turn: string | null;
   /**
-   * The word phase on phones: the word's outlines split into sections (outline indices per section, left to right), filled
-   * one section at a time. null: every outline at once (desktop, and always outside the word phase).
+   * The word phase: the word's outlines in batches (outline indices per batch, in the order they are built; batch 0 is the
+   * pieces already placed at Guide me), filled one batch at a time (batches.ts). null outside the word phase.
    */
-  sections: readonly (readonly number[])[] | null;
+  batches: readonly (readonly number[])[] | null;
 }
 
 const NONE = Object.freeze([]) as readonly never[];
 export const GUIDE_IDLE: GuideState = Object.freeze({
   step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, done: NONE, recent: NONE, stack: null, turn: null,
-  sections: null,
+  batches: null,
 }) as GuideState;
 
 /** Is the guide running (step 0's question included)? */
@@ -160,12 +163,12 @@ export function askGuide(): GuideState {
 }
 
 /**
- * The section being filled (phones, step 6): the first section, left to right, with a piece not done (unplaced, or placed
- * but mis-stacked). -1 when there are no sections (desktop) or every piece is done.
+ * The batch being filled (step 6): the first batch with a piece not done (unplaced, or placed but mis-stacked). -1 outside
+ * the word phase or when every piece is done.
  */
-export function currentSection(s: GuideState): number {
-  if (s.phase !== 'word' || !s.sections) return -1;
-  return s.sections.findIndex((sec) => sec.some((i) => !s.done[i]));
+export function currentBatch(s: GuideState): number {
+  if (s.phase !== 'word' || !s.batches) return -1;
+  return s.batches.findIndex((b) => b.some((i) => !s.done[i]));
 }
 
 /**
@@ -182,8 +185,7 @@ export function cSequence(outlines: readonly Outline[]): number[] {
 
 /**
  * The outlines showing (and accepting a piece) in this state: one at a time in steps 1, 2 and 4 (none in step 3, the
- * stacking lesson), every unfilled one in step 6 (on phones, every unfilled one of the current section), lowest index
- * (bottom of the stacking order) first.
+ * stacking lesson), every unfilled one of the current batch in step 6, lowest index (bottom of the stacking order) first.
  */
 export function activeOutlines(s: GuideState): number[] {
   if (s.phase === 'c' && (s.step === 1 || s.step === 2 || s.step === 4)) {
@@ -191,15 +193,25 @@ export function activeOutlines(s: GuideState): number[] {
     return i === undefined ? [] : [i];
   }
   if (s.phase === 'word' && s.step === 6) {
-    if (!s.sections) return activeIndices(s.filled);
-    const k = currentSection(s);
-    return k < 0 ? [] : s.sections[k].filter((i) => !s.filled[i]).sort((a, b) => a - b);
+    if (!s.batches) return activeIndices(s.filled);
+    const k = currentBatch(s);
+    return k < 0 ? [] : s.batches[k].filter((i) => !s.filled[i]).sort((a, b) => a - b);
   }
   return [];
 }
 
-type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'sections' | 'recent'>;
-const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, sections: s.sections, recent: s.recent });
+/**
+ * Step 6: the word's other unfilled outlines (not in the current batch): drawn very faintly as context on desktop, never
+ * active (they accept no piece and the callout need not keep clear of them). Empty in every other step.
+ */
+export function contextOutlines(s: GuideState): number[] {
+  if (s.phase !== 'word' || s.step !== 6) return [];
+  const active = new Set(activeOutlines(s));
+  return activeIndices(s.filled).filter((i) => !active.has(i));
+}
+
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent });
 
 /** The placed pieces in the order they were placed: the ones still placed keep their turn, newly placed ones go last. */
 function updateRecent(recent: readonly string[], filled: readonly (string | null)[]): readonly string[] {
@@ -240,7 +252,7 @@ function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld
     step = done.every(Boolean) ? 7 : 6;
     stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent) : null;
   }
-  const s: GuideState = { ...c, recent, sections: phase === 'word' ? c.sections : null, step, phase, outlines, filled, done, stack, turn: null };
+  const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, step, phase, outlines, filled, done, stack, turn: null };
   const active = activeOutlines(s);
   // The turning hint: in step 4 (the wedge) and step 6 (any piece of the word).
   const turn = step === 4 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
@@ -253,7 +265,7 @@ const samePrompt = (a: StackPrompt | null, b: StackPrompt | null) =>
 const same = (a: GuideState, b: GuideState) =>
   a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && sameList(a.filled, b.filled) && sameList(a.done, b.done)
   && sameList(a.recent, b.recent) && samePrompt(a.stack, b.stack)
-  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.sections === b.sections;
+  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.batches === b.batches;
 
 /**
  * Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it.
@@ -261,7 +273,7 @@ const same = (a: GuideState, b: GuideState) =>
  */
 export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
   if (!cOutlines.length) return GUIDE_IDLE;
-  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, sections: null, recent: NONE });
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, batches: null, recent: NONE });
 }
 
 /**
@@ -345,38 +357,20 @@ export function rigidShift(outlines: readonly Outline[], filled: readonly (strin
 }
 
 /**
- * Step 5's Guide me: the word's outlines (already placed). Only from step 5. `sections` (phones): the outlines split into
- * sections, filled one at a time (see `withSections`); null: the whole word at once.
+ * Step 5's Guide me: the word's outlines (already placed). Only from step 5. The word is planned into batches here, once
+ * (`planBatches`): the outlines already filled (the c) are batch 0, and the plan follows the word's stacking order from
+ * them. `plan`: how outlines are measured for the batches' locality (the component passes the real outlines' bounds and its
+ * span); absent, each outline is a square of its shape's size and a batch may spread anywhere (unit tests).
  */
-export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld, sections: readonly (readonly number[])[] | null = null): GuideState {
+export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld, plan: Partial<BatchOptions> = {}): GuideState {
   if (s.step !== 5 || !wordOutlines.length) return s;
-  return derive('word', wordOutlines, w, { ...carry(s), sections: validSections(sections, wordOutlines.length) });
-}
-
-/** Sections that cover every outline exactly once, or null (anything else falls back to the whole word at once). */
-function validSections(sections: readonly (readonly number[])[] | null, n: number): readonly (readonly number[])[] | null {
-  if (!sections || !sections.length) return null;
-  const seen = new Set<number>();
-  for (const sec of sections) {
-    if (!sec.length) return null;
-    for (const i of sec) {
-      if (!Number.isInteger(i) || i < 0 || i >= n || seen.has(i)) return null;
-      seen.add(i);
-    }
-  }
-  return seen.size === n ? sections : null;
-}
-
-/**
- * The layout changed during the word phase (a phone rotated into, or a window resized out of, the compact layout): fill
- * by sections, or the whole word at once (null). Nothing on the board changes, so every filled outline stays filled.
- * Only in the word phase.
- */
-export function withSections(s: GuideState, sections: readonly (readonly number[])[] | null, w: GuideWorld): GuideState {
-  if (s.phase !== 'word') return s;
-  const next = validSections(sections, s.outlines.length);
-  if (next === s.sections) return s;
-  return derive('word', s.outlines, w, { ...carry(s), sections: next });
+  const placed = filledBy(wordOutlines, w.pieces).flatMap((id, i) => (id ? [i] : []));
+  const boxOf = plan.boxOf ?? ((o: Outline) => {
+    const z = w.sizeOf(o.shapeId);
+    return { x: o.x - z / 2, y: o.y - z / 2, w: z, h: z };
+  });
+  const batches = planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
+  return derive('word', wordOutlines, w, { ...carry(s), batches });
 }
 
 /** Skip, Don't show again, Clear for free play, Start fresh, Keep it (and step 0's Skip / Don't show again). */
@@ -606,7 +600,7 @@ export function adoptTheirs(s: GuideState, ids: readonly string[]): GuideState {
 }
 
 /**
- * Phones, the word by sections: the largest free part of `area` (screen px) to frame content of `size` in. Each blocker
+ * Phones, the word batch by batch: the largest free part of `area` (screen px) to frame content of `size` in. Each blocker
  * (the callout, the action bar) that cuts into the area leaves four candidate strips (left of, right of, above or below
  * it); every combination is tried and the one that shows the content largest (`scale`: screen px per content unit, less
  * `pad` on each side) wins. Ties: the first found (blockers in order; left, right, above, below). With no blockers the
