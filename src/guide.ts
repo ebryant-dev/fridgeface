@@ -6,6 +6,7 @@ import {
 } from './outline';
 import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stacking';
 import { planBatches, type BatchOptions } from './batches';
+import { curatedPlan } from './guide-plans';
 
 /**
  * The onboarding guide (copy v3, v1.3.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
@@ -348,7 +349,7 @@ export function rigidShift(outlines: readonly Outline[], filled: readonly (strin
 
 /**
  * Step 5's Guide me: the word's outlines (already placed). Only from step 5. The word is planned into batches here, once
- * (`planBatches`): the outlines already filled (the c) are batch 0, and the plan follows the word's stacking order from
+ * (a curated plan for the word if there is one, `curatedPlan`; else `planBatches`): the outlines already filled (the c) are batch 0, and the plan follows the word's stacking order from
  * them. `plan`: how outlines are measured for the batches' locality (the component passes the real outlines' bounds and its
  * span); absent, each outline is a square of its shape's size and a batch may spread anywhere (unit tests).
  */
@@ -359,7 +360,8 @@ export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: G
     const z = w.sizeOf(o.shapeId);
     return { x: o.x - z / 2, y: o.y - z / 2, w: z, h: z };
   });
-  const batches = planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
+  // A plan curated by hand for this very word (guide-plans.ts), when there is one and it is valid; else the automatic planner.
+  const batches = curatedPlan(wordOutlines, overlapsOf(w), placed) ?? planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
   return derive('word', wordOutlines, w, { ...carry(s), batches });
 }
 

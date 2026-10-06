@@ -627,7 +627,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
     if (isMobile) expect(moved, `batch ${k}: phones frame each batch`).toBe(true);
     last = f.view;
     mins.push(sh.min.toFixed(1));
-    if (isMobile) expect(sh.min, `batch ${k}: the thinnest target`).toBeGreaterThanOrEqual(landscape ? 19.9 : 23.9);
+    if (isMobile) expect(sh.min, `batch ${k}: the thinnest target`).toBeGreaterThanOrEqual(landscape ? 13.9 : 17.9); // the global floors are 24 and 20; a batch that cannot fit the callout at them takes a lower one, down to 18 and 14
     await checkCallout(page, `batch ${k}`);
     if ((nm === 'desktop' || nm === 'wk-iphone') && (k === 1 || k === 3)) await page.screenshot({ path: `${SHOT}/g7-batch${k}-${nm}.png` });
     if (nm === 'wk-iphone-landscape' && k === 2) await page.screenshot({ path: `${SHOT}/g7-batch2-wk-iphone-landscape.png` });
@@ -1311,10 +1311,10 @@ test('axe: no violations at step 0', async ({ page, browserName }) => {
 
 // ---- v1.4.0: the word in stacking order, one batch at a time (every layout) -------------------------------------
 
-/** The REAL word-create-1's batches from the built c (src/batches.test.ts snapshots the same plan from the shapes' hulls). */
+/** The REAL word-create-1's batches from the built c: the plan curated for it (src/guide-plans.ts; src/batches.test.ts checks the same plan). */
 const CREATE_BATCHES = [
-  [0, 1, 2], [3], [4, 5], [6], [7, 8], [9, 16], [10, 11], [12, 17, 18], [13, 19], [14], [15, 20], [24], [21, 22], [23], [25], [26, 27],
-  [28], [29], [30, 31],
+  [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21, 25], [23, 26], [27, 28],
+  [29], [30, 31],
 ];
 
 /** Wait until the view is still: no batch framing pending, no glide running. */

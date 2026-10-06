@@ -19,9 +19,11 @@ const union = (a: Rect, b: Rect): Rect => {
  * `planBatches` cuts the word into BATCHES of at most BATCH_MAX outlines. Every outline of a batch is READY when the batch
  * starts (every lower outline it overlaps is already placed: in an earlier batch, or among the pieces placed before the plan,
  * the c), and no two outlines of a batch overlap each other. Batches are chosen greedily for locality: each starts at the
- * ready outline nearest the previous batch (rightward moves cost a little more, so the word is swept roughly left to right
- * and nothing is left behind), then takes the ready outlines nearest it, within `reach` of that first one, that overlap
- * nothing already in the batch. The plan is fixed when the word starts (a pure function of the word and what was already
+ * ready outline nearest the previous batch's FIRST outline (its seed: v1.4.2; the centre of a wide batch can sit far to the
+ * right and would leave a piece of it behind) (rightward moves cost a little more, so the word is swept roughly left to right
+ * and nothing is left behind), then takes the ready outlines nearest the batch so far that overlap nothing already in it and keep
+ * the batch within the locality window `span` (`localitySpan`, about two letters wide). A batch is MAXIMAL: it closes short of
+ * BATCH_MAX only when no other ready outline that overlaps nothing in it fits the window (the automatic planner's property test). The plan is fixed when the word starts (a pure function of the word and what was already
  * placed): batches are NOT topped up as pieces go in. A fixed batch keeps its framing still while it is filled (phones
  * frame each batch close up), marks a clear "batch done" moment, and stays derivable from the board, so undo and redo move
  * between batches with no history of their own (the current batch is the first one with a piece not done).
@@ -49,6 +51,19 @@ export const BATCH_MAX = 4;
 /** A rightward step to the next batch's first outline costs this much more than the same step leftward (per unit). */
 export const BATCH_RIGHT_COST = 0.5;
 
+/**
+ * The locality window (`BatchOptions.span`), board units: the width of `perWindow` (two) average letters of the word, that
+ * is the word's whole width (its outlines' bounds together, the flower's extra part included) divided by its letter count,
+ * times two. Two letters is the view Edward accepted on a phone. Counting the flower is the sensible choice here: without
+ * it the window would be narrower than the old 1.6 positive stems and the batches would only get smaller; with it, for
+ * "create" (width about 2368, 6 letters) the window is about 789, 1.8 stems.
+ */
+export function localitySpan(boxes: readonly Rect[], letters: number, perWindow = 2): number {
+  if (!boxes.length) return Infinity;
+  const all = boxes.reduce(union);
+  return (all.w / Math.max(1, letters)) * perWindow;
+}
+
 /** Outline i depends on deps[i]: every LOWER outline (j < i) it overlaps, which must be placed before it. */
 export function dependencies(outlines: readonly Outline[], overlaps: Overlaps): number[][] {
   const ps: OutlinePiece[] = outlines.map((o, i) => ({ ...o, id: `o${i}` }));
@@ -74,7 +89,7 @@ export interface BatchOptions {
   max?: number;
   /** An outline's bounds on the board (its real outline's), board units. */
   boxOf: (o: Outline) => Rect;
-  /** Board units: a batch's outlines together fit a square this size (its first outline alone may be larger). */
+  /** Board units (`localitySpan`): a batch's outlines together fit a square this size (its first outline alone may be larger). */
   span: number;
   /** Extra cost per unit of a rightward step to the next batch's first outline (default BATCH_RIGHT_COST). */
   rightCost?: number;
@@ -98,7 +113,7 @@ export function planBatches(outlines: readonly Outline[], overlaps: Overlaps, pl
   const boxes = outlines.map((o) => opt.boxOf(o));
   const done = new Set(placed.filter((i) => Number.isInteger(i) && i >= 0 && i < n));
   const out: number[][] = done.size ? [[...done].sort((a, b) => a - b)] : [];
-  // Where the last batch was: the c, or (nothing placed) the word's left edge, level with its middle.
+  // Where the last batch started (its first outline), or, before the first batch: the c, or (nothing placed) the word's left edge, level with its middle.
   let anchor = done.size
     ? centreOf(outlines, [...done])
     : { x: Math.min(...outlines.map((o) => o.x)), y: outlines.reduce((s, o) => s + o.y, 0) / Math.max(1, n) };
@@ -129,7 +144,7 @@ export function planBatches(outlines: readonly Outline[], overlaps: Overlaps, pl
     batch.sort((a, b) => a - b);
     for (const i of batch) done.add(i);
     out.push(batch);
-    anchor = centreOf(outlines, batch);
+    anchor = { x: outlines[seed].x, y: outlines[seed].y };
   }
   // Defensive: anything left (it cannot be) goes last, one per batch, lowest first.
   for (let i = 0; i < n; i++) if (!done.has(i)) out.push([i]);
@@ -141,4 +156,37 @@ export function batchOf(batches: readonly (readonly number[])[], n: number): num
   const of = new Array<number>(n).fill(-1);
   batches.forEach((b, k) => b.forEach((i) => (of[i] = k)));
   return of;
+}
+
+/**
+ * Whether `plan` is a valid batch plan for `outlines` with `placed` already on the board (the c): every outline exactly once,
+ * batch 0 is exactly `placed` (when any), and every later batch is non-empty, at most `max` long, ready when it starts (every
+ * lower outline it overlaps is in an earlier batch) with no two outlines overlapping. Returns null when valid, else why not.
+ * These are the rules the correctness proof above needs; used to check a curated plan (guide-plans.ts) before it is used.
+ */
+export function validatePlan(outlines: readonly Outline[], overlaps: Overlaps, placed: readonly number[], plan: readonly (readonly number[])[], max = BATCH_MAX): string | null {
+  const n = outlines.length;
+  const deps = dependencies(outlines, overlaps);
+  const seen = new Set<number>();
+  for (const b of plan) for (const i of b) {
+    if (!Number.isInteger(i) || i < 0 || i >= n) return `outline ${i} does not exist`;
+    if (seen.has(i)) return `outline ${i} appears twice`;
+    seen.add(i);
+  }
+  if (seen.size !== n) return 'not every outline is in the plan';
+  if (placed.length && !downwardClosed(deps, new Set(placed))) return 'the placed outlines are not closed downward';
+  const done = new Set<number>();
+  for (let k = 0; k < plan.length; k++) {
+    const b = plan[k];
+    if (!b.length) return `batch ${k} is empty`;
+    if (k === 0 && placed.length) {
+      if (b.length !== placed.length || !placed.every((i) => b.includes(i))) return 'batch 0 is not the placed outlines';
+    } else {
+      if (b.length > max) return `batch ${k} has more than ${max} outlines`;
+      for (const i of b) if (!deps[i].every((j) => done.has(j))) return `batch ${k}: outline ${i} is not ready`;
+      for (const i of b) for (const j of b) if (i < j && deps[j].includes(i)) return `batch ${k}: outlines ${i} and ${j} overlap`;
+    }
+    for (const i of b) done.add(i);
+  }
+  return null;
 }

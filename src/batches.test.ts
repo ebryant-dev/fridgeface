@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { BATCH_MAX, batchOf, dependencies, downwardClosed, planBatches, readyOutlines } from './batches';
+import { describe, expect, it, vi } from 'vitest';
+import { BATCH_MAX, batchOf, dependencies, downwardClosed, localitySpan, planBatches, readyOutlines, validatePlan } from './batches';
+import { CURATED, contentKey, curatedPlan, resetCuratedWarning } from './guide-plans';
 import { HULLS } from './hulls.testdata';
 import { boundsOf, bringForwardOverlapping, convexIntersect, placeOutline, sendBackwardOverlapping } from './selection';
 import { stackCheck, stackPrompt } from './stacking';
@@ -18,9 +19,12 @@ const CREATE: Outline[] = Object.values(files)[0].pieces.map((p) => ({ shapeId: 
 const N = CREATE.length;
 const poly = (o: Outline) => placeOutline(HULLS[o.shapeId], o);
 const overlaps = (a: Outline, b: Outline) => convexIntersect(poly(a), poly(b));
-/** The component's measures: real outline bounds, a span of 1.6 positive stems (BATCH_SPAN_STEMS x the stem's length). */
+/** The component's measures: real outline bounds, a span of two average letters of the word (`localitySpan`: about 789; v1.4.0/1 had 1.6 positive stems, 702). */
 const STEM = 438.9067888515738;
-const OPT = { boxOf: (o: Outline) => boundsOf(poly(o)), span: 1.6 * STEM };
+const boxOf = (o: Outline) => boundsOf(poly(o));
+const LETTERS = 6; // "create"
+const SPAN = localitySpan(CREATE.map(boxOf), LETTERS, 2);
+const OPT = { boxOf, span: SPAN };
 /** The c inside the word (findWordC): its three bottom pieces, built and stacked before Guide me. */
 const C = [0, 1, 2];
 
@@ -30,7 +34,9 @@ const PAIRS: [number, number][] = [];
 for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) if (OV[i][j]) PAIRS.push([i, j]);
 
 /** The real word's plan from the built c, as the component makes it at Guide me. */
-const PLAN = planBatches(CREATE, overlaps, C, OPT);
+const AUTO = planBatches(CREATE, overlaps, C, OPT);
+/** The plan in effect for the real word: the one curated for it (guide-plans.ts), which guide.ts uses at Guide me. */
+const PLAN = curatedPlan(CREATE, overlaps, C) ?? [];
 
 /** A fixed-seed shuffle (the same LCG as the stacking simulation). */
 function shuffler(seed: number) {
@@ -103,11 +109,36 @@ describe('dependencies: the word\'s stacking order wherever pieces actually over
 });
 
 describe('planBatches: ready, non-overlapping, nearby, at most four', () => {
-  it('the REAL word from the built c: batch 0 is the c, then 18 batches of 1 to 3 (the word is mostly one chain of overlaps)', () => {
-    expect(PLAN).toEqual([
-      [0, 1, 2], [3], [4, 5], [6], [7, 8], [9, 16], [10, 11], [12, 17, 18], [13, 19], [14], [15, 20], [24], [21, 22], [23], [25],
-      [26, 27], [28], [29], [30, 31],
+  it('the locality window is two average letters: the word\'s width over its 6 letters, twice (about 789, 1.8 stems)', () => {
+    const all = boundsOf(CREATE.flatMap((o) => poly(o)));
+    expect(SPAN).toBeCloseTo((all.w / 6) * 2, 6);
+    expect(SPAN).toBeGreaterThan(1.6 * STEM); // wider than the v1.4.0 window
+    expect(Math.round(SPAN)).toBe(789);
+  });
+
+  it('the AUTOMATIC plan of the real word from the built c: batch 0 is the c, then 16 batches of 1 to 3 (v1.4.1: 18)', () => {
+    expect(AUTO).toEqual([
+      [0, 1, 2], [3], [4, 5], [6], [7, 8], [9, 16], [10, 11], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21, 25],
+      [23, 26], [27, 28], [29], [30, 31],
     ]);
+  });
+
+  it('maximal (the automatic planner): a batch that closes short of four has NO other ready outline in the window that overlaps nothing in it', () => {
+    const deps = dependencies(CREATE, overlaps);
+    const placed = new Set<number>(C);
+    AUTO.forEach((batch, k) => {
+      if (k === 0) return;
+      if (batch.length < BATCH_MAX) {
+        const box = boundsOf(batch.flatMap((i) => poly(CREATE[i])));
+        for (let j = 0; j < N; j++) {
+          if (placed.has(j) || batch.includes(j) || !deps[j].every((d) => placed.has(d))) continue; // not unplaced-and-ready
+          if (batch.some((i) => OV[i][j])) continue; // it overlaps something in the batch
+          const u = boundsOf([...batch, j].flatMap((i) => poly(CREATE[i])));
+          expect(Math.max(u.w, u.h), `batch ${k} ${JSON.stringify(batch)}: ready outline ${j} would fit the window (union ${Math.round(u.w)} x ${Math.round(u.h)}, was ${Math.round(box.w)} x ${Math.round(box.h)})`).toBeGreaterThan(SPAN);
+        }
+      }
+      for (const i of batch) placed.add(i);
+    });
   });
 
   for (const [name, start] of [['from the built c', C], ['from nothing (the fallback: the word placed fresh, 0 of 32)', []]] as const) {
@@ -127,7 +158,7 @@ describe('planBatches: ready, non-overlapping, nearby, at most four', () => {
         for (const i of b) for (const j of b) if (i < j) expect(OV[i][j], `batch ${k}: ${i} and ${j} do not overlap`).toBe(false);
         if (b.length > 1) {
           const box = boundsOf(b.flatMap((i) => poly(CREATE[i])));
-          expect(Math.max(box.w, box.h), `batch ${k} is compact`).toBeLessThanOrEqual(OPT.span + 1e-6);
+          expect(Math.max(box.w, box.h), `batch ${k} is compact`).toBeLessThanOrEqual(SPAN + 1e-6);
         }
         for (const i of b) placed.add(i);
       });
@@ -136,15 +167,104 @@ describe('planBatches: ready, non-overlapping, nearby, at most four', () => {
   }
 
   it('roughly left to right: each batch starts near the last one, and the word is swept without going far back', () => {
-    const cx = PLAN.map((b) => b.reduce((s, i) => s + CREATE[i].x, 0) / b.length);
+    const cx = AUTO.map((b) => b.reduce((s, i) => s + CREATE[i].x, 0) / b.length);
     const back = cx.slice(1).filter((x, k) => x < cx[k] - STEM / 2).length;
     expect(back, `centres: ${cx.map(Math.round).join(' ')}`).toBeLessThanOrEqual(2);
     expect(cx.at(-1)! - cx[0], 'it ends at the far right (the flower)').toBeGreaterThan(1500);
   });
 
   it('batches are fixed: the plan is a pure function of the word and what was placed (not of the order pieces go in)', () => {
-    expect(planBatches(CREATE, overlaps, [2, 0, 1], OPT)).toEqual(PLAN);
-    expect(planBatches(CREATE, overlaps, C, OPT)).toEqual(PLAN);
+    expect(planBatches(CREATE, overlaps, [2, 0, 1], OPT)).toEqual(AUTO);
+    expect(planBatches(CREATE, overlaps, C, OPT)).toEqual(AUTO);
+  });
+});
+
+describe('the curated plan for "create" (guide-plans.ts)', () => {
+  const FIXED = [
+    [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21, 25], [23, 26],
+    [27, 28], [29], [30, 31],
+  ];
+
+  it('is in effect for the real word, and passes the same rules as the automatic plan', () => {
+    expect(PLAN).toEqual(FIXED);
+    expect(validatePlan(CREATE, overlaps, C, PLAN)).toBeNull();
+    expect(PLAN.length - 1, '16 batches after the c, as many as the automatic plan').toBe(16);
+    expect(CURATED.map((q) => q.key)).toContain(contentKey(CREATE));
+  });
+
+  /**
+   * Edward's report on v1.4.1: "The stem of the t came up alone, followed by the black stem and wedge of the first e. Those
+   * three shapes could have come up together since none of them overlap each other." In word-create-1 (by position and shape):
+   *   16  positive-stem, upright, x 1062: the STEM OF THE t (17, the long positive stem lying across it, is the crossbar)
+   *   10  positive-stem, lying across, x 705: the BLACK STEM of the FIRST e (the third letter; 8 is its black oval, 9 its white oval)
+   *   11  wedge, x 800, below it: the WEDGE of the first e
+   * They overlap nothing among themselves, but 10 and 11 sit on the e's white oval (9), so 9 comes in an EARLIER batch. The
+   * automatic plan puts 16 in 9's batch ([9, 16], then [10, 11]); Edward chose [9] alone, then [10, 11, 16], so the real word
+   * has a curated plan.
+   */
+  it('Edward\'s example: the curated plan is in effect and has the e\'s white oval 9 alone, then the t stem 16 with the e\'s black stem 10 and wedge 11', () => {
+    expect([CREATE[16].shapeId, CREATE[10].shapeId, CREATE[11].shapeId]).toEqual(['positive-stem', 'positive-stem', 'wedge']);
+    expect([OV[16][10], OV[16][11], OV[10][11]], 'none of the three overlaps another').toEqual([false, false, false]);
+    const k = PLAN.findIndex((b) => b.includes(9));
+    expect(PLAN[k]).toEqual([9]);
+    expect([...PLAN[k + 1]].sort((a, b) => a - b)).toEqual([10, 11, 16]);
+    // In effect through the guide itself (guide.ts), not only the lookup.
+    const s = chooseWord(observeGuide(startGuide(C.map((i) => CREATE[i]), { pieces: [], sizeOf: () => STEM, overlaps }), { pieces: C.map((i) => ({ id: `p${i}`, ...CREATE[i] })), sizeOf: () => STEM, overlaps }), CREATE, { pieces: C.map((i) => ({ id: `p${i}`, ...CREATE[i] })), sizeOf: () => STEM, overlaps }, OPT);
+    expect(s.batches).toEqual(PLAN);
+  });
+
+  it('the content key does not depend on where the word sits (the word is placed at the c) but on what it is', () => {
+    const moved = CREATE.map((o) => ({ ...o, x: o.x + 1234.5678, y: o.y - 321.987 }));
+    expect(contentKey(moved)).toBe(contentKey(CREATE));
+    expect(curatedPlan(moved, overlaps, C)).toEqual(PLAN);
+  });
+
+  it('a modified word falls back to the automatic planner (no curated plan applies)', () => {
+    const edited = CREATE.map((o, i) => (i === 16 ? { ...o, x: o.x + 40 } : o));
+    expect(contentKey(edited)).not.toBe(contentKey(CREATE));
+    expect(curatedPlan(edited, overlaps, C)).toBeNull();
+    expect(curatedPlan(CREATE.slice(0, 31), overlaps, C)).toBeNull();
+    const w: GuideWorld = { pieces: C.map((i) => ({ id: `p${i}`, ...CREATE[i] })), sizeOf: () => STEM, overlaps };
+    const s = chooseWord(observeGuide(startGuide(C.map((i) => CREATE[i]), { pieces: [], sizeOf: () => STEM, overlaps }), w), edited, w, OPT);
+    expect(s.batches).toEqual(planBatches(edited, overlaps, C, OPT));
+    // From a different start (not its c) the curated plan does not apply either.
+    expect(curatedPlan(CREATE, overlaps, [])).toBeNull();
+  });
+
+  it('validation: the rules the proof needs; a curated plan that breaks one is not used (one console.warn)', () => {
+    expect(validatePlan(CREATE, overlaps, C, [...PLAN.slice(0, 1), [3], [3], ...PLAN.slice(2)])).toMatch(/twice/);
+    expect(validatePlan(CREATE, overlaps, C, PLAN.slice(0, -1))).toMatch(/not every/);
+    expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [4, 5], [3], ...PLAN.slice(3)])).toMatch(/not ready/);
+    expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [3, 4], [5], ...PLAN.slice(3)])).toMatch(/not ready|overlap/);
+    expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16, 12, 17], ...PLAN.slice(7)])).toMatch(/more than 4|twice|overlap|not ready/);
+    expect(validatePlan(CREATE, overlaps, [0, 1], PLAN)).toMatch(/batch 0/);
+    expect(validatePlan(CREATE, overlaps, C, [...PLAN.slice(0, 1), [], ...PLAN.slice(1)])).toMatch(/empty/);
+    // A bad curated entry for a made-up word (two overlapping outlines in one batch).
+    const sq = (x: number): Outline => ({ shapeId: 'negative-round', x, y: 0, rotation: 0 });
+    const word = [sq(0), sq(100), sq(1000)];
+    (CURATED as unknown as unknown[]).push({ key: contentKey(word), plan: [[0], [1, 2], [0]], note: 'test' } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resetCuratedWarning();
+      expect(curatedPlan(word, overlaps, [0])).toBeNull();
+      expect(curatedPlan(word, overlaps, [0])).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      (CURATED as unknown as unknown[]).pop();
+      warn.mockRestore();
+    }
+  });
+
+  it('1,000 random within-batch orders on the curated plan: 0 stacking prompts, 0 tangles, every overlapping pair in the word\'s order', () => {
+    const shuffle = shuffler(2468);
+    let prompts = 0, tangles = 0;
+    for (let r = 0; r < 1000; r++) {
+      const res = simulate(PLAN, C, shuffle);
+      prompts += res.prompts;
+      tangles += res.tangles;
+      expect(rightOrder(res.board), `run ${r}`).toBe(true);
+    }
+    expect({ prompts, tangles }).toEqual({ prompts: 0, tangles: 0 });
   });
 });
 

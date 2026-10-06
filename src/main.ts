@@ -23,6 +23,7 @@ import {
   type GuideWorld, type Rect,
 } from './guide';
 import { outlinesAt, settleRotation, type Outline } from './outline';
+import { localitySpan } from './batches';
 import {
   announceAdded, announceDeleted, announceHistory, announceLoaded, announceMoved, announceRestacked, announceRotated,
   announceSelected, announceZoom, announceSuggestion, announceWord, announceIntro,
@@ -95,12 +96,19 @@ const SECTION_MIN_TARGET = 24;
  * this many CSS px across (a stem framed edge to edge would leave the handle under the docks, nowhere to turn it).
  */
 const SECTION_MIN_TARGET_SHORT = 20;
+/**
+ * A batch that cannot fit the callout and the action bar clear of its outlines at those targets (v1.4.2: [10,11,16] of
+ * "create", about two letters tall) takes the largest lower target that does, in steps of SECTION_TARGET_STEP, down to
+ * SECTION_TARGET_DROP below them (18 CSS px in portrait, 14 in landscape).
+ */
+const SECTION_TARGET_STEP = 2;
+const SECTION_TARGET_DROP = 6;
 /** Phones: a framed batch (or the finished word) never zooms past this multiple of the comfortable scale. */
 const SECTION_MAX_COMFORT = 4;
 /** The view glides to the next batch over this long, ms (instantly with reduced motion). */
 const SECTION_GLIDE_MS = 450;
-/** The word's batches (v1.4.0): a batch's outlines together fit a square this many positive stems long (batches.ts). */
-const BATCH_SPAN_STEMS = 1.6;
+/** The word's batches (v1.4.2): a batch's outlines together fit a square two average letters of the word wide (`localitySpan`; v1.4.0 had a fixed 1.6 positive stems). */
+const BATCH_SPAN_LETTERS = 2;
 /** Phones, the word's batches: board context kept around a framed batch (where the targets allow), as a fraction of a positive stem's length. */
 const BATCH_CONTEXT_STEMS = 0.1;
 /** Desktop, the word's batches: CSS px of air a batch keeps from the visible board's edges before the view moves. */
@@ -3359,7 +3367,7 @@ export class FridgeFace extends HTMLElement {
     }
     this.wordFitPending = 'smooth';
     this.select(null);
-    this.setGuide(chooseWord(s, outlines, this.guideWorld(), { boxOf: (o) => this.tightBounds([o])!, span: BATCH_SPAN_STEMS * STEM_LENGTH }));
+    this.setGuide(chooseWord(s, outlines, this.guideWorld(), { boxOf: (o) => this.tightBounds([o])!, span: localitySpan(outlines.map((o) => this.tightBounds([o])!), GUIDE_WORD.text.length, BATCH_SPAN_LETTERS) }));
   }
 
   /** Apply a clear plan as ONE undoable step: the whole board, or only the guide-built pieces. Whether anything went. */
@@ -3670,7 +3678,7 @@ export class FridgeFace extends HTMLElement {
    * at each width it may take, in its tallest form) and of the action bar (it shows after every click-in). The largest
    * free strip wins (`freeRect`); the callout later places itself clear of the outlines.
    */
-  private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0, ctx: SectionContext | null = null) {
+  private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0, ctx: SectionContext | null = null, onlyIfFits = false): boolean {
     const g = this.guideEl;
     const bar = this.actionsRect();
     const tray = toRect(this.trayEl.getBoundingClientRect());
@@ -3699,6 +3707,7 @@ export class FridgeFace extends HTMLElement {
       if (!best || f.scale > best.scale) best = f;
     }
     let reg = best!.rect;
+    let fits = need <= best!.scale;
     if (need > best!.scale) {
       // 2. That leaves the thinnest targets too small: try larger scales, up to what they need (or the board between the
       //    docks allows), each at a few places in that room, and take the largest at which the callout still finds a spot
@@ -3716,18 +3725,40 @@ export class FridgeFace extends HTMLElement {
         for (const y of ys) for (const x of xs) {
           const rects = parts.map((q) => ({ x: x + pad + (q.x - b.x) * scale, y: y + pad + (q.y - b.y) * scale, w: q.w * scale, h: q.h * scale }));
           if (bar && rects.some((r) => rectsOverlap(r, bar))) continue; // never under the action bar
-          const hard = [...hardBase, ...rects];
+          const hard = [...hardBase, ...rects.map((r) => grow(r, 8))]; // a little air: the callout is placed again with the real outlines
           for (const size of sizes) {
             const p = placeCallout(size, tray, bounds, hard, this.trayPrefer);
             if (clear({ x: p.x, y: p.y, w: size.w, h: size.h }, hard)) {
               reg = { x, y, w, h };
+              fits = true;
               break search;
             }
           }
         }
       }
     }
+    if (onlyIfFits) {
+      // The caller tries a lower target when this one leaves the callout no room: checked on the view it would really take
+      // (the section's place in the room, the callout by the tray clear of every outline and the action bar).
+      const to = this.viewFor(b, reg, ctx);
+      const board = this.boardEl.getBoundingClientRect();
+      const k = this.k;
+      const rects = parts.map((q) => ({ x: board.left + (to.x + q.x * to.zoom) * k, y: board.top + (to.y + q.y * to.zoom) * k, w: q.w * to.zoom * k, h: q.h * to.zoom * k }));
+      // The rotate handle of what is selected stays where it is on the piece: carried to the new view with its piece.
+      const v0 = this.view;
+      const handles = this.handleRects().map((h) => {
+        const bx = ((h.x + h.w / 2 - board.left) / k - v0.x) / v0.zoom, by = ((h.y + h.h / 2 - board.top) / k - v0.y) / v0.zoom;
+        return { x: board.left + (to.x + bx * to.zoom) * k - h.w / 2, y: board.top + (to.y + by * to.zoom) * k - h.h / 2, w: h.w, h: h.h };
+      });
+      const hard = [...hardBase, ...rects.map((r) => grow(r, 8)), ...handles];
+      fits = fits && sizes.some((size) => {
+        const p = placeCallout(size, tray, bounds, hard, this.trayPrefer);
+        return !hard.some((q) => rectsOverlap({ x: p.x, y: p.y, w: size.w, h: size.h }, q));
+      });
+      if (!fits) return false;
+    }
     this.frameRect(b, reg, smooth, ctx);
+    return true;
   }
 
   /** The current batch's outlines (all of them, filled or not, so the framing holds still while it is filled). */
@@ -3746,24 +3777,31 @@ export class FridgeFace extends HTMLElement {
     const list = this.batchOutlines();
     const tight = this.tightBounds(list);
     if (!tight) return;
-    // The scale (CSS px per board unit) at which the thinnest current target is SECTION_MIN_TARGET px across.
+    // The scale (CSS px per board unit) at which the thinnest current target is `target` px across.
     const thin = Math.min(...list.map((o) => {
       const u = SHAPE_BY_ID.get(o.shapeId)?.uprightBox;
       return u ? Math.min(u.w, u.h) : Infinity;
     }));
     const v = this.visibleView();
-    // The context around it (room for the rotate handles, and a glimpse of the built pieces), given up where it would cost a
-    // wide or tall batch its SECTION_MIN_TARGET targets in the visible board.
-    const need = Number.isFinite(thin) && thin > 0 ? SECTION_MIN_TARGET / thin : 0;
-    const roomW = need ? (v.w * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity, roomH = need ? (v.h * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity;
-    const m = Math.max(0, Math.min(BATCH_CONTEXT_STEMS * STEM_LENGTH, (roomW - tight.w) / 2, (roomH - tight.h) / 2));
-    const b = { x: tight.x - m, y: tight.y - m, w: tight.w + 2 * m, h: tight.h + 2 * m };
     const parts = list.map((o) => this.tightBounds([o])!);
     const maxZoom = cFrameZoom({ width: v.w, height: v.h }, OVAL_WIDTH, { w: 0, h: 0 }, 0);
-    // As large as the free strip beside the callout allows (up to the cap); where that leaves the thinnest target under
-    // SECTION_MIN_TARGET, larger, as far as the callout can still step aside clear of the outlines.
-    // Room above and below for a rotate handle (a tall stem framed edge to edge would leave its handle nowhere to go).
-    this.frameClear(b, parts, widths, bounds, obstacles, smooth, need, { maxZoom, vpad: HANDLE_GAP + HANDLE_HIT / 2, minZoom: (this.isLandscape ? SECTION_MIN_TARGET_SHORT / SECTION_MIN_TARGET : 1) * need / this.k });
+    // The target to aim for: the global one, and for a batch that cannot fit it, the largest lower one (down to the floor) that does.
+    const top = this.isLandscape ? SECTION_MIN_TARGET_SHORT : SECTION_MIN_TARGET;
+    const lowest = top - SECTION_TARGET_DROP;
+    for (let target = top; target >= lowest; target -= SECTION_TARGET_STEP) {
+      // The context around it (room for the rotate handles, and a glimpse of the built pieces), given up where it would cost a
+      // wide or tall batch its targets in the visible board.
+      const need = Number.isFinite(thin) && thin > 0 ? target / thin : 0;
+      const roomW = need ? (v.w * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity, roomH = need ? (v.h * this.k - 2 * SECTION_FRAME_PAD) / need : Infinity;
+      const m = Math.max(0, Math.min(BATCH_CONTEXT_STEMS * STEM_LENGTH, (roomW - tight.w) / 2, (roomH - tight.h) / 2));
+      const b = { x: tight.x - m, y: tight.y - m, w: tight.w + 2 * m, h: tight.h + 2 * m };
+      // As large as the free strip beside the callout allows (up to the cap); where that leaves the thinnest target under
+      // `target`, larger, as far as the callout can still step aside clear of the outlines. Room above and below for a rotate
+      // handle (a tall stem framed edge to edge would leave its handle nowhere to go).
+      const ctx = { maxZoom, vpad: HANDLE_GAP + HANDLE_HIT / 2, minZoom: need / this.k };
+      const last = target - SECTION_TARGET_STEP < lowest;
+      if (this.frameClear(b, parts, widths, bounds, obstacles, smooth, need, ctx, !last)) return;
+    }
   }
 
   /**
@@ -3837,6 +3875,11 @@ export class FridgeFace extends HTMLElement {
    * so up to SECTION_MAX_COMFORT times the comfortable scale: Frame all's cap would keep its thinnest targets too small).
    */
   private frameRect(b: Rect, reg: Rect, smooth: boolean, ctx: SectionContext | null = null) {
+    this.moveView(this.viewFor(b, reg, ctx), smooth);
+  }
+
+  /** The view `frameRect` would take (board units), without moving to it. */
+  private viewFor(b: Rect, reg: Rect, ctx: SectionContext | null = null): Camera {
     const board = this.boardEl.getBoundingClientRect();
     const k = this.k;
     const m = SECTION_FRAME_PAD;
@@ -3853,6 +3896,10 @@ export class FridgeFace extends HTMLElement {
       const top = Math.min(spare, Math.max(spare * 0.25, (ctx.vpad ?? 0) / k)); // the handle's room above it first, where it fits
       to.y = (reg.y - board.top) / k + m / k - b.y * zoom + top;
     }
+    return to;
+  }
+
+  private moveView(to: Camera, smooth: boolean) {
     if (smooth) this.glideTo(to);
     else {
       this.stopGlide();
