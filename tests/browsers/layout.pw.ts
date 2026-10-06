@@ -4,7 +4,7 @@ declare const process: { env: Record<string, string | undefined> }; // runs in N
 
 /**
  * Layout gate, in Chromium AND WebKit: phones get the compact layout (icon buttons, small tray), desktops the
- * desktop one; tray, docks and action bar never overlap; the page never scrolls; a tray tap/click adds a piece;
+ * desktop one; tray, docks and button block never overlap; the page never scrolls; a tray tap/click adds a piece;
  * and the console stays clean. Screenshots land in .playwright-mcp/ (gitignored).
  */
 
@@ -45,10 +45,10 @@ async function measure(page: Page) {
       const r = el.getBoundingClientRect();
       return { x: r.x, y: r.y, width: r.width, height: r.height };
     };
-    const undo = sr.querySelector('[data-history=undo]')!;
+    const undo = sr.querySelector('[data-view=fit]')!; // a dock button that is text on desktop, an icon on phones
     const shown = (el: Element | null) => !!el && getComputedStyle(el).display !== 'none';
-    const panels = [...sr.querySelectorAll<HTMLElement>('.dock > .panel')].filter((p) => !p.hidden && getComputedStyle(p).display !== 'none');
-    const actions = sr.querySelector<HTMLElement>('.actions')!;
+    const panels = [...sr.querySelectorAll<HTMLElement>('.dock > .panel:not(.block)')].filter((p) => !p.hidden && getComputedStyle(p).display !== 'none');
+    const actions = sr.querySelector<HTMLElement>('.dock > .block')!; // the bottom button block (v1.5.0)
     const se = document.scrollingElement!;
     return {
       tk: parseFloat(getComputedStyle(root).getPropertyValue('--tk')),
@@ -58,6 +58,7 @@ async function measure(page: Page) {
       tray: rect(sr.querySelector('.tray')!),
       dock: panels.map((p) => ({ name: p.className, r: rect(p) })),
       actions: actions.hidden ? null : rect(actions),
+      blockIcons: [...actions.querySelectorAll('.main button')].every((b) => shown(b.querySelector('.ic')) && !shown(b.querySelector('.tx'))),
       vw: window.innerWidth,
       vh: window.innerHeight,
       scroll: { sh: se.scrollHeight, sw: se.scrollWidth, ch: se.clientHeight, cw: se.clientWidth },
@@ -98,11 +99,13 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
   if (isMobile) await wedge.tap();
   else await wedge.click();
   await expect.poll(async () => (await measure(page)).pieces, { message: 'tray adds a piece' }).toBe(before + 1);
-  await expect(page.locator('fridge-face .actions')).toBeVisible();
+  await expect(page.locator('fridge-face .block')).toBeVisible();
+  await expect(page.locator('fridge-face [data-block=x]')).toHaveAttribute('aria-label', 'Delete piece');
   await page.evaluate(() => new Promise((r) => setTimeout(r, 900))); // let any intro slide and the lift settle
 
-  // 3. No overlaps between the tray, the dock panels and the action bar; everything inside the viewport.
+  // 3. No overlaps between the tray, the dock panels and the button block; everything inside the viewport.
   const after = await measure(page);
+  expect.soft(after.blockIcons, 'the block is icons on every layout').toBe(true);
   const boxes = [{ name: 'tray', r: after.tray }, ...after.dock, ...(after.actions ? [{ name: 'actions', r: after.actions }] : [])];
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
@@ -113,8 +116,8 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
     }
   }
 
-  // 3b. Phones: docks at the TOP, action bar at the BOTTOM just above the tray (portrait) or at the bottom of the board, right
-  // of the vertical tray (landscape). Desktop: the reverse (unchanged).
+  // 3b. Phones: the view group at the TOP, the button block at the BOTTOM just above the tray (portrait) or at the bottom of
+  // the board, right of the vertical tray (landscape). Desktop: the block bottom-left, in the dock's row.
   const dockTop = Math.min(...after.dock.map((d) => d.r.y));
   if (landscape && after.actions) {
     expect.soft(after.tray.x, 'landscape: tray on the left edge').toBeLessThan(0.5);
@@ -122,14 +125,16 @@ test('compact layout on phones, desktop layout on desktops; no overlaps, no scro
     expect.soft(after.tray.width, 'landscape: tray is a vertical column').toBeLessThan(after.tray.height);
     expect.soft(dockTop, 'landscape: docks sit at the top of the board').toBeLessThan(20);
     for (const b of [...after.dock.map((d) => d.r), after.actions]) expect.soft(b.x, "landscape: board controls start right of the tray").toBeGreaterThanOrEqual(after.tray.x + after.tray.width - 0.5);
-    expect.soft(after.actions.y + after.actions.height, 'landscape: action bar at the bottom of the board').toBeGreaterThan(after.vh - 20);
+    expect.soft(after.actions.y + after.actions.height, 'landscape: button block at the bottom of the board').toBeGreaterThan(after.vh - 20);
   } else if (isMobile && after.actions) {
     expect.soft(dockTop, 'phone: docks sit at the top of the board').toBeLessThan(20);
-    expect.soft(dockTop, "phone: docks' top < action bar's top").toBeLessThan(after.actions.y);
-    expect.soft(after.actions.y + after.actions.height, "phone: action bar's bottom <= tray's top").toBeLessThanOrEqual(after.tray.y + 0.5);
+    expect.soft(dockTop, "phone: docks' top < button block's top").toBeLessThan(after.actions.y);
+    expect.soft(after.actions.y + after.actions.height, "phone: button block's bottom <= tray's top").toBeLessThanOrEqual(after.tray.y + 0.5);
   } else if (after.actions) {
-    expect.soft(after.actions.y, 'desktop: action bar at the top').toBeLessThan(20);
-    expect.soft(dockTop, 'desktop: docks at the bottom, above the tray').toBeGreaterThan(after.actions.y + after.actions.height);
+    expect.soft(after.actions.x, 'desktop: block at the left').toBeLessThan(20);
+    expect.soft(Math.abs(after.actions.y + after.actions.height - (after.tray.y - 10)), 'desktop: block at the bottom of the board, above the tray').toBeLessThan(2);
+    for (const d of after.dock) expect.soft(d.r.x, `desktop: ${d.name} right of the block`).toBeGreaterThan(after.actions.x + after.actions.width);
+    expect.soft(after.dock.map((d) => d.name).join(' '), 'desktop: no old history panel').not.toMatch(/history/);
   }
 
   // 4. No page scroll.
@@ -159,7 +164,7 @@ test('the layout state is set synchronously on connect (no flash of the desktop 
     const out = {
       compact: root.hasAttribute('data-compact'),
       tk: parseFloat(getComputedStyle(root).getPropertyValue('--tk')),
-      text: getComputedStyle(el.shadowRoot!.querySelector('[data-history=undo] .tx')!).display,
+      text: getComputedStyle(el.shadowRoot!.querySelector('[data-block=undo] .tx')!).display,
     };
     box.remove();
     return out;
@@ -167,15 +172,16 @@ test('the layout state is set synchronously on connect (no flash of the desktop 
   expect(r).toEqual({ compact: true, tk: 0.17, text: 'none' });
 });
 
-test('rotation snapping is gone: no snap or 15 degree buttons on any layout; the action bar is Delete, Bring forward, Send backward', async ({ page, isMobile }) => {
+test('rotation snapping is gone: no snap or 15 degree buttons on any layout; the block is X, Undo, Redo, Back, Forward', async ({ page, isMobile }) => {
   await open(page);
   const wedge = page.locator('fridge-face .tray button[data-shape="wedge"]');
   if (isMobile) await wedge.tap();
   else await wedge.click();
-  await expect(page.locator('fridge-face .actions')).toBeVisible();
+  await expect(page.locator('fridge-face [data-block=x]')).toHaveAttribute('data-mode', 'delete');
   for (const sel of ['[data-action=snap]', '[data-action=rotate-left]', '[data-action=rotate-right]']) await expect(page.locator(`fridge-face ${sel}`)).toHaveCount(0);
-  const labels = await page.locator('fridge-face .actions button').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
-  expect(labels).toEqual(['Delete piece', 'Bring forward', 'Send backward']);
+  const labels = await page.locator('fridge-face .block .main button').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
+  expect(labels).toEqual(['Delete piece', 'Undo', 'Redo', 'Send backward', 'Bring forward']);
+  await expect(page.locator('fridge-face .actions, fridge-face .history, fridge-face [data-action]')).toHaveCount(0);
   // Nothing about snapping or 15 degree steps anywhere in the toy, including the Controls dialog.
   // (Data URLs stripped: the texture tiles are base64 JPEGs, which can contain any letters by chance, "snap" included, v1.4.1.)
   const text = (await page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.innerHTML)).replace(/data:[a-z/+]+;base64,[A-Za-z0-9+/=]+/g, 'data:');

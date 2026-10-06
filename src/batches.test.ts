@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BATCH_MAX, batchOf, dependencies, downwardClosed, localitySpan, planBatches, readyOutlines, validatePlan } from './batches';
-import { CURATED, contentKey, curatedPlan, resetCuratedWarning } from './guide-plans';
+import { CURATED, allPairs, contentKey, curatedPlan, resetCuratedWarning } from './guide-plans';
 import { HULLS } from './hulls.testdata';
 import { boundsOf, bringForwardOverlapping, convexIntersect, placeOutline, sendBackwardOverlapping } from './selection';
-import { stackCheck, stackPrompt } from './stacking';
+import { freeTest, stackCheck, stackPrompt, type FreePairs } from './stacking';
 import { activeOutlines, chooseWord, currentBatch, guideProgress, observeGuide, startGuide, type GuideWorld } from './guide';
 import { History } from './history';
 import type { Outline, OutlinePiece } from './outline';
@@ -36,7 +36,10 @@ for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) if (OV[i][j]) PAIRS.
 /** The real word's plan from the built c, as the component makes it at Guide me. */
 const AUTO = planBatches(CREATE, overlaps, C, OPT);
 /** The plan in effect for the real word: the one curated for it (guide-plans.ts), which guide.ts uses at Guide me. */
-const PLAN = curatedPlan(CREATE, overlaps, C) ?? [];
+const CUR = curatedPlan(CREATE, overlaps, C);
+const PLAN = CUR?.batches ?? [];
+/** Its order-free pairs (v1.5.0: the flower's petals). */
+const FREE = CUR?.free ?? [];
 
 /** A fixed-seed shuffle (the same LCG as the stacking simulation). */
 function shuffler(seed: number) {
@@ -58,7 +61,7 @@ function shuffler(seed: number) {
  * prompted presses, as the visitor would. Returns how many prompts showed, how many were tangles (no exact presses), and
  * the final board order (piece `p<i>` sits on outline i).
  */
-function simulate(batches: readonly (readonly number[])[], start: readonly number[], order: (b: readonly number[]) => readonly number[]) {
+function simulate(batches: readonly (readonly number[])[], start: readonly number[], order: (b: readonly number[]) => readonly number[], free: FreePairs = []) {
   const pieces = CREATE.map((o, i): OutlinePiece => ({ id: `p${i}`, ...o }));
   const ov = (a: OutlinePiece, b: OutlinePiece) => OV[Number(a.id.slice(1))][Number(b.id.slice(1))];
   let board = start.map((i) => `p${i}`);
@@ -71,8 +74,8 @@ function simulate(batches: readonly (readonly number[])[], start: readonly numbe
       for (let guard = 0; guard < 100; guard++) {
         const filled = CREATE.map((_, k) => (board.includes(`p${k}`) ? `p${k}` : null));
         const ps = board.map((id) => pieces[Number(id.slice(1))]);
-        if (stackCheck(filled, ps, ov).wrong.length === 0) break;
-        const pr = stackPrompt(filled, ps, ov, recent)!;
+        if (stackCheck(filled, ps, ov, free).wrong.length === 0) break;
+        const pr = stackPrompt(filled, ps, ov, recent, free)!;
         prompts++;
         if (!pr.presses) tangles++;
         board = pr.order;
@@ -82,7 +85,11 @@ function simulate(batches: readonly (readonly number[])[], start: readonly numbe
   return { prompts, tangles, board };
 }
 
-const rightOrder = (board: readonly string[]) => PAIRS.every(([a, b]) => board.indexOf(`p${a}`) < board.indexOf(`p${b}`));
+/** Every overlapping pair in the word's order, order-free pairs (`free`) left out. */
+const rightOrder = (board: readonly string[], free: FreePairs = []) => {
+  const isFree = freeTest(free);
+  return PAIRS.every(([a, b]) => isFree(a, b) || board.indexOf(`p${a}`) < board.indexOf(`p${b}`));
+};
 
 describe('dependencies: the word\'s stacking order wherever pieces actually overlap', () => {
   it('a piece depends on every LOWER piece it overlaps, and on nothing else', () => {
@@ -181,14 +188,15 @@ describe('planBatches: ready, non-overlapping, nearby, at most four', () => {
 
 describe('the curated plan for "create" (guide-plans.ts)', () => {
   const FIXED = [
-    [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21, 25], [23, 26],
-    [27, 28], [29], [30, 31],
+    [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21], [23],
+    [25, 26, 27, 28, 29], [30, 31],
   ];
 
-  it('is in effect for the real word, and passes the same rules as the automatic plan', () => {
+  it('is in effect for the real word, and passes the same rules as the automatic plan (with its order-free pairs)', () => {
     expect(PLAN).toEqual(FIXED);
-    expect(validatePlan(CREATE, overlaps, C, PLAN)).toBeNull();
-    expect(PLAN.length - 1, '16 batches after the c, as many as the automatic plan').toBe(16);
+    expect(validatePlan(CREATE, overlaps, C, PLAN, BATCH_MAX, FREE)).toBeNull();
+    expect(PLAN.length - 1, '15 batches after the c (the automatic plan has 16)').toBe(15);
+    expect(FREE).toEqual(allPairs([25, 26, 27, 28, 29]));
     expect(CURATED.map((q) => q.key)).toContain(contentKey(CREATE));
   });
 
@@ -216,7 +224,7 @@ describe('the curated plan for "create" (guide-plans.ts)', () => {
   it('the content key does not depend on where the word sits (the word is placed at the c) but on what it is', () => {
     const moved = CREATE.map((o) => ({ ...o, x: o.x + 1234.5678, y: o.y - 321.987 }));
     expect(contentKey(moved)).toBe(contentKey(CREATE));
-    expect(curatedPlan(moved, overlaps, C)).toEqual(PLAN);
+    expect(curatedPlan(moved, overlaps, C)).toEqual(CUR);
   });
 
   it('a modified word falls back to the automatic planner (no curated plan applies)', () => {
@@ -237,7 +245,7 @@ describe('the curated plan for "create" (guide-plans.ts)', () => {
     expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [4, 5], [3], ...PLAN.slice(3)])).toMatch(/not ready/);
     expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [3, 4], [5], ...PLAN.slice(3)])).toMatch(/not ready|overlap/);
     expect(validatePlan(CREATE, overlaps, C, [[0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16, 12, 17], ...PLAN.slice(7)])).toMatch(/more than 4|twice|overlap|not ready/);
-    expect(validatePlan(CREATE, overlaps, [0, 1], PLAN)).toMatch(/batch 0/);
+    expect(validatePlan(CREATE, overlaps, [0, 1], PLAN, BATCH_MAX, FREE)).toMatch(/batch 0/);
     expect(validatePlan(CREATE, overlaps, C, [...PLAN.slice(0, 1), [], ...PLAN.slice(1)])).toMatch(/empty/);
     // A bad curated entry for a made-up word (two overlapping outlines in one batch).
     const sq = (x: number): Outline => ({ shapeId: 'negative-round', x, y: 0, rotation: 0 });
@@ -259,12 +267,106 @@ describe('the curated plan for "create" (guide-plans.ts)', () => {
     const shuffle = shuffler(2468);
     let prompts = 0, tangles = 0;
     for (let r = 0; r < 1000; r++) {
-      const res = simulate(PLAN, C, shuffle);
+      const res = simulate(PLAN, C, shuffle, FREE);
       prompts += res.prompts;
       tangles += res.tangles;
-      expect(rightOrder(res.board), `run ${r}`).toBe(true);
+      expect(rightOrder(res.board, FREE), `run ${r}: every overlapping pair that is not order-free in the word's order`).toBe(true);
     }
     expect({ prompts, tangles }).toEqual({ prompts: 0, tangles: 0 });
+  });
+});
+
+/**
+ * v1.5.0, Edward's word-specific declaration for word-create-1: the flower's petals are ORDER-FREE. Found by GEOMETRY, not
+ * by index: the flower's centre is the negative round that overlaps the most positive rounds (5; every other negative round
+ * in the word overlaps at most one), and its petals are exactly those positive rounds.
+ */
+describe('order-free pairs: the flower\'s petals (v1.5.0)', () => {
+  const rounds = CREATE.flatMap((o, i) => (o.shapeId === 'positive-round' ? [i] : []));
+  const negs = CREATE.flatMap((o, i) => (o.shapeId === 'negative-round' ? [i] : []));
+  const centre = negs.reduce((a, b) => (rounds.filter((r) => OV[b][r]).length > rounds.filter((r) => OV[a][r]).length ? b : a));
+  const petals = rounds.filter((r) => OV[centre][r]);
+
+  it('by geometry: the centre is outline 30 (white oval), the petals 25 to 29 (black ovals); the stem 31 follows the normal rules', () => {
+    expect(centre).toBe(30);
+    expect(petals).toEqual([25, 26, 27, 28, 29]);
+    for (const n of negs.filter((n) => n !== centre)) expect(rounds.filter((r) => OV[n][r]).length, `negative round ${n}`).toBeLessThanOrEqual(1);
+    // Every petal lies under the centre in the word (the centre is above them all).
+    for (const p of petals) expect(p).toBeLessThan(centre);
+    // The petals overlap each other in a ring (five pairs), so they could not share a batch without being order-free.
+    expect(PAIRS.filter(([a, b]) => petals.includes(a) && petals.includes(b))).toEqual([[25, 26], [25, 27], [26, 28], [27, 29], [28, 29]]);
+    // The stem overlaps two petals (above them: it follows the normal rules) and not the centre.
+    expect([OV[31][28], OV[31][29], OV[31][30]]).toEqual([true, true, false]);
+    // The curated plan's order-free pairs are exactly every pair of these petals.
+    expect(FREE).toEqual(allPairs(petals));
+  });
+
+  it('the plan: the five petals are ONE batch (more than four, overlapping), then the centre with the stem', () => {
+    const k = PLAN.findIndex((b) => b.includes(25));
+    expect(PLAN[k]).toEqual([25, 26, 27, 28, 29]);
+    expect(PLAN[k + 1]).toEqual([30, 31]);
+    expect(k + 1, 'the last batch').toBe(PLAN.length - 1);
+  });
+
+  it('stackCheck ignores order-free pairs (either order is right); every other pair keeps the rule', () => {
+    const ps = (...is: number[]) => is.map((i) => ({ id: `p${i}`, ...CREATE[i] }));
+    const filled = CREATE.map((_, i) => ([25, 26, 27, 28, 29].includes(i) ? `p${i}` : null));
+    const reversed = ps(29, 28, 27, 26, 25);
+    expect(stackCheck(filled, reversed, overlaps).wrong.length, 'without the pairs: wrong').toBeGreaterThan(0);
+    expect(stackCheck(filled, reversed, overlaps, FREE)).toEqual({ done: filled.map(Boolean), wrong: [] });
+    expect(stackPrompt(filled, reversed, overlaps, [], FREE), 'no prompt').toBeNull();
+    expect(stackPrompt(filled, reversed, overlaps, []), 'without the pairs: a prompt').not.toBeNull();
+    // The centre UNDER a petal is still wrong, and prompted.
+    const f2 = CREATE.map((_, i) => ([25, 26, 27, 28, 29, 30].includes(i) ? `p${i}` : null));
+    const under = ps(25, 26, 27, 30, 28, 29);
+    const chk = stackCheck(f2, under, overlaps, FREE);
+    expect(chk.wrong.sort()).toEqual(['p28', 'p29', 'p30']);
+    const pr = stackPrompt(f2, under, overlaps, ['p25', 'p26', 'p27', 'p28', 'p29', 'p30'], FREE)!;
+    expect(pr.id).toBe('p30');
+    expect(pr.dir).toBe('forward');
+    expect(pr.presses).toBeGreaterThan(0);
+  });
+
+  it('validatePlan: overlap inside a batch is allowed ONLY between order-free pairs; the size limit only for an all-free batch', () => {
+    expect(validatePlan(CREATE, overlaps, C, PLAN), 'the same plan without its pairs: the petals overlap').toMatch(/more than 4|overlap|not ready/);
+    // A batch of the four petals 25 to 28 without the pairs: they overlap (and 26, 27 and 28 are not ready).
+    const four = [...PLAN.slice(0, -2), [25, 26, 27, 28], [29], [30, 31]];
+    expect(validatePlan(CREATE, overlaps, C, four, BATCH_MAX, FREE)).toBeNull();
+    expect(validatePlan(CREATE, overlaps, C, four)).toMatch(/overlap|not ready/);
+    // A pair that is not order-free still may not overlap in a batch: the centre with its petals.
+    const withCentre = [...PLAN.slice(0, -2), [25, 26, 27, 28, 29, 30], [31]];
+    expect(validatePlan(CREATE, overlaps, C, withCentre, BATCH_MAX, FREE)).toMatch(/more than 4|overlap|not ready/);
+    expect(validatePlan(CREATE, overlaps, C, withCentre, 8, FREE), 'even under the size limit').toMatch(/not ready|overlap/);
+    // The centre before its petals: not ready.
+    expect(validatePlan(CREATE, overlaps, C, [...PLAN.slice(0, -2), [30, 31], [25, 26, 27, 28, 29]], BATCH_MAX, FREE)).toMatch(/not ready/);
+    // More than four is allowed only for a batch whose outlines are ALL pairwise order-free (here only the overlapping ring
+    // is declared, so 25 and 28, say, are not an order-free pair and the batch of five is too long).
+    const pairsOnly: FreePairs = [[25, 26], [25, 27], [26, 28], [27, 29], [28, 29]]; // the overlapping ones only
+    expect(validatePlan(CREATE, overlaps, C, PLAN, BATCH_MAX, pairsOnly)).toMatch(/more than 4/);
+    expect(validatePlan(CREATE, overlaps, C, PLAN, 5, pairsOnly), 'within a limit of five it is fine').toBeNull();
+  });
+
+  it('the guide on the real word: the five petal outlines show at once, filled in any order with no prompt, then the centre', () => {
+    const world = (pieces: readonly OutlinePiece[]): GuideWorld => ({ pieces, sizeOf: () => STEM, overlaps });
+    const ps = (...is: number[]) => is.map((i) => ({ id: `p${i}`, ...CREATE[i] }));
+    let s = chooseWord(observeGuide(startGuide(C.map((i) => CREATE[i]), world([])), world(ps(...C))), CREATE, world(ps(...C)), OPT);
+    expect(s.free).toEqual(FREE);
+    const before = PLAN.slice(0, -2).flat();
+    s = observeGuide(s, world(ps(...before)));
+    expect(activeOutlines(s), 'all five petals at once').toEqual([25, 26, 27, 28, 29]);
+    const board = [...before];
+    for (const i of [29, 26, 28, 25, 27]) {
+      board.push(i);
+      s = observeGuide(s, world(ps(...board)));
+      expect(s.stack, `no prompt after petal ${i}`).toBeNull();
+    }
+    expect([currentBatch(s), activeOutlines(s)]).toEqual([PLAN.length - 1, [30, 31]]);
+    for (const i of [30, 31]) {
+      board.push(i);
+      s = observeGuide(s, world(ps(...board)));
+      expect(s.stack).toBeNull();
+    }
+    expect([s.step, guideProgress(s)]).toEqual([7, { done: 32, total: 32 }]);
   });
 });
 

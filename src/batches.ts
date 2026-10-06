@@ -1,5 +1,5 @@
 import type { Outline, OutlinePiece } from './outline';
-import type { Overlaps } from './stacking';
+import { freeTest, type FreePairs, type Overlaps } from './stacking';
 
 interface Rect { x: number; y: number; w: number; h: number }
 const union = (a: Rect, b: Rect): Rect => {
@@ -44,6 +44,17 @@ const union = (a: Rect, b: Rect): Rect => {
  * Every pair stays right, so `stackCheck` finds nothing wrong and `stackPrompt` returns null after every placement. The
  * stacking prompts remain only as the safety net for a visitor who reorders pieces themselves (or drags in a piece of their
  * own that is not on top).
+ *
+ * ORDER-FREE PAIRS (v1.5.0). A curated plan (guide-plans.ts) may declare pairs of outlines whose relative order does not
+ * matter (the flower's five petals in "create"). The stacking check never looks at such a pair (stacking.ts), so neither
+ * order of it is an error. A batch may then hold outlines that overlap, but ONLY when every overlapping pair inside it is
+ * order-free, and an order-free pair is no dependency (neither needs the other placed first). The proof above holds with
+ * the pairs it is about restricted to the pairs that are checked (overlapping and not order-free): q in B overlapping p is
+ * then either impossible (as before) or an order-free pair, which no order can make wrong; q in an earlier batch or the c
+ * overlapping p (not order-free) is below p in the word by the same dependency argument, because every pair that is not
+ * order-free keeps the old rule (it is still a dependency). So the guide still never prompts, and the word's order holds for
+ * every checked pair. A batch of outlines that are ALL pairwise order-free may also exceed BATCH_MAX (the five petals come
+ * up together); every other batch keeps the limit.
  */
 
 /** At most this many outlines in a batch. */
@@ -163,10 +174,17 @@ export function batchOf(batches: readonly (readonly number[])[], n: number): num
  * batch 0 is exactly `placed` (when any), and every later batch is non-empty, at most `max` long, ready when it starts (every
  * lower outline it overlaps is in an earlier batch) with no two outlines overlapping. Returns null when valid, else why not.
  * These are the rules the correctness proof above needs; used to check a curated plan (guide-plans.ts) before it is used.
+ * `free` (order-free pairs, v1.5.0): such a pair is no dependency and may overlap inside a batch; a batch whose outlines are
+ * ALL pairwise order-free may exceed `max`. Every other pair keeps the rules.
  */
-export function validatePlan(outlines: readonly Outline[], overlaps: Overlaps, placed: readonly number[], plan: readonly (readonly number[])[], max = BATCH_MAX): string | null {
+export function validatePlan(
+  outlines: readonly Outline[], overlaps: Overlaps, placed: readonly number[], plan: readonly (readonly number[])[], max = BATCH_MAX, free: FreePairs = [],
+): string | null {
   const n = outlines.length;
+  const isFree = freeTest(free);
   const deps = dependencies(outlines, overlaps);
+  // The dependencies that count: an order-free pair imposes no order.
+  const need = deps.map((d, i) => d.filter((j) => !isFree(i, j)));
   const seen = new Set<number>();
   for (const b of plan) for (const i of b) {
     if (!Number.isInteger(i) || i < 0 || i >= n) return `outline ${i} does not exist`;
@@ -182,9 +200,10 @@ export function validatePlan(outlines: readonly Outline[], overlaps: Overlaps, p
     if (k === 0 && placed.length) {
       if (b.length !== placed.length || !placed.every((i) => b.includes(i))) return 'batch 0 is not the placed outlines';
     } else {
-      if (b.length > max) return `batch ${k} has more than ${max} outlines`;
-      for (const i of b) if (!deps[i].every((j) => done.has(j))) return `batch ${k}: outline ${i} is not ready`;
-      for (const i of b) for (const j of b) if (i < j && deps[j].includes(i)) return `batch ${k}: outlines ${i} and ${j} overlap`;
+      const allFree = b.every((i) => b.every((j) => i === j || isFree(i, j)));
+      if (b.length > max && !allFree) return `batch ${k} has more than ${max} outlines`;
+      for (const i of b) if (!need[i].every((j) => done.has(j))) return `batch ${k}: outline ${i} is not ready`;
+      for (const i of b) for (const j of b) if (i < j && deps[j].includes(i) && !isFree(i, j)) return `batch ${k}: outlines ${i} and ${j} overlap`;
     }
     for (const i of b) done.add(i);
   }

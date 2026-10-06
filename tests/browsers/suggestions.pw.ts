@@ -97,14 +97,14 @@ test('suggestions panel: Letters always, Words only when a word composition exis
     const board = sr.querySelector('.board')!.getBoundingClientRect();
     // Phones: the docks cover the top of the board, so "centred" means centred in the visible part (below the docks, 8px gap).
     const compact = sr.querySelector('.root')!.hasAttribute('data-compact');
-    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
+    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
     return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (dockBottom + (board.bottom - dockBottom) / 2)) };
   }, n);
   expect(centred.dx).toBeLessThan(3);
   expect(centred.dy).toBeLessThan(3);
   if (isMobile) await expect(page.locator('fridge-face .sugg')).toBeHidden(); // the sheet closes on phones
   // One undo removes the whole word.
-  await page.locator('fridge-face [data-history=undo]').evaluate((b: HTMLElement) => b.click());
+  await page.locator('fridge-face [data-block=undo]').evaluate((b: HTMLElement) => b.click());
   await expect.poll(() => pieceCount(page)).toBe(before);
   expect(errors).toEqual([]);
 });
@@ -193,7 +193,7 @@ test('intro (opt-in): first visit only, centred, at most 1.6 s, interruptible, o
     const board = sr.querySelector('.board')!.getBoundingClientRect();
     // Phones: the docks cover the top of the board, so "centred" means centred in the visible part (below the docks, 8px gap).
     const compact = sr.querySelector('.root')!.hasAttribute('data-compact');
-    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
+    const dockBottom = compact ? Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom)) + 8 : board.top;
     return { dx: Math.abs((l + r) / 2 - (board.left + board.width / 2)), dy: Math.abs((t + b) / 2 - (dockBottom + (board.bottom - dockBottom) / 2)) };
   });
   expect(c.dx, 'centred horizontally').toBeLessThan(3);

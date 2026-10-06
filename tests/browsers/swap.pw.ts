@@ -4,9 +4,9 @@ declare const process: { env: Record<string, string | undefined> }; // runs in N
 
 /**
  * Phone layout positions, in Chromium AND WebKit: the docks (undo/redo/clear, zoom/fit/menu) sit at the TOP of the board,
- * the piece action bar at the BOTTOM just above the tray, the menu opens DOWNWARD, nothing overlaps in any state, and Fit /
+ * the button block at the BOTTOM just above the tray, the menu opens DOWNWARD, nothing overlaps in any state, and Fit /
  * the intro centre in the visible board (below the docks). Phones in LANDSCAPE (v0.4.0): the tray is a vertical column on the
- * LEFT edge and every control sits in the board to its right. Desktop keeps its layout: docks at the bottom, action bar at the top.
+ * LEFT edge and every control sits in the board to its right. Desktop keeps its layout: docks at the bottom, button block at the top.
  */
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -32,7 +32,7 @@ const settle = (page: Page) => page.evaluate(() => new Promise((r) => setTimeout
 
 async function addPiece(page: Page, isMobile: boolean) {
   await press(isMobile, el(page, '.tray button[data-shape="wedge"]'));
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await settle(page);
 }
 
@@ -55,9 +55,8 @@ async function boxes(page: Page) {
     };
     add('tray', '.tray');
     add('shape', '.tray button[data-shape]');
-    add('history', '.dock > .history');
     add('view', '.dock > .view');
-    add('actions', '.actions');
+    add('actions', '.dock > .block'); // the bottom button block (v1.5.0), always showing
     add('menu', '.menu');
     add('sugg', '.sugg');
     add('linkbox', '.dock > .linkbox');
@@ -83,7 +82,7 @@ async function expectClean(page: Page, label: string) {
   return s;
 }
 
-test('phone: docks on top, action bar just above the tray, menu opens downward, no overlaps in any state', async ({ page, isMobile }, info) => {
+test('phone: docks on top, button block just above the tray, menu opens downward, no overlaps in any state', async ({ page, isMobile }, info) => {
   test.skip(!isMobile, 'phone profiles only');
   const landscape = page.viewportSize()!.width > page.viewportSize()!.height;
   const sizes = landscape ? SIZES.filter((z) => z.w > z.h) : SIZES.filter((z) => z.h > z.w);
@@ -121,9 +120,9 @@ test('phone: docks on top, action bar just above the tray, menu opens downward, 
     // idle
     let s = await expectClean(page, `${tag} idle`);
     expectLandscapeTray(s, `${tag} idle`);
-    const dock = [by(s.boxes, 'history')!, by(s.boxes, 'view')!];
+    const dock = [by(s.boxes, 'view')!]; // v1.5.0: only the view group at the top
     expect.soft(Math.min(...dock.map((r) => r.y)), `${tag} docks at the top`).toBeLessThan(20);
-    expect.soft(by(s.boxes, 'history')!.x, `${tag} undo group on the left`).toBeLessThan(by(s.boxes, 'view')!.x);
+    expect.soft(by(s.boxes, 'actions'), `${tag} the button block shows with nothing selected`).toBeDefined();
     expect.soft(by(s.boxes, 'view')!.x + by(s.boxes, 'view')!.width, `${tag} view group on the right`).toBeGreaterThan(z.w - 20);
 
     // selected
@@ -132,12 +131,12 @@ test('phone: docks on top, action bar just above the tray, menu opens downward, 
     expectLandscapeTray(s, `${tag} selected`);
     const act = by(s.boxes, 'actions')!;
     const tray = by(s.boxes, 'tray')!;
-    expect.soft(Math.max(...dock.map((r) => r.y)), `${tag} docks' top < action bar's top`).toBeLessThan(act.y);
+    expect.soft(Math.max(...dock.map((r) => r.y)), `${tag} docks' top < button block's top`).toBeLessThan(act.y);
     if (land) {
-      expect.soft(s.vh - (act.y + act.height), `${tag} action bar at the bottom of the board`).toBeLessThanOrEqual(12);
+      expect.soft(s.vh - (act.y + act.height), `${tag} button block at the bottom of the board`).toBeLessThanOrEqual(12);
     } else {
-      expect.soft(act.y + act.height, `${tag} action bar's bottom <= tray's top`).toBeLessThanOrEqual(tray.y + 0.5);
-      expect.soft(tray.y - (act.y + act.height), `${tag} action bar sits directly above the tray`).toBeLessThanOrEqual(12);
+      expect.soft(act.y + act.height, `${tag} button block's bottom <= tray's top`).toBeLessThanOrEqual(tray.y + 0.5);
+      expect.soft(tray.y - (act.y + act.height), `${tag} button block sits directly above the tray`).toBeLessThanOrEqual(12);
     }
     if (info.project.name === 'webkit-iphone') await page.screenshot({ path: `.playwright-mcp/swap-try-${tag}-selected.png` });
 
@@ -149,7 +148,7 @@ test('phone: docks on top, action bar just above the tray, menu opens downward, 
     let menu = by(s.boxes, 'menu')!;
     const mb = by(s.boxes, 'view')!;
     expect.soft(menu.y, `${tag} menu opens below its button`).toBeGreaterThanOrEqual(mb.y + mb.height - 0.5);
-    expect.soft(menu.y + menu.height, `${tag} menu stays above the action bar`).toBeLessThanOrEqual(act.y + 0.5);
+    expect.soft(menu.y + menu.height, `${tag} menu stays above the button block`).toBeLessThanOrEqual(act.y + 0.5);
 
     // menu with Download expanded
     await press(isMobile, el(page, '[data-menu=download]'));
@@ -161,11 +160,18 @@ test('phone: docks on top, action bar just above the tray, menu opens downward, 
     await page.keyboard.press('Escape');
     await expect(el(page, '.menu')).toBeHidden();
 
-    // clear-confirm
-    await press(isMobile, el(page, '[data-history=clear]'));
-    await expect(el(page, '[data-history=clear-yes]')).toBeVisible();
+    // clear-confirm (X with nothing selected; with a selection it deletes it)
+    await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { select(id: string | null): void }).select(null));
+    await expect(el(page, '[data-block=x]')).toHaveAttribute('aria-label', 'Clear board');
+    await press(isMobile, el(page, '[data-block=x]'));
+    await expect(el(page, '[data-block=clear-yes]')).toBeVisible();
     expectLandscapeTray(await expectClean(page, `${tag} clear-confirm`), `${tag} clear-confirm`);
-    await press(isMobile, el(page, '[data-history=clear-no]'));
+    await press(isMobile, el(page, '[data-block=clear-no]'));
+    await page.evaluate(() => { // select the piece again for the states below
+      const ff = document.querySelector('fridge-face') as unknown as { composition: { pieces: { id: string }[] }; select(id: string | null): void };
+      ff.select(ff.composition.pieces.at(-1)!.id);
+    });
+    await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
 
     // share fallback field + notice (clipboard blocked)
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('no')) }, configurable: true }));
@@ -186,17 +192,17 @@ test('phone: docks on top, action bar just above the tray, menu opens downward, 
     expectLandscapeTray(await expectClean(page, `${tag} notice`), `${tag} notice`);
     await page.evaluate(() => new Promise((r) => setTimeout(r, 2600)));
 
-    // letters sheet: it covers the bottom of the board, and the action bar hides while it is open
+    // letters sheet: it covers the bottom of the board, and the button block hides while it is open
     await el(page, '.board svg.surface').focus();
     await page.keyboard.press('l');
     await expect(el(page, '.sugg')).toBeVisible();
     s = await expectClean(page, `${tag} letters`);
     expectLandscapeTray(s, `${tag} letters`);
-    expect.soft(by(s.boxes, 'actions'), `${tag} action bar hidden while the letters sheet is open`).toBeUndefined();
+    expect.soft(by(s.boxes, 'actions'), `${tag} button block hidden while the letters sheet is open`).toBeUndefined();
     expect.soft(by(s.boxes, 'sugg')!.y, `${tag} sheet clear of the docks`).toBeGreaterThanOrEqual(Math.max(...dock.map((r) => r.y + r.height)) - 0.5);
     await page.keyboard.press('Escape');
     await expect(el(page, '.sugg')).toBeHidden();
-    await expect(el(page, '.actions')).toBeVisible();
+    await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   }
 });
 
@@ -208,7 +214,7 @@ test('phone: Fit and the intro centre in the visible board, below the docks', as
       const rs = [...sr.querySelectorAll('[data-pieces] > [data-piece-id]')].map((g) => g.getBoundingClientRect());
       const top = Math.min(...rs.map((r) => r.top));
       const bottom = Math.max(...rs.map((r) => r.bottom));
-      const dockBottom = Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom));
+      const dockBottom = Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom));
       // The visible board ends at the tray (portrait) or at the board's bottom (landscape: the tray is on the left).
       const board = sr.querySelector('.board')!.getBoundingClientRect();
       const tray = sr.querySelector('.tray')!.getBoundingClientRect();
@@ -247,9 +253,9 @@ test('phone: Fit and the intro centre in the visible board, below the docks', as
 test('phone: a suggestion placed from the letters sheet lands below the docks and above the tray', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'phone profiles only');
   await open(page);
-  if (await el(page, '[data-history=clear]').isEnabled()) { // the board starts blank (no intro since v1.2.0)
-    await press(isMobile, el(page, '[data-history=clear]'));
-    await press(isMobile, el(page, '[data-history=clear-yes]'));
+  if (await el(page, '[data-block=x]').isEnabled()) { // the board starts blank (no intro since v1.2.0)
+    await press(isMobile, el(page, '[data-block=x]'));
+    await press(isMobile, el(page, '[data-block=clear-yes]'));
   }
   // With the guide on (FF_GUIDE=on) the blank board is framed on the c (v1.2.5: the oval 45% of the board's shorter side, closer
   // than free play's), a view a whole letter does not fit: Frame all (a blank board: the default view) is what a visitor would do.
@@ -267,7 +273,7 @@ test('phone: a suggestion placed from the letters sheet lands below the docks an
       n: rs.length,
       top: Math.min(...rs.map((r) => r.top)),
       bottom: Math.max(...rs.map((r) => r.bottom)),
-      dockBottom: Math.max(...[...sr.querySelectorAll('.dock > .history, .dock > .view')].map((p) => p.getBoundingClientRect().bottom)),
+      dockBottom: Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom)),
       // The visible board ends at the tray (portrait) or at the board's bottom (landscape: the tray is on the left).
       trayTop: (() => { const b = sr.querySelector('.board')!.getBoundingClientRect(), t = sr.querySelector('.tray')!.getBoundingClientRect(); return t.top > b.top ? t.top : b.bottom; })(),
       left: Math.min(...rs.map((r) => r.left)),
@@ -319,16 +325,16 @@ test('landscape phone: dragging a shape from the vertical tray onto the board by
   expect(Math.abs(r.y + r.height / 2 - to.y), 'dropped under the finger (y)').toBeLessThan(12);
 });
 
-test('desktop layout is unchanged: docks at the bottom, action bar at the top', async ({ page, isMobile }) => {
+test('desktop: docks at the bottom, the button block bottom-left (v1.5.0: no separate action bar)', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop profiles only');
   await open(page);
   await addPiece(page, false);
   const s = await expectClean(page, 'desktop');
   const act = by(s.boxes, 'actions')!;
-  const hist = by(s.boxes, 'history')!;
+  const view = by(s.boxes, 'view')!;
   const tray = by(s.boxes, 'tray')!;
-  expect(act.y, 'action bar at the top (10px)').toBeCloseTo(10, 0);
-  expect(tray.y - (hist.y + hist.height), 'docks sit 10px above the tray').toBeCloseTo(10, 0);
-  expect(hist.y).toBeGreaterThan(act.y);
+  expect(act.x, 'block at the left (10px)').toBeCloseTo(10, 0);
+  expect(tray.y - (act.y + act.height), 'block sits 10px above the tray').toBeCloseTo(10, 0);
+  expect(Math.abs(view.y + view.height - (act.y + act.height)), 'in the same row as the view group').toBeLessThan(1);
   if (process.env.SHOT_SUFFIX === undefined) await page.screenshot({ path: '.playwright-mcp/swap-desktop.png' });
 });

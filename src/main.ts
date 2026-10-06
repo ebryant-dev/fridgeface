@@ -14,6 +14,7 @@ import { LIFT_MS, shadowCss, shadowLayersMarkup, shadowUnit } from './shadow';
 import { FONT_STACK, registerFont } from './font';
 import { CONTROL_SECTIONS, controlSections, isPhysicalKey, type ControlRow } from './controls';
 import { icon } from './icons';
+import { BLOCK_ORDER, blockState } from './block';
 import { columnTrayScale, layoutState } from './layout';
 import {
   GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
@@ -97,7 +98,7 @@ const SECTION_MIN_TARGET = 24;
  */
 const SECTION_MIN_TARGET_SHORT = 20;
 /**
- * A batch that cannot fit the callout and the action bar clear of its outlines at those targets (v1.4.2: [10,11,16] of
+ * A batch that cannot fit the callout and the button block clear of its outlines at those targets (v1.4.2: [10,11,16] of
  * "create", about two letters tall) takes the largest lower target that does, in steps of SECTION_TARGET_STEP, down to
  * SECTION_TARGET_DROP below them (18 CSS px in portrait, 14 in landscape).
  */
@@ -205,14 +206,16 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .notice .msg { color: var(--paper); background: var(--ink); padding: 11px 14px; }
 .linkbox { flex: 0 0 100%; box-sizing: border-box; flex-wrap: nowrap; }
 .linkbox input { -webkit-user-select: text; user-select: text; flex: 1 1 auto; min-width: 0; min-height: 44px; box-sizing: border-box; font: 14px/1 ui-monospace, monospace; padding: 0 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: var(--paper); }
-.history .main, .history .confirm { display: contents; }
-.history [hidden] { display: none; }
-.history .msg { padding: 0 8px; }
-.actions {
-  position: absolute; top: calc(10px + var(--sat)); left: 50%; transform: translateX(-50%);
-  flex-wrap: nowrap; justify-content: center; max-width: calc(100% - 16px - var(--sal) - var(--sar)); box-sizing: border-box;
-}
-.actions[hidden] { display: none; }
+/* The bottom button block (v1.5.0; src/block.ts): X, Undo, Redo, Back, Forward, always visible, icons on every layout
+   (each with a tooltip and a screen-reader label). Desktop: bottom-left in the dock's row. Phones: centred along the
+   board's foot, just above the tray. The inline clear-confirm takes its place while it is open. */
+.block { flex-wrap: nowrap; box-sizing: border-box; }
+.block .main, .block .confirm { display: contents; }
+.block [hidden] { display: none; }
+.block .msg { padding: 0 8px; white-space: nowrap; }
+.block button.b.i { padding: 0; width: 44px; }
+.block button.b.i .ic { display: block; }
+.block button.b.i .tx { display: none; }
 
 /* ---- suggestions (letters and words): a panel on desktop, a bottom sheet in the compact layout ---- */
 .sugg {
@@ -299,13 +302,14 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] button.b.i .ic { display: block; }
 [data-compact] button.b.i .tx { display: none; }
 [data-compact] .panel { gap: 3px; padding: 3px; }
-/* Phones: the docks sit at the TOP of the board, and the piece action bar at the BOTTOM, just above the tray. The notice and
-   the share fallback field wrap onto a row below the docks (order), so nothing shares a row with the action bar. */
-[data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); top: calc(8px + var(--sat)); bottom: auto; align-items: flex-start; gap: 6px; }
+/* Phones: the view group (zoom, fit, menu) sits at the TOP of the board, and the button block at the BOTTOM, just above the
+   tray. The dock spans the board (it lets every press through), its rows packed at the top; the block is pinned to its foot.
+   The notice and the share fallback field wrap onto a row below the view group (order). */
+[data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); top: calc(8px + var(--sat)); bottom: 8px; align-items: flex-start; align-content: flex-start; gap: 6px; }
 [data-compact] .dock > .notice, [data-compact] .dock > .linkbox { order: 2; }
-[data-compact] .actions { top: auto; bottom: 8px; }
-/* The letters sheet covers the bottom of the board: the action bar hides while it is open (the selection stays). */
-.root[data-compact][data-sugg] .actions, .root[data-compact][data-sugg] .dock > .notice { visibility: hidden; } /* (the notice is also spoken by the live region) */
+[data-compact] .dock > .block { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); max-width: 100%; }
+/* The letters sheet covers the bottom of the board: the block hides while it is open (the selection stays). */
+.root[data-compact][data-sugg] .dock > .block, .root[data-compact][data-sugg] .dock > .notice { visibility: hidden; } /* (the notice is also spoken by the live region) */
 [data-compact] .msg { font-size: 12px; }
 /* The share, export, letters and help buttons live in the menu on phones; the menu button exists only there. */
 [data-compact] .share, [data-compact] [data-view=suggest], [data-compact] [data-view=help] { display: none; }
@@ -319,7 +323,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .menu .sub { display: flex; gap: 3px; padding-left: 34px; }
 .menu .sub[hidden] { display: none; }
 .menu .sub button.b { flex: 1 1 0; justify-content: center; padding: 0 10px; }
-/* Short (landscape) screens: two columns, so the menu stays short enough to clear the piece action bar below it. */
+/* Short (landscape) screens: two columns, so the menu stays short enough to clear the button block below it. */
 .root[data-short] .menu:not([hidden]) { display: grid; grid-template-columns: 1fr 1fr; width: min(520px, calc(100% - 16px)); }
 .root[data-short] .menu .sub { grid-column: 1 / -1; order: 5; padding-left: 0; }
 /* Bottom sheet: full width, over the dock, no taller than most of the board. */
@@ -339,8 +343,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 }
 [data-landscape] .tray button { width: max(calc(var(--tray-col) * var(--tk) * 1px), ${TRAY_COLUMN_MIN_W}px); }
 [data-landscape] .tray button::after { inset: -${TRAY_COLUMN_GAP / 2}px -10px; }
-[data-landscape] .dock { left: 8px; }
-[data-landscape] .actions { bottom: calc(8px + var(--sab)); max-width: calc(100% - 16px - var(--sar)); }
+[data-landscape] .dock { left: 8px; bottom: calc(8px + var(--sab)); }
 [data-landscape] .sugg { padding-bottom: var(--sab); }
 .root[data-landscape] .menu:not([hidden]) { width: min(520px, calc(100% - 16px - var(--sar))); }
 
@@ -395,6 +398,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .guide[data-side=right] .gpt { left: -23.5px; top: calc(var(--ga) - 8.5px); transform: rotate(90deg); }
 .guide[data-side=left] .gpt { left: calc(100% + 1.5px); top: calc(var(--ga) - 8.5px); transform: rotate(-90deg); }
 .guide[data-side=centre] .gpt { display: none; }
+.guide[data-noarrow] .gpt { visibility: hidden; }
 /* The row of small controls: hit areas (::after) carry the 44px touch target, not visual bulk. */
 .grow.gctl button.b { position: relative; }
 .grow.gctl button.b::after { content: ""; position: absolute; inset: -4px -2px; }
@@ -405,6 +409,9 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] .grow.gctl { flex-wrap: nowrap; gap: 12px; margin-top: 4px; }
 [data-compact] .grow.gctl button.b { min-width: 0; min-height: 28px; padding: 0 6px; font-size: 10px; letter-spacing: 0.08em; border-width: 1.5px; white-space: nowrap; }
 [data-compact] .grow.gctl button.b::after { inset: -8px -6px; }
+/* The narrowest callout (v1.5.0, a last resort on phones in portrait): the small controls tighten to fit its width. */
+[data-compact] .guide[data-narrow] .grow.gctl { gap: 8px; }
+[data-compact] .guide[data-narrow] .grow.gctl button.b { padding: 0 5px; font-size: 9.5px; letter-spacing: 0.02em; }
 [data-compact] .gpick button.b { position: relative; min-height: 34px; font-size: 11px; padding: 0 10px; }
 [data-compact] .gpick button.b::after { content: ""; position: absolute; inset: -5px -2px; }
 
@@ -428,6 +435,20 @@ function controlsHtml(): string {
       `</section>`,
   ).join('');
   return sections + `<div class="ctlfoot"><span class="ctlall">${btn('data-help="showall"', 'Show all controls')}</span><span class="ctlguide">${btn('data-help="guide"', GUIDE_COPY.replay)}</span></div>`;
+}
+
+/** The bottom block's buttons (src/block.ts): icon, tooltip and label (kept in step with the state by `renderBlock`). */
+const BLOCK_BUTTONS: Record<string, { icon: string; label: string; keys: string }> = {
+  x: { icon: 'clear', label: 'Clear board', keys: 'Delete' },
+  undo: { icon: 'undo', label: 'Undo', keys: 'Control+Z' },
+  redo: { icon: 'redo', label: 'Redo', keys: 'Control+Shift+Z' },
+  backward: { icon: 'backward', label: 'Send backward', keys: '[' },
+  forward: { icon: 'forward', label: 'Bring forward', keys: ']' },
+};
+
+function blockBtn(id: string): string {
+  const b = BLOCK_BUTTONS[id];
+  return btn(`data-block="${id}" aria-label="${b.label}" title="${b.label}" aria-keyshortcuts="${b.keys}" disabled`, b.label, b.icon);
 }
 
 /** A control button: text label on wide screens, icon on narrow ones (`i`). */
@@ -486,7 +507,8 @@ export class FridgeFace extends HTMLElement {
   private piecesLayer!: SVGGElement;
   private overlay!: SVGGElement;
   private outlinesEl!: SVGGElement;
-  private actions!: HTMLElement;
+  /** The bottom button block (X, Undo, Redo, Back, Forward; src/block.ts). */
+  private blockEl!: HTMLElement;
   private boardEl!: HTMLElement;
   private trayEl!: HTMLElement;
   private rootEl!: HTMLElement;
@@ -567,7 +589,6 @@ export class FridgeFace extends HTMLElement {
   private coalesceKey: string | null = null;
   private saveTimer = 0;
   private pendingFit = false;
-  private historyEl!: HTMLElement;
   private shareEl!: HTMLElement;
   private noticeEl!: HTMLElement;
   private linkboxEl!: HTMLElement;
@@ -650,27 +671,18 @@ export class FridgeFace extends HTMLElement {
           <defs><pattern id="ff-tex" patternUnits="userSpaceOnUse" x="0" y="0" width="${tex.units}" height="${tex.units}"><image href="${tex.href}" x="0" y="0" width="${tex.units}" height="${tex.units}" preserveAspectRatio="none"/></pattern></defs>
           <g data-camera aria-hidden="true" transform="matrix(1 0 0 1 0 0)"><rect data-texture fill="url(#ff-tex)" x="0" y="0" width="0" height="0"/><g data-pieces></g><g data-outlines pointer-events="none"></g><g data-overlay></g></g>
         </svg>
-        <div class="actions panel" role="toolbar" aria-label="Piece actions" hidden>
-          ${btn('data-action="delete" aria-label="Delete piece"', 'Delete', 'delete')}
-          ${btn('data-action="forward" aria-label="Bring forward"', 'Forward', 'forward')}
-          ${btn('data-action="backward" aria-label="Send backward"', 'Back', 'backward')}
-        </div>
         <div class="dock">
           <div class="notice" aria-hidden="true"><span class="msg" hidden></span></div>
           <div class="linkbox panel" role="group" aria-label="Share link" hidden>
             <input type="text" readonly aria-label="Share link (copy it from here)" />
             ${btn('data-share="close" aria-label="Close share link"', 'Close', 'close')}
           </div>
-          <div class="history panel" role="group" aria-label="History">
-            <span class="main" role="group" aria-label="Undo, redo and clear">
-              ${btn('data-history="undo" aria-label="Undo" disabled', 'Undo', 'undo')}
-              ${btn('data-history="redo" aria-label="Redo" disabled', 'Redo', 'redo')}
-              ${btn('data-history="clear" aria-label="Clear board" disabled', 'Clear', 'clear')}
-            </span>
+          <div class="block panel" role="group" aria-label="Edit">
+            <span class="main">${BLOCK_ORDER.map((id) => blockBtn(id)).join('')}</span>
             <span class="confirm" role="alertdialog" aria-label="Confirm clearing the board" hidden>
               <span class="msg">Clear everything?</span>
-              ${btn('data-history="clear-yes" aria-label="Confirm clear board"', 'Clear')}
-              ${btn('data-history="clear-no" aria-label="Cancel clear board"', 'Cancel')}
+              ${btn('data-block="clear-yes" aria-label="Confirm clear board"', 'Clear')}
+              ${btn('data-block="clear-no" aria-label="Cancel clear board"', 'Cancel')}
             </span>
           </div>
           <div class="share panel" role="group" aria-label="Share and export">
@@ -765,8 +777,7 @@ export class FridgeFace extends HTMLElement {
     this.piecesLayer = wrap.querySelector('[data-pieces]')!;
     this.overlay = wrap.querySelector('[data-overlay]')!;
     this.outlinesEl = wrap.querySelector('[data-outlines]')!;
-    this.actions = wrap.querySelector('.actions')!;
-    this.historyEl = wrap.querySelector('.history')!;
+    this.blockEl = wrap.querySelector('.block')!;
     this.shareEl = wrap.querySelector('.share')!;
     this.noticeEl = wrap.querySelector('.notice .msg')!;
     this.linkboxEl = wrap.querySelector('.linkbox')!;
@@ -810,14 +821,6 @@ export class FridgeFace extends HTMLElement {
       if (this.lastPointerType === 'touch' || this.longPress || this.boxSel) e.preventDefault();
     });
 
-    this.actions.addEventListener('click', (e) => {
-      const act = (e.target as HTMLElement).closest('button')?.dataset.action;
-      if (!act || !this.selection.length) return;
-      this.runAction(act);
-      // The pressed button may now be disabled or gone (Delete hides the bar): keep keyboard focus on the board.
-      const pressed = (e.target as HTMLElement).closest('button')!;
-      if (this.actions.hidden || pressed.disabled) this.surface.focus();
-    });
     this.addEventListener('keydown', (e) => this.onKey(e));
     this.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     // Safari reports trackpad pinch as proprietary gesture events; the page must never zoom.
@@ -844,12 +847,12 @@ export class FridgeFace extends HTMLElement {
       }
     });
     this.guideEl.addEventListener('click', (e) => this.onGuideClick(e));
-    // The callout follows whatever opens, closes or appears around it (menus, sheets, the dialog, notices, the action bar).
+    // The callout follows whatever opens, closes or appears around it (menus, sheets, the dialog, notices, the button block).
     new MutationObserver((ms) => {
       if (ms.some((m) => !this.guideEl.contains(m.target))) this.scheduleGuide();
     }).observe(root, { subtree: true, attributes: true, attributeFilter: ['hidden', 'data-sugg'] });
 
-    this.historyEl.addEventListener('click', (e) => this.onHistoryClick(e));
+    this.blockEl.addEventListener('click', (e) => this.onBlockClick(e));
     this.shareEl.addEventListener('click', (e) => this.onShareClick(e));
     this.linkboxEl.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('button')) this.hideLinkBox();
@@ -1083,26 +1086,36 @@ export class FridgeFace extends HTMLElement {
     this.composition.clear();
   }
 
+  /** The inline clear-confirm in the block (X with nothing selected): it takes the buttons' place while it is open. */
   private showConfirm(on: boolean) {
-    this.historyEl.querySelector<HTMLElement>('.main')!.hidden = on;
-    this.historyEl.querySelector<HTMLElement>('.confirm')!.hidden = !on;
+    this.blockEl.querySelector<HTMLElement>('.main')!.hidden = on;
+    this.blockEl.querySelector<HTMLElement>('.confirm')!.hidden = !on;
     if (on) this.say('Clear everything? Choose Clear to confirm or Cancel. Escape cancels.');
-    const target = on ? 'clear-no' : 'clear';
-    this.historyEl.querySelector<HTMLButtonElement>(`[data-history=${target}]`)!.focus();
+    const target = this.blockEl.querySelector<HTMLButtonElement>(`[data-block=${on ? 'clear-no' : 'x'}]`)!;
+    if (target.disabled) this.surface.focus();
+    else target.focus();
   }
 
   private confirming(): boolean {
-    return !this.historyEl.querySelector<HTMLElement>('.confirm')!.hidden;
+    return !this.blockEl.querySelector<HTMLElement>('.confirm')!.hidden;
   }
 
-  private onHistoryClick(e: MouseEvent) {
+  /**
+   * The block: X deletes the selection (one undo step) or, with nothing selected, asks to clear the board (Clear clears it
+   * as one undo step, Cancel does nothing); Undo, Redo; Back and Forward restack the selection (overlap-aware).
+   */
+  private onBlockClick(e: MouseEvent) {
     const b = (e.target as HTMLElement).closest('button');
-    const act = b?.dataset.history;
-    if (!b || !act) return;
+    const act = b?.dataset.block;
+    if (!b || !act || b.disabled) return;
     if (act === 'undo') this.undo();
     else if (act === 'redo') this.redo();
-    else if (act === 'clear') this.showConfirm(true);
-    else if (act === 'clear-no') this.showConfirm(false);
+    else if (act === 'x') {
+      if (this.selection.length) this.runAction('delete');
+      else if (this.composition.pieces.length) this.showConfirm(true);
+    } else if (act === 'backward' || act === 'forward') {
+      if (this.selection.length) this.runAction(act);
+    } else if (act === 'clear-no') this.showConfirm(false);
     else if (act === 'clear-yes') {
       this.clearBoard();
       this.say('Board cleared.');
@@ -1371,7 +1384,7 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** Anchor the menu to its button (the docks are at the top on phones): right edges aligned, opening DOWNWARD, always inside the board and clear of the piece action bar. */
+  /** Anchor the menu to its button (the view group is at the top on phones): right edges aligned, opening DOWNWARD, always inside the board and clear of the button block. */
   private positionMenu() {
     const m = this.menuEl;
     const board = this.boardEl.getBoundingClientRect(); // the menu is positioned inside the board (right of the tray in landscape)
@@ -1381,7 +1394,7 @@ export class FridgeFace extends HTMLElement {
     const px = (v: string) => parseFloat(v) || 0;
     const cs = getComputedStyle(this.rootEl);
     let bottom = board.bottom - edge;
-    if (!this.actions.hidden && getComputedStyle(this.actions).visibility !== 'hidden') bottom = Math.min(bottom, this.actions.getBoundingClientRect().top - gap); // never over the piece action bar
+    if (getComputedStyle(this.blockEl).display !== 'none' && getComputedStyle(this.blockEl).visibility !== 'hidden') bottom = Math.min(bottom, this.blockEl.getBoundingClientRect().top - gap); // never over the button block
     m.style.maxHeight = '';
     m.style.top = '0px';
     m.style.left = '0px';
@@ -1476,14 +1489,14 @@ export class FridgeFace extends HTMLElement {
   }
 
   /**
-   * Compact layout: the docks sit over the top of the board, so the part of the board that is actually visible starts below
-   * them. Returns that offset in screen (viewBox) units; 0 on desktop, where the docks are at the bottom and the board is whole.
+   * Compact layout: the view group sits over the top of the board, so the part of the board that is actually visible starts
+   * below it. Returns that offset in screen (viewBox) units; 0 on desktop, where the docks are at the bottom and the board is whole.
    */
   private topInset(): number {
     if (!this.isCompact) return 0;
     const board = this.boardEl.getBoundingClientRect();
     let bottom = 0;
-    for (const p of this.dockEl.querySelectorAll<HTMLElement>(':scope > .history, :scope > .view')) bottom = Math.max(bottom, p.getBoundingClientRect().bottom);
+    for (const p of this.dockEl.querySelectorAll<HTMLElement>(':scope > .view')) bottom = Math.max(bottom, p.getBoundingClientRect().bottom);
     return bottom > board.top ? (bottom - board.top + 8) / this.k : 0;
   }
 
@@ -2369,7 +2382,7 @@ export class FridgeFace extends HTMLElement {
     this.syncLift();
     const changed = this.commitGesture();
     if (wasGesture && !this.inGesture) {
-      this.render(); // the action bar's restack state is refreshed once, at the end
+      this.render(); // the button block's restack state is refreshed once, at the end
       if (changed) this.guideSnap(released); // guide only: close to its outline, it clicks in, in the same undo step
       this.guideObserve(); // a whole drag, turn or twist is judged once, at the end
     }
@@ -2803,7 +2816,7 @@ export class FridgeFace extends HTMLElement {
     };
     /**
      * A box (in a frame given by `toBoardPt`) with the rotate handle above its top centre, or below its bottom centre when the
-     * top spot is off the board or under a control (the action bar, a dock) and the bottom one is clear.
+     * top spot is off the board or under a control (the button block, a dock) and the bottom one is clear.
      */
     const blocked = this.handleBlocker();
     const boxWithHandle = (g: SVGGElement, bx: number, by: number, bw: number, bh: number, toBoardPt: (p: Pt) => Pt) => {
@@ -2871,20 +2884,13 @@ export class FridgeFace extends HTMLElement {
     }
   }
 
-  /** Is a board point a bad spot for the rotate handle: off the visible board, or under a control (action bar, dock, menu, sheet)? */
+  /** Is a board point a bad spot for the rotate handle: off the visible board, or under a control (the block, a dock, menu, sheet)? */
   private handleBlocker(): (p: Pt) => boolean {
     const board = this.boardEl.getBoundingClientRect();
     if (!board.width) return () => false;
     const r = HANDLE_HIT / 2;
     const rects: DOMRect[] = [];
     const shown = (e: HTMLElement | null) => !!e && !e.hidden && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
-    // The action bar is about to show whenever something is selected (render() unhides it right after the overlay).
-    if (this.selection.length) {
-      const was = this.actions.hidden;
-      this.actions.hidden = false;
-      if (shown(this.actions)) rects.push(this.actions.getBoundingClientRect());
-      this.actions.hidden = was;
-    }
     for (const e of [...this.dockEl.querySelectorAll<HTMLElement>(':scope > .panel'), this.menuEl, this.suggEl]) if (shown(e)) rects.push(e.getBoundingClientRect());
     const k = this.k, v = this.view;
     return (p) => {
@@ -2910,14 +2916,25 @@ export class FridgeFace extends HTMLElement {
     }, LIFT_MS + 60);
   }
 
-  private renderHistoryUi() {
-    if (!this.historyEl) return;
-    const q = (n: string) => this.historyEl.querySelector<HTMLButtonElement>(`[data-history=${n}]`)!;
-    q('undo').disabled = !this.history.canUndo;
-    q('redo').disabled = !this.history.canRedo;
-    const empty = this.composition.pieces.length === 0;
-    q('clear').disabled = empty;
-    if (empty && this.confirming()) this.showConfirm(false);
+  /** The block's buttons: labels, tooltips and on/off from the selection, the board and the history (src/block.ts). */
+  private renderBlock() {
+    if (!this.blockEl) return;
+    const n = this.selection.length;
+    const st = n ? this.stackState() : { fwd: false, back: false };
+    const pieces = this.composition.pieces.length;
+    const state = blockState({ selected: n, pieces, canUndo: this.history.canUndo, canRedo: this.history.canRedo, fwd: st.fwd, back: st.back });
+    for (const id of BLOCK_ORDER) {
+      const b = this.blockEl.querySelector<HTMLButtonElement>(`[data-block=${id}]`)!;
+      const { label, disabled } = state.buttons[id];
+      if (b.disabled !== disabled) b.disabled = disabled;
+      if (b.getAttribute('aria-label') !== label) {
+        b.setAttribute('aria-label', label);
+        b.title = label;
+        b.querySelector('.tx')!.textContent = label;
+      }
+      if (id === 'x' && b.dataset.mode !== state.x) b.dataset.mode = state.x; // 'delete' or 'clear'
+    }
+    if (!pieces && this.confirming()) this.showConfirm(false);
   }
 
   private render() {
@@ -2960,24 +2977,17 @@ export class FridgeFace extends HTMLElement {
     this.syncLift();
 
     this.renderOverlay();
-    this.renderHistoryUi();
+    // The block acts on the whole selection (X deletes it, Back / Forward are off when nothing below / above overlaps it),
+    // or, with nothing selected, X clears the board.
+    this.renderBlock();
     this.renderShareUi();
-    // Action bar: it acts on the whole selection. Forward / Back are off when nothing above / below overlaps it.
-    const n = this.selection.length;
-    this.actions.hidden = !n;
-    if (n) {
-      const st = this.stackState();
-      (this.actions.querySelector('[data-action=forward]') as HTMLButtonElement).disabled = !st.fwd;
-      (this.actions.querySelector('[data-action=backward]') as HTMLButtonElement).disabled = !st.back;
-      this.actions.querySelector('[data-action=delete]')!.setAttribute('aria-label', n === 1 ? 'Delete piece' : `Delete ${n} pieces`);
-    }
     this.scheduleGuide();
   }
 
   // ---- the guide ----------------------------------------------------------------------------
 
   private guideWorld(): GuideWorld {
-    // Real geometry: the pieces' convex outlines (cached per piece snapshot), as the action bar's restacking uses.
+    // Real geometry: the pieces' convex outlines (cached per piece snapshot), as the block's restacking uses.
     return { pieces: this.composition.pieces, sizeOf, overlaps: (a, b) => convexIntersect(this.outlineOf(a as Piece), this.outlineOf(b as Piece)) };
   }
 
@@ -3270,7 +3280,7 @@ export class FridgeFace extends HTMLElement {
   private guideSelectedFor = '';
 
   /**
-   * A new stacking prompt selects the piece it is about, so the action bar (and its Send backward / Bring forward) shows.
+   * A new stacking prompt selects the piece it is about, so the block's Back / Forward (Send backward / Bring forward) act on it.
    * Not while the visitor is in the middle of something else (a gesture, a sheet, menu or dialog): it waits until that ends.
    */
   private guideAutoSelect() {
@@ -3565,11 +3575,11 @@ export class FridgeFace extends HTMLElement {
     return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
   }
 
-  /** The controls the callout must not cover: the dock panels, the notice and the piece action bar. */
+  /** The controls the callout must not cover: the dock panels (the button block among them) and the notice. */
   private guideObstacles(): Rect[] {
     const out: Rect[] = [];
     const shown = (e: HTMLElement) => !e.hidden && !e.closest('[hidden]') && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
-    for (const e of [...this.dockEl.querySelectorAll<HTMLElement>(':scope > .panel'), this.noticeEl, this.actions]) if (shown(e)) out.push(toRect(e.getBoundingClientRect()));
+    for (const e of [...this.dockEl.querySelectorAll<HTMLElement>(':scope > .panel'), this.noticeEl]) if (shown(e)) out.push(toRect(e.getBoundingClientRect()));
     return out.filter((r) => r.w > 0 && r.h > 0);
   }
 
@@ -3579,8 +3589,8 @@ export class FridgeFace extends HTMLElement {
 
   /**
    * What the current step points at and which sides to try. Steps 1, 2 and 4 (4a): the tray shape to drag. 4b and step 6's
-   * hint: the rotate handle of the piece that needs turning (or the piece). Step 3 and step 6's stacking prompt: the action
-   * bar's Send backward or Bring forward (the piece itself while the bar is not showing). Step 6: the tray. Steps 5 and 7:
+   * hint: the rotate handle of the piece that needs turning (or the piece). Step 3 and step 6's stacking prompt: the block's
+   * Back (Send backward) or Forward (Bring forward) (the piece itself while the block's buttons are not showing). Step 6: the tray. Steps 5 and 7:
    * the board (centred).
    */
   private guideTargets(bounds: Rect): GuideTarget[] {
@@ -3604,9 +3614,9 @@ export class FridgeFace extends HTMLElement {
       const action = s.stack!.dir === 'back' ? 'backward' : 'forward';
       const g = this.els.get(s.stack!.id)?.g.querySelector('.bd');
       const pr = g ? toRect(g.getBoundingClientRect()) : null;
-      const btn = this.actions.hidden ? null : this.actions.querySelector<HTMLElement>(`[data-action=${action}]`);
-      const r = btn ? toRect(btn.getBoundingClientRect()) : null;
-      // The button: above it (the bar sits along the board's foot on phones), else beside it; the piece kept in sight.
+      const btn = this.blockEl.querySelector<HTMLElement>(`[data-block=${action}]`);
+      const r = btn && !btn.closest('[hidden]') && getComputedStyle(this.blockEl).visibility !== 'hidden' ? toRect(btn.getBoundingClientRect()) : null;
+      // The block's Back or Forward: above it (the block sits along the board's foot), else beside it; the piece kept in sight.
       if (r && visible(r)) out.push({ target: r, avoid: pr ? [pr] : [], prefer: ['above', 'below', 'right', 'left'], kind: 'action', action });
       if (pr && visible(pr)) out.push({ target: pr, avoid: [], prefer: ['above', 'below', 'right', 'left'], kind: 'piece', piece: s.stack!.id });
       if (out.length) return [...out, board];
@@ -3655,14 +3665,11 @@ export class FridgeFace extends HTMLElement {
     return out;
   }
 
-  /** Where the piece action bar sits (client px) whenever something is selected, even while it is hidden; null if it cannot show. */
-  private actionsRect(): Rect | null {
-    const was = this.actions.hidden;
-    this.actions.hidden = false;
-    const cs = getComputedStyle(this.actions);
-    const r = cs.display === 'none' ? null : toRect(this.actions.getBoundingClientRect());
-    this.actions.hidden = was;
-    return r && r.w > 0 && r.h > 0 ? r : null;
+  /** Phones: where the button block sits along the board's foot (client px), even while the letters sheet hides it; null on desktop. */
+  private blockRect(): Rect | null {
+    if (!this.isCompact) return null;
+    const r = toRect(this.blockEl.getBoundingClientRect());
+    return r.w > 0 && r.h > 0 ? r : null;
   }
 
   /** The tight bounds (board units) of outlines, from their shapes' real outlines (rotated bounding boxes overstate them). */
@@ -3675,12 +3682,12 @@ export class FridgeFace extends HTMLElement {
 
   /**
    * Phones: frame `b` (board units) as large as it can show in the visible board, clear of the callout (placed by the tray,
-   * at each width it may take, in its tallest form) and of the action bar (it shows after every click-in). The largest
+   * at each width it may take, in its tallest form) and of the button block (always showing along the board's foot). The largest
    * free strip wins (`freeRect`); the callout later places itself clear of the outlines.
    */
   private frameClear(b: Rect, parts: readonly Rect[], widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean, need = 0, ctx: SectionContext | null = null, onlyIfFits = false): boolean {
     const g = this.guideEl;
-    const bar = this.actionsRect();
+    const bar = this.blockRect();
     const tray = toRect(this.trayEl.getBoundingClientRect());
     const grow = (r: Rect, m: number): Rect => ({ x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m });
     const t3 = g.querySelector<HTMLElement>('.gt3')!, was = [t3.textContent, t3.hidden] as const;
@@ -3697,8 +3704,12 @@ export class FridgeFace extends HTMLElement {
     const pad = SECTION_FRAME_PAD;
     const hardBase = bar ? [...obstacles, bar] : [...obstacles];
     // The docks (phones: along the top) block only where they are: the board between them is free (landscape).
-    const docks = obstacles.filter((r) => !bar || !rectsOverlap(r, bar)).map((r) => grow(r, 6));
-    // 1. The largest strip clear of the docks, the callout (placed by the tray) and the action bar.
+    // Portrait (v1.5.0): the view group alone sits at the top right, but the strip it stands in is kept for the callout (it
+    // steps up there beside the group when a rotate handle pushes it), so the whole strip counts as the dock, as when the
+    // undo group stood at its left.
+    const band = (r: Rect): Rect => (this.isLandscape ? r : { x: bounds.x, y: r.y, w: bounds.w, h: r.h });
+    const docks = obstacles.filter((r) => !bar || !rectsOverlap(r, bar)).map((r) => grow(band(r), 6));
+    // 1. The largest strip clear of the docks, the callout (placed by the tray) and the button block.
     let best: { rect: Rect; scale: number } | null = null;
     for (const size of sizes) {
       const p = placeCallout(size, tray, bounds, hardBase, this.trayPrefer);
@@ -3711,7 +3722,7 @@ export class FridgeFace extends HTMLElement {
     if (need > best!.scale) {
       // 2. That leaves the thinnest targets too small: try larger scales, up to what they need (or the board between the
       //    docks allows), each at a few places in that room, and take the largest at which the callout still finds a spot
-      //    by the tray clear of every outline and the action bar (empty board beside the outlines, or over finished pieces).
+      //    by the tray clear of every outline and the button block (empty board beside the outlines, or over finished pieces).
       const room = freeRect({ w: b.w, h: b.h }, bounds, docks, pad);
       const top = Math.min(need, room.scale);
       const clear = (r: Rect, hard: readonly Rect[]) => !hard.some((q) => rectsOverlap(r, q));
@@ -3724,7 +3735,7 @@ export class FridgeFace extends HTMLElement {
         const xs = along(a.x, a.w - w), ys = along(a.y, a.h - h).sort((p, q) => p - q);
         for (const y of ys) for (const x of xs) {
           const rects = parts.map((q) => ({ x: x + pad + (q.x - b.x) * scale, y: y + pad + (q.y - b.y) * scale, w: q.w * scale, h: q.h * scale }));
-          if (bar && rects.some((r) => rectsOverlap(r, bar))) continue; // never under the action bar
+          if (bar && rects.some((r) => rectsOverlap(r, bar))) continue; // never under the button block
           const hard = [...hardBase, ...rects.map((r) => grow(r, 8))]; // a little air: the callout is placed again with the real outlines
           for (const size of sizes) {
             const p = placeCallout(size, tray, bounds, hard, this.trayPrefer);
@@ -3739,7 +3750,7 @@ export class FridgeFace extends HTMLElement {
     }
     if (onlyIfFits) {
       // The caller tries a lower target when this one leaves the callout no room: checked on the view it would really take
-      // (the section's place in the room, the callout by the tray clear of every outline and the action bar).
+      // (the section's place in the room, the callout by the tray clear of every outline and the button block).
       const to = this.viewFor(b, reg, ctx);
       const board = this.boardEl.getBoundingClientRect();
       const k = this.k;
@@ -3770,7 +3781,7 @@ export class FridgeFace extends HTMLElement {
 
   /**
    * Phones, step 6: frame the CURRENT batch with a little board around it (BATCH_CONTEXT_STEMS), as large as the room
-   * clear of the docks, the callout and the action bar allows (`frameClear`), gliding there unless `smooth` is false. Never
+   * clear of the docks, the callout and the button block allows (`frameClear`), gliding there unless `smooth` is false. Never
    * closer than the c's close-up (`cFrameZoom`'s 45% oval), so a batch of one small piece still shows where it goes.
    */
   private fitBatch(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[], smooth: boolean) {
@@ -3850,7 +3861,7 @@ export class FridgeFace extends HTMLElement {
   /**
    * Phones, steps 1 to 4: the c (oval and wedge, all its outlines) framed with the black oval 45% of the visible board's
    * shorter side, or less where the whole c does not then fit the room the docks, the callout (in its tallest form), the
-   * action bar and the tray leave (`frameClear`: the largest free strip wins, the c centred in it).
+   * button block and the tray leave (`frameClear`: the largest free strip wins, the c centred in it).
    */
   private fitC(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[]) {
     const list = this.guide.outlines;
@@ -3971,12 +3982,12 @@ export class FridgeFace extends HTMLElement {
     const bw = this.boardEl.getBoundingClientRect().width;
     const widths = this.isLandscape ? [0.45, 0.37, 0.3].map((f) => Math.max(190, Math.round(bw * f))) : this.isCompact ? [Math.round(Math.min(300, bw - 32)), 240] : [0];
     if (this.wordFitPending && this.guide.phase === 'word' && s === 7) {
-      // The finished word, framed whole (phones: clear of the docks, the tray and the action bar).
+      // The finished word, framed whole (phones: clear of the docks, the tray and the button block).
       const how = this.wordFitPending;
       this.wordFitPending = false;
       this.fitFinishedWord(bounds, how === 'smooth');
     } else if (this.wordFitPending && s === 6) {
-      // Once per batch: frame it (phones: beside the callout by the tray, never under it, nor under the action bar).
+      // Once per batch: frame it (phones: beside the callout by the tray, never under it, nor under the button block).
       const how = this.wordFitPending;
       this.wordFitPending = false;
       if (this.isCompact) this.fitBatch(widths, bounds, obstacles, how === 'smooth');
@@ -4021,13 +4032,20 @@ export class FridgeFace extends HTMLElement {
       .map((r) => ({ x: r.x - M, y: r.y - M, w: r.w + 2 * M, h: r.h + 2 * M }));
     const options = this.guideTargets(bounds);
     let best: { w: number; pick: GuideTarget; p: ReturnType<typeof placeCallout>; n: number; a: number; rank: number } | null = null;
-    for (const w of widths) {
+    // Phones in portrait (v1.5.0): one narrower form still, the last resort before covering a control (a rotate handle
+    // pushed it out of its room; the strip beside the view group at the top fits it). Placement only: framing never plans for it.
+    const NARROW = 180;
+    const tryWidths = this.isCompact && !this.isLandscape ? [...widths, NARROW] : widths;
+    for (const w of tryWidths) {
+      if (w === NARROW && best && best.rank >= 6) break; // only when nothing wider stays clear of every control
+      g.toggleAttribute('data-narrow', w === NARROW);
       g.style.maxWidth = w ? `${w}px` : '';
       const size = { w: g.offsetWidth, h: g.offsetHeight };
       let pick = options[options.length - 1];
-      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces, undefined, must);
+      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces, undefined, must, pick.kind === 'action');
       for (const o of options) {
-        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces, undefined, must);
+        // The block's Back / Forward sit side by side: the arrow must be level with the one it means (pointFirst).
+        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces, undefined, must, o.kind === 'action');
         if (q.side !== 'centre' || !o.target) {
           pick = o;
           p = q;
@@ -4043,9 +4061,19 @@ export class FridgeFace extends HTMLElement {
       if (better) best = { w, pick, p, n: c.n, a: c.a, rank };
       if (!c.n && best!.rank >= 6) break; // clear of every piece and obstacle: no need to narrow further
     }
+    g.toggleAttribute('data-narrow', best!.w === NARROW);
     g.style.maxWidth = best!.w ? `${best!.w}px` : '';
     const { pick, p } = best!;
     g.dataset.side = p.side;
+    // v1.5.0: on phones the button block stands between the callout and the tray. A pointer that would land on a control it
+    // is not about (the tray shape behind the block) would seem to point at that control instead: it is hidden (kept in
+    // layout, so its nudge still runs). The block's own Back / Forward are its target in step 3, so there it always shows.
+    const cw = g.offsetWidth, ch = g.offsetHeight;
+    const tip: Rect | null = p.side === 'above' ? { x: p.x + p.arrow - 13, y: p.y + ch + 6, w: 22, h: 13 }
+      : p.side === 'below' ? { x: p.x + p.arrow - 13, y: p.y - 19, w: 22, h: 13 }
+        : p.side === 'right' ? { x: p.x - 21, y: p.y + p.arrow - 11, w: 13, h: 22 }
+          : p.side === 'left' ? { x: p.x + cw + 4, y: p.y + p.arrow - 11, w: 13, h: 22 } : null;
+    g.toggleAttribute('data-noarrow', !!tip && pick.kind !== 'action' && obstacles.some((q) => rectsOverlap(tip, q)));
     g.dataset.target = pick.kind;
     if (pick.piece) g.dataset.piece = pick.piece;
     else delete g.dataset.piece;
@@ -4071,7 +4099,7 @@ interface GuideTarget {
   kind: 'tray' | 'handle' | 'piece' | 'board' | 'action';
   piece?: string;
   shape?: string;
-  /** kind 'action': which action-bar control it points at. */
+  /** kind 'action': which of the block's restack buttons it points at. */
   action?: 'backward' | 'forward';
 }
 

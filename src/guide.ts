@@ -4,7 +4,7 @@ import {
   FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
   type ShapeFrame, type SizeOf,
 } from './outline';
-import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stacking';
+import { stackCheck, stackPrompt, type FreePairs, type Overlaps, type StackPrompt } from './stacking';
 import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
@@ -19,7 +19,7 @@ import { curatedPlan } from './guide-plans';
  * 1. outline: the white oval (dotted).                          Done when it is filled (a piece sits exactly on it).
  * 2. outline: the black oval (solid), on the white one.         Done when it is filled. A new piece lands on top, so it
  *    hides the white oval.
- * 3. no outline: "Send the black oval back so the white shows through." Points at the action bar's Send backward (the black
+ * 3. no outline: "Send the black oval back so the white shows through." Points at the button block's Back (Send backward) (the black
  *    oval is selected for it). Done when the black oval is below the white one in the stacking order (`stack` is the prompt).
  * 4. outline: the wedge, at its angle. 4a "drag it into place"; 4b (a wedge is close in position but needs turning) "turn it".
  * 5. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
@@ -31,7 +31,8 @@ import { curatedPlan } from './guide-plans';
  *    done, so it too is derived from the board (undo and redo move between batches). A word piece is DONE when it is placed
  *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. The
  *    stacking prompts (`stack`: Send it back / Bring it forward, the most recently placed first) remain only as a safety net,
- *    for a visitor who reorders pieces themselves. Same turning hint as 4b. Nothing is cleared at Guide me; the word's
+ *    for a visitor who reorders pieces themselves. A curated plan may declare ORDER-FREE pairs (v1.5.0: the flower's petals,
+ *    which come up together as one batch): their order is never checked. Same turning hint as 4b. Nothing is cleared at Guide me; the word's
  *    outlines are in the c's board frame, so the c's pieces fill theirs (they are batch 0, already done).
  * 7. no outline. "You made "create"." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
@@ -147,12 +148,17 @@ export interface GuideState {
    * pieces already placed at Guide me), filled one batch at a time (batches.ts). null outside the word phase.
    */
   batches: readonly (readonly number[])[] | null;
+  /**
+   * The word phase: order-free outline pairs (v1.5.0, from a curated plan: the flower's petals in "create"). Their relative
+   * stacking order never makes a piece mis-stacked nor causes a prompt (stacking.ts). Empty otherwise.
+   */
+  free: FreePairs;
 }
 
 const NONE = Object.freeze([]) as readonly never[];
 export const GUIDE_IDLE: GuideState = Object.freeze({
   step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, done: NONE, recent: NONE, stack: null, turn: null,
-  batches: null,
+  batches: null, free: NONE,
 }) as GuideState;
 
 /** Is the guide running (step 0's question included)? */
@@ -201,8 +207,8 @@ export function activeOutlines(s: GuideState): number[] {
   return [];
 }
 
-type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent'>;
-const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent });
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent' | 'free'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent, free: s.free });
 
 /** The placed pieces in the order they were placed: the ones still placed keep their turn, newly placed ones go last. */
 function updateRecent(recent: readonly string[], filled: readonly (string | null)[]): readonly string[] {
@@ -239,11 +245,11 @@ function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld
   if (phase === 'c') ({ step, done, stack } = deriveC(outlines, w, filled));
   else {
     const ov = overlapsOf(w);
-    done = stackCheck(filled, w.pieces, ov).done;
+    done = stackCheck(filled, w.pieces, ov, c.free).done;
     step = done.every(Boolean) ? 7 : 6;
-    stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent) : null;
+    stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent, c.free) : null;
   }
-  const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, step, phase, outlines, filled, done, stack, turn: null };
+  const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, free: phase === 'word' ? c.free : NONE, step, phase, outlines, filled, done, stack, turn: null };
   const active = activeOutlines(s);
   // The turning hint: in step 4 (the wedge) and step 6 (any piece of the word).
   const turn = step === 4 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
@@ -256,7 +262,7 @@ const samePrompt = (a: StackPrompt | null, b: StackPrompt | null) =>
 const same = (a: GuideState, b: GuideState) =>
   a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && sameList(a.filled, b.filled) && sameList(a.done, b.done)
   && sameList(a.recent, b.recent) && samePrompt(a.stack, b.stack)
-  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.batches === b.batches;
+  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.batches === b.batches && a.free === b.free;
 
 /**
  * Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it.
@@ -264,7 +270,7 @@ const same = (a: GuideState, b: GuideState) =>
  */
 export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
   if (!cOutlines.length) return GUIDE_IDLE;
-  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, batches: null, recent: NONE });
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, batches: null, recent: NONE, free: NONE });
 }
 
 /**
@@ -360,9 +366,11 @@ export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: G
     const z = w.sizeOf(o.shapeId);
     return { x: o.x - z / 2, y: o.y - z / 2, w: z, h: z };
   });
-  // A plan curated by hand for this very word (guide-plans.ts), when there is one and it is valid; else the automatic planner.
-  const batches = curatedPlan(wordOutlines, overlapsOf(w), placed) ?? planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
-  return derive('word', wordOutlines, w, { ...carry(s), batches });
+  // A plan curated by hand for this very word (guide-plans.ts), when there is one and it is valid (with its order-free
+  // pairs: the stacking check ignores them); else the automatic planner (no order-free pairs).
+  const curated = curatedPlan(wordOutlines, overlapsOf(w), placed);
+  const batches = curated?.batches ?? planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
+  return derive('word', wordOutlines, w, { ...carry(s), batches, free: curated?.free ?? NONE });
 }
 
 /** Skip, Don't show again, Clear for free play, Start fresh, Keep it (and step 0's Skip / Don't show again). */
@@ -593,7 +601,7 @@ export function adoptTheirs(s: GuideState, ids: readonly string[]): GuideState {
 
 /**
  * Phones, the word batch by batch: the largest free part of `area` (screen px) to frame content of `size` in. Each blocker
- * (the callout, the action bar) that cuts into the area leaves four candidate strips (left of, right of, above or below
+ * (the callout, the button block) that cuts into the area leaves four candidate strips (left of, right of, above or below
  * it); every combination is tried and the one that shows the content largest (`scale`: screen px per content unit, less
  * `pad` on each side) wins. Ties: the first found (blockers in order; left, right, above, below). With no blockers the
  * whole area. Pure.
@@ -783,13 +791,18 @@ function centred(size: { w: number; h: number }, bounds: Rect, obstacles: readon
 export function placeCallout(
   size: { w: number; h: number }, target: Rect | null, bounds: Rect, obstacles: readonly Rect[],
   prefer: readonly Exclude<CalloutSide, 'centre'>[], soft: readonly Rect[] = [], pieces: readonly Rect[] = [], gap = 22, must: readonly Rect[] = [],
+  pointFirst = false,
 ): CalloutPlacement {
   const firm = [...obstacles, ...soft];
   if (target) {
     // First a side where the arrow points straight at the target; failing that, any side that fits; and only then one that
     // covers the `soft` rects (what the step would rather leave visible, such as the piece being turned). Within a pass, the
-    // side whose best spot covers the fewest pieces wins (ties: the order of `prefer`).
-    const passes: [boolean, readonly Rect[]][] = [[true, firm], [false, firm], [true, obstacles], [false, obstacles]];
+    // side whose best spot covers the fewest pieces wins (ties: the order of `prefer`). `pointFirst` (v1.5.0: a button in a
+    // row of buttons, where an arrow that is not level with it would point at its neighbour): pointing straight at the target
+    // comes before keeping the `soft` rects clear (the fewest pieces, then the least of them, are still covered).
+    const passes: [boolean, readonly Rect[]][] = pointFirst
+      ? [[true, firm], [true, obstacles], [false, firm], [false, obstacles]]
+      : [[true, firm], [false, firm], [true, obstacles], [false, obstacles]];
     for (const [strict, obs] of passes) {
       let best: { r: Rect; side: Exclude<CalloutSide, 'centre'>; n: number; a: number } | null = null;
       for (const side of prefer) {

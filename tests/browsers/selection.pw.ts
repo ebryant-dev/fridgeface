@@ -4,7 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
  * Multi-select (v0.5.0), in Chromium AND WebKit. Desktop: box selection on the empty board (real geometry, Shift adds),
  * Shift+click, group drag / rotation / restack / delete, Ctrl+A, panning by wheel and Space+drag. Phones: one finger pans,
  * long-press then drag draws a box, long-press on a piece toggles it, a quick drag still drags, a two-finger twist turns the
- * selection rigidly, the action bar acts on the group, and the selection UI never overlaps the docks, action bar or tray.
+ * selection rigidly, the button block acts on the group, and the selection UI never overlaps the docks, button block or tray.
  *
  * Touch: Chromium gets REAL touch input (CDP Input.dispatchTouchEvent, which the browser turns into touch pointer events).
  * WebKit has no touch-drag API in Playwright, so there the same touch pointer sequence is dispatched as PointerEvents
@@ -203,7 +203,7 @@ test.describe('desktop', () => {
     const empty = await toClient(page, { x: 330, y: -150 });
     await page.mouse.click(empty.x, empty.y);
     expect(await selected(page)).toEqual([]);
-    await expect(page.locator('fridge-face .actions')).toBeHidden();
+    await expect(page.locator('fridge-face [data-block=x]')).toHaveAttribute('data-mode', 'clear');
   });
 
   test('Shift+click adds and removes; a plain click on one piece of a selection collapses it; Ctrl+A selects all; Escape deselects', async ({ page }) => {
@@ -337,7 +337,7 @@ test.describe('desktop', () => {
     await page.mouse.click(p2.x, p2.y);
     await page.keyboard.up('Shift');
     expect(await selected(page)).toEqual([0, 2]);
-    const fwd = page.locator('fridge-face [data-action=forward]'), back = page.locator('fridge-face [data-action=backward]');
+    const fwd = page.locator('fridge-face [data-block=forward]'), back = page.locator('fridge-face [data-block=backward]');
     await expect(back, 'nothing below overlaps the selection').toBeDisabled();
     await fwd.click();
     expect(tag(await comp(page))).toEqual([U1, U3, S0, S2, U4]);
@@ -369,17 +369,17 @@ test.describe('desktop', () => {
     await load(page, SCENE);
     await page.locator('fridge-face .board svg.surface').focus();
     await page.keyboard.press('Control+a');
-    await expect(page.locator('fridge-face [data-action=delete]')).toHaveAttribute('aria-label', 'Delete 4 pieces');
+    await expect(page.locator('fridge-face [data-block=x]')).toHaveAttribute('aria-label', 'Delete 4 pieces');
     await page.keyboard.press('Delete');
     expect(await comp(page)).toEqual([]);
     await expect(live(page)).toContainText('4 pieces deleted.');
     await page.keyboard.press('Control+z');
     expect((await comp(page)).length).toBe(4);
-    // The action bar's Delete does the same.
+    // The button block's Delete does the same.
     await page.keyboard.press('Control+a');
-    await page.locator('fridge-face [data-action=delete]').click();
+    await page.locator('fridge-face [data-block=x]').click();
     expect(await comp(page)).toEqual([]);
-    await page.locator('fridge-face [data-history=undo]').click();
+    await page.locator('fridge-face [data-block=undo]').click();
     expect((await comp(page)).length).toBe(4);
   });
 
@@ -514,7 +514,7 @@ test.describe('phone', () => {
     expect(await selected(page)).toEqual([0]);
   });
 
-  test('a two-finger twist with the first finger on the selection turns it as one rigid unit; the action bar acts on the group', async ({ page, browserName }, info) => {
+  test('a two-finger twist with the first finger on the selection turns it as one rigid unit; the button block acts on the group', async ({ page, browserName }, info) => {
     await open(page);
     await load(page, PHONE);
     // With the guide showing (FF_GUIDE=on), loading pieces brings up its step 0 question on open board, where the second
@@ -547,15 +547,15 @@ test.describe('phone', () => {
     expect(await selected(page)).toEqual([0, 1, 2]);
     await expect(live(page)).toContainText('3 pieces rotated to ');
 
-    // The action bar acts on the whole group: Delete removes all three; Undo restores them.
-    await page.locator('fridge-face [data-action=delete]').tap();
+    // The button block acts on the whole group: Delete removes all three; Undo restores them.
+    await page.locator('fridge-face [data-block=x]').tap();
     expect(await comp(page)).toEqual([]);
-    await page.locator('fridge-face [data-history=undo]').tap();
+    await page.locator('fridge-face [data-block=undo]').tap();
     expect((await comp(page)).length).toBe(3);
     if (info.project.name === 'webkit-iphone') { /* screenshot taken in the overlap test */ }
   });
 
-  test('the selection UI never overlaps the docks, the action bar or the tray', async ({ page }, info) => {
+  test('the selection UI never overlaps the docks, the button block or the tray', async ({ page }, info) => {
     await open(page);
     await load(page, PHONE);
     await page.locator('fridge-face .board svg.surface').focus();
@@ -566,7 +566,7 @@ test.describe('phone', () => {
       const rect = (e: Element) => e.getBoundingClientRect().toJSON() as { x: number; y: number; width: number; height: number; name?: string };
       const ui = rect(sr.querySelector('[data-selection-box]')!);
       const others: { name: string; r: ReturnType<typeof rect> }[] = [];
-      for (const [name, sel] of [['tray', '.tray'], ['history', '.dock > .history'], ['view', '.dock > .view'], ['actions', '.actions']]) {
+      for (const [name, sel] of [['tray', '.tray'], ['view', '.dock > .view'], ['actions', '.dock > .block']]) {
         const e = sr.querySelector<HTMLElement>(sel)!;
         if (!e.hidden && getComputedStyle(e).display !== 'none') others.push({ name, r: rect(e) });
       }

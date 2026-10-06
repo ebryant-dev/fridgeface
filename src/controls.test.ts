@@ -44,4 +44,11 @@ describe('control copy', () => {
   const text = JSON.stringify(CONTROL_SECTIONS);
   it('has the three sections in order', () => expect(CONTROL_SECTIONS.map((s) => s.id)).toEqual(['touch', 'pointer', 'keyboard']));
   it('mentions no snapping or 15 degree steps', () => expect(text).not.toMatch(/snap|15°|15 degree/i));
+  it('v1.5.0: describes the block\'s buttons for touch and pointer: X deletes the selection or clears the board, the arrows restack', () => {
+    for (const id of ['touch', 'pointer'] as const) {
+      const rows = CONTROL_SECTIONS.find((s) => s.id === id)!.groups.flatMap((g) => g.rows);
+      expect(rows.find((r) => r.keys[0][0] === 'X button')?.text).toMatch(/delete the selection.*clear the board/i);
+      expect(rows.find((r) => r.keys[0][0] === 'Arrow buttons')?.text).toMatch(/backward.*forward/i);
+    }
+  });
 });

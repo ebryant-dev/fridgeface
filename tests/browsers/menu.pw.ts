@@ -33,7 +33,7 @@ const activeMenuId = (page: Page) => page.evaluate(() => (document.querySelector
 
 async function addPiece(page: Page, isMobile: boolean) {
   await press(isMobile, el(page, '.tray button[data-shape="wedge"]'));
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await page.evaluate(() => new Promise((r) => setTimeout(r, 900)));
 }
 
@@ -48,8 +48,6 @@ async function snapshot(page: Page) {
     const shown = (e: HTMLElement) => !e.hidden && getComputedStyle(e).display !== 'none';
     const boxes: { name: string; r: Rect }[] = [{ name: 'tray', r: rect(sr.querySelector('.tray')!) }];
     for (const p of sr.querySelectorAll<HTMLElement>('.dock > .panel')) if (shown(p)) boxes.push({ name: `dock ${p.className}`, r: rect(p) });
-    const actions = sr.querySelector<HTMLElement>('.actions')!;
-    if (shown(actions)) boxes.push({ name: 'actions', r: rect(actions) });
     const m = sr.querySelector<HTMLElement>('.menu')!;
     if (shown(m)) boxes.push({ name: 'menu', r: rect(m) });
     return {
@@ -57,7 +55,7 @@ async function snapshot(page: Page) {
       vw: window.innerWidth,
       vh: window.innerHeight,
       camera: sr.querySelector('[data-camera]')!.getAttribute('transform'),
-      selected: !!sr.querySelector('[data-selected], .actions:not([hidden])'),
+      selected: !!sr.querySelector('[data-selected], [data-block=x][data-mode=delete]'),
       pieces: sr.querySelectorAll('[data-pieces] > [data-piece-id]').length,
     };
   });
@@ -98,11 +96,11 @@ test('phone: the menu button replaces share, export, letters and help; the menu 
   await expect(menu(page)).toBeHidden();
 
   // The board starts blank (the intro is opt-in since v1.2.0); clear it if anything is there.
-  if (await el(page, '[data-history=clear]').isEnabled()) {
-    await press(isMobile, el(page, '[data-history=clear]'));
-    await press(isMobile, el(page, '[data-history=clear-yes]'));
+  if (await el(page, '[data-block=x]').isEnabled()) {
+    await press(isMobile, el(page, '[data-block=x]'));
+    await press(isMobile, el(page, '[data-block=clear-yes]'));
   }
-  await expect(el(page, '[data-history=clear]')).toBeDisabled();
+  await expect(el(page, '[data-block=x]')).toBeDisabled();
 
   // Empty board: share and download are shown disabled in the menu, and do nothing.
   await press(isMobile, menuBtn(page));
@@ -125,13 +123,13 @@ test('phone: the menu button replaces share, export, letters and help; the menu 
   const open1 = await snapshot(page);
   expect(open1.camera).toBe(before.camera);
   expect(open1.pieces).toBe(before.pieces);
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await expectNoOverlaps(page);
   const mr = open1.boxes.find((b) => b.name === 'menu')!.r;
   const br = await menuBtn(page).boundingBox();
   expect(mr.y, 'the menu opens downward from the button').toBeGreaterThanOrEqual(br!.y + br!.height - 0.5);
-  const ar = open1.boxes.find((b) => b.name === 'actions')!.r;
-  expect(mr.y + mr.height, 'the menu stays above the action bar').toBeLessThanOrEqual(ar.y + 0.5);
+  const ar = open1.boxes.find((b) => b.name.includes('block'))!.r;
+  expect(mr.y + mr.height, 'the menu stays above the button block').toBeLessThanOrEqual(ar.y + 0.5);
   const lettersShown = await item(page, 'letters').isVisible();
   if (lettersShown) await expect(item(page, 'letters')).toContainText('Letters');
   await expect(item(page, 'share')).toContainText('Copy share link');

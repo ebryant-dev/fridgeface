@@ -9,13 +9,27 @@ import type { OutlinePiece } from './outline';
  * its order is right against every other placed word piece it actually OVERLAPS (real geometry): for each such pair, the
  * one whose outline comes first in the suggestion (bottom first) is the lower one. Pairs that do not overlap never matter.
  *
- * When a placed piece is stacked wrongly, the guide prompts the visitor to fix it with the action bar's overlap-aware Send
+ * ORDER-FREE PAIRS (v1.5.0): a word may declare pairs of outlines whose relative order does not matter (the flower's petals in
+ * "create": petal over petal reads the same either way; guide-plans.ts). Such a pair is never checked, never makes a piece
+ * mis-stacked and never causes a prompt, whatever its order on the board. Every other overlapping pair keeps the rule above.
+ *
+ * When a placed piece is stacked wrongly, the guide prompts the visitor to fix it with the button block's overlap-aware Send
  * backward or Bring forward (selection.ts): `stackPrompt` picks the piece (the most recently placed first), the direction
  * and the fewest presses, by simulating those very presses on the whole board.
  */
 
 /** Real-geometry overlap of two pieces on the board. */
 export type Overlaps = (a: OutlinePiece, b: OutlinePiece) => boolean;
+
+/** Pairs of outline indices whose relative stacking order does not matter (order-free; see the file comment). */
+export type FreePairs = readonly (readonly [number, number])[];
+
+/** A fast test for `pairs`: is the pair (i, j) (either way round) order-free? */
+export function freeTest(pairs: FreePairs = []): (i: number, j: number) => boolean {
+  if (!pairs.length) return () => false;
+  const set = new Set(pairs.map(([a, b]) => (a < b ? `${a}:${b}` : `${b}:${a}`)));
+  return (i, j) => set.has(i < j ? `${i}:${j}` : `${j}:${i}`);
+}
 
 export interface StackCheck {
   /** Per outline: placed AND in the right order against every placed piece it overlaps. */
@@ -24,8 +38,12 @@ export interface StackCheck {
   wrong: string[];
 }
 
-/** Which placed pieces are in the right stacking order (see the file comment). `filled[i]`: the piece on outline i, or null. */
-export function stackCheck(filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps): StackCheck {
+/**
+ * Which placed pieces are in the right stacking order (see the file comment). `filled[i]`: the piece on outline i, or null.
+ * `free`: order-free pairs (outline indices), never checked.
+ */
+export function stackCheck(filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, free: FreePairs = []): StackCheck {
+  const isFree = freeTest(free);
   const pos = new Map(pieces.map((p, i) => [p.id, i]));
   const byId = new Map(pieces.map((p) => [p.id, p]));
   const bad = new Set<number>();
@@ -35,6 +53,7 @@ export function stackCheck(filled: readonly (string | null)[], pieces: readonly 
     for (let j = i + 1; j < filled.length; j++) {
       const b = filled[j];
       if (!b || pos.get(a)! < pos.get(b)!) continue; // right order (or nothing there): nothing to check
+      if (isFree(i, j)) continue; // an order-free pair: either order is right
       if (overlaps(byId.get(a)!, byId.get(b)!)) {
         bad.add(i);
         bad.add(j);
@@ -124,12 +143,13 @@ export const UNTANGLE_DEPTH = 5;
  * overlaps one) that lead to fewer wrong pairs are searched (`UNTANGLE_DEPTH` deep); the prompt is the first piece and
  * direction of that sequence (the guide prompts the rest as it goes). Only when nothing is found within that depth is the
  * most recent prompted toward its first wrong partner with 0 presses, and Next repairs the whole order (`stackRepair`).
- * Null when nothing is mis-stacked.
+ * Null when nothing is mis-stacked. `free`: order-free pairs (outline indices): never a wrong pair, never prompted (the
+ * presses themselves are simulated with the real overlaps, as the buttons press them).
  */
 export function stackPrompt(
-  filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, recent: readonly string[] = [],
+  filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, recent: readonly string[] = [], free: FreePairs = [],
 ): StackPrompt | null {
-  const check = stackCheck(filled, pieces, overlaps);
+  const check = stackCheck(filled, pieces, overlaps, free);
   if (!check.wrong.length) return null;
   const byId = new Map(pieces.map((p) => [p.id, p]));
   const memo = new Map<string, boolean>();
@@ -147,6 +167,9 @@ export function stackPrompt(
   filled.forEach((id, i) => {
     if (id) rank.set(id, i);
   });
+  // Overlapping AND order matters (not an order-free pair): the pairs the stacking check is about.
+  const isFree = freeTest(free);
+  const counts = (a: string, b: string) => ov(a, b) && !isFree(rank.get(a)!, rank.get(b)!);
   const order = pieces.map((p) => p.id);
   const wrongSet = new Set(check.wrong);
   const byRecency = [...recent].reverse().filter((id) => wrongSet.has(id));
@@ -155,7 +178,7 @@ export function stackPrompt(
   const placed = filled.filter((id): id is string => !!id);
   let improving: StackPrompt | null = null;
   for (const id of candidates) {
-    const partners = placed.filter((q) => q !== id && ov(id, q));
+    const partners = placed.filter((q) => q !== id && counts(id, q));
     const wrong = (o: readonly string[]) => wrongFor(id, o, rank, partners);
     const back = simulate(id, order, ov, wrong, 'back');
     const fwd = simulate(id, order, ov, wrong, 'forward');
@@ -166,13 +189,13 @@ export function stackPrompt(
     if (realPick && !improving && realPick.w < wrong(order)) improving = { id, dir: realPick.dir, presses: realPick.n, order: realPick.order };
   }
   if (improving) return improving;
-  const untangled = untangle(order, placed, rank, ov, candidates);
+  const untangled = untangle(order, placed, rank, ov, candidates, counts);
   if (untangled) return untangled;
   const id = candidates[0];
   // Toward its first wrong partner: one below it that belongs above it means Send it back; one above that belongs below, Bring it forward.
   const at = order.indexOf(id);
   const mine = rank.get(id)!;
-  const firstWrong = placed.find((q) => q !== id && ov(id, q) && (order.indexOf(q) < at) !== rank.get(q)! < mine);
+  const firstWrong = placed.find((q) => q !== id && counts(id, q) && (order.indexOf(q) < at) !== rank.get(q)! < mine);
   const dir: StackDir = firstWrong && order.indexOf(firstWrong) < at ? 'back' : 'forward';
   return { id, dir, presses: 0, order: stackRepair(order, filled) };
 }
@@ -184,9 +207,10 @@ export function stackPrompt(
  */
 function untangle(
   order: readonly string[], placed: readonly string[], rank: ReadonlyMap<string, number>, ov: (a: string, b: string) => boolean, wrongFirst: readonly string[],
+  counts: (a: string, b: string) => boolean = ov,
 ): StackPrompt | null {
-  const pairs: [string, string][] = []; // [belongs lower, belongs higher], overlapping, both placed
-  for (const a of placed) for (const b of placed) if (rank.get(a)! < rank.get(b)! && ov(a, b)) pairs.push([a, b]);
+  const pairs: [string, string][] = []; // [belongs lower, belongs higher], overlapping (order-free pairs left out), both placed
+  for (const a of placed) for (const b of placed) if (rank.get(a)! < rank.get(b)! && counts(a, b)) pairs.push([a, b]);
   const wrongCount = (o: readonly string[]) => {
     const pos = new Map(o.map((id, i) => [id, i]));
     return pairs.reduce((n, [a, b]) => n + (pos.get(a)! > pos.get(b)! ? 1 : 0), 0);

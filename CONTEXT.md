@@ -45,6 +45,10 @@ In visitor-facing copy the board may be called **the fridge** ("Drag the black o
 A guide-only target that shows where one piece of a suggestion belongs during the guide: a solid line for a positive shape, a dotted one for a negative shape. A piece released close to its outline clicks exactly into place (position and angle only: its stacking order is never changed for it); outside the guide, pieces never snap.
 _Avoid_: ghost, placeholder, template, snap target
 
+**Order-free pair**:
+Two pieces of a suggestion whose relative stacking order does not matter, declared for that word (in "create", any two of the flower's petals). The guide never treats either order of such a pair as wrong.
+_Avoid_: free pair, unordered pair
+
 **Tray**:
 Where a player takes new pieces from. It always holds all five shapes and never runs out.
 _Avoid_: palette, toolbar, inventory

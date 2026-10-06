@@ -1,13 +1,13 @@
 /**
- * Flat, geometric inline-SVG icons for the controls on narrow screens (24x24, stroked in currentColor).
- * Purely decorative: every button keeps its aria-label.
+ * Flat, geometric inline-SVG icons for the controls (24x24, stroked in currentColor): every control on narrow screens, and
+ * the bottom button block (X, Undo, Redo, Back, Forward) everywhere. Purely decorative: every button keeps its aria-label.
  */
 const P = (d: string) => `<path d="${d}"/>`;
 
 const ICONS: Record<string, string> = {
-  delete: P('M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13M10 11v6M14 11v6'),
-  forward: '<rect x="9" y="3" width="12" height="12" fill="currentColor" stroke="none"/>' + P('M3 9v12h12'),
-  backward: '<rect x="9" y="3" width="12" height="12"/>' + '<rect x="3" y="9" width="12" height="12" fill="currentColor" stroke="none"/>',
+  // Restack (v1.5.0): Forward (bring forward) is an UP arrow, Back (send backward) a DOWN arrow.
+  forward: P('M12 21V4M5 11l7-7 7 7'),
+  backward: P('M12 3v17M5 13l7 7 7-7'),
   undo: P('M9 5L4 10l5 5') + P('M4 10h10a5 5 0 0 1 0 10h-4'),
   redo: P('M15 5l5 5-5 5') + P('M20 10H10a5 5 0 0 0 0 10h4'),
   clear: '<rect x="3" y="3" width="18" height="18"/>' + P('M8 8l8 8M16 8l-8 8'),

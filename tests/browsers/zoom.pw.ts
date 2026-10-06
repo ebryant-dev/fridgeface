@@ -120,13 +120,22 @@ test.describe('the guide\'s c', () => {
       const v = ff.visibleView(), z = ff.getView();
       const b = ff.tightBounds(ff.guide.outlines);
       const sx = b.x * z.zoom + z.x, sy = b.y * z.zoom + z.y;
-      return { share: (oval * z.zoom) / Math.min(v.w, v.h), zoom: z.zoom, inView: sx >= v.x - 1e-6 && sy >= v.y - 1e-6 && sx + b.w * z.zoom <= v.x + v.w + 1e-6 && sy + b.h * z.zoom <= v.y + v.h + 1e-6, cw: b.w * z.zoom / v.w, ch: b.h * z.zoom / v.h };
+      // In view: inside the board and clear of every control over it (v1.5.0: on phones only the view group is at the top,
+      // so the board beside it, under the top strip, is visible board too).
+      const sr = (ff as unknown as HTMLElement).shadowRoot!;
+      const k = parseFloat(getComputedStyle(sr.querySelector('.board')!).getPropertyValue('--k'));
+      const br = sr.querySelector('.board')!.getBoundingClientRect();
+      const c = { x: br.left + sx * k, y: br.top + sy * k, w: b.w * z.zoom * k, h: b.h * z.zoom * k };
+      const ctl = [...sr.querySelectorAll<HTMLElement>('.dock > .panel')].filter((e) => !e.hidden && getComputedStyle(e).display !== 'none').map((e) => e.getBoundingClientRect());
+      const hit = ctl.some((q) => c.x < q.right && q.left < c.x + c.w && c.y < q.bottom && q.top < c.y + c.h);
+      const inBoard = c.x >= br.left - 0.5 && c.y >= br.top - 0.5 && c.x + c.w <= br.right + 0.5 && c.y + c.h <= br.bottom + 0.5;
+      return { share: (oval * z.zoom) / Math.min(v.w, v.h), zoom: z.zoom, inView: inBoard && !hit, cw: b.w * z.zoom / v.w, ch: b.h * z.zoom / v.h };
     });
     const m = await measure();
     if (NAMES[info.project.name]) await page.screenshot({ path: `${SHOT}/zoom-c-${nm}.png` });
     info.annotations.push({ type: 'c zoom', description: `${m.zoom.toFixed(4)}, oval ${(m.share * 100).toFixed(1)}% of the shorter side` });
     console.log(`[${info.project.name}] c zoom ${m.zoom.toFixed(4)}; oval ${(m.share * 100).toFixed(1)}% of the visible board's shorter side`);
-    // 45% is the aim; the whole c (oval AND wedge, with the callout, docks, action bar and tray clear) is the rule, so where
+    // 45% is the aim; the whole c (oval AND wedge, with the callout, docks, button block and tray clear) is the rule, so where
     // the c is wider than 45% allows the zoom reduces just enough (measured: about 30 to 32% in portrait, 45% in landscape).
     expect(m.share).toBeLessThanOrEqual(0.45 * 1.05);
     expect(m.share, 'reduced only as far as the whole c needs').toBeGreaterThanOrEqual(0.27);

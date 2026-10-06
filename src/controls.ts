@@ -73,6 +73,8 @@ export const CONTROL_SECTIONS: readonly ControlSection[] = [
     { keys: [['Handle']], text: 'Drag the round handle to rotate the selection, freely' },
     { keys: [['Twist']], text: 'Two fingers, the first on the selection: rotate it, freely' },
     { keys: [['Pinch']], text: 'Zoom the board' },
+    { keys: [['X button']], text: 'Delete the selection; with nothing selected, clear the board (it asks first)' },
+    { keys: [['Arrow buttons']], text: 'Down sends the selection backward, up brings it forward, past the next piece it overlaps' },
   ] }] },
   { id: 'pointer', title: 'Mouse and trackpad', groups: [{ rows: [
     { keys: [['Click']], text: 'Click a shape in the tray to add it, or click a piece to select it' },
@@ -83,6 +85,8 @@ export const CONTROL_SECTIONS: readonly ControlSection[] = [
     { keys: [['Wheel'], ['Two-finger scroll']], text: 'Pan the board' },
     { keys: [['Space', 'drag'], ['Middle', 'drag']], text: 'Pan the board with the pointer' },
     { keys: [['Ctrl', 'wheel'], ['Pinch']], text: 'Zoom the board (pinch on a trackpad)' },
+    { keys: [['X button']], text: 'Delete the selection; with nothing selected, clear the board (it asks first)' },
+    { keys: [['Arrow buttons']], text: 'Down sends the selection backward, up brings it forward, past the next piece it overlaps' },
   ] }] },
   { id: 'keyboard', title: 'Keyboard', groups: [
     { title: 'Add and choose', rows: [

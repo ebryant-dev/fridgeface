@@ -6,7 +6,7 @@ declare const process: { env: Record<string, string | undefined> }; // runs in N
  * The onboarding guide (copy v3 in v1.3.0: the c teaches stacking; "create" prompts the visitor to fix the stacking, never
  * reorders by itself; solid outlines for positive shapes, dotted for negative), in Chromium AND WebKit, desktop, iPhone
  * portrait and iPhone landscape: a blank board, the c built piece by piece onto outlines that pieces click into (guide
- * only): white oval, black oval (it covers the white), Send backward from the action bar, the wedge; step 5's
+ * only): white oval, black oval (it covers the white), Send backward from the button block, the wedge; step 5's
  * choice, the whole word "create" from Edward's REAL word-create-1 (32 pieces; v1.2.3: the c built is the word's own c, and
  * it stays in place at Guide me, exactly, counting as "3 of 32"; a c moved as one re-anchors the word; v1.4.0: built in
  * stacking order, batch by batch, with no stacking prompt, which remains only as a safety net), Skip / Don't show again / Next, replay from
@@ -177,10 +177,12 @@ async function misStacked(page: Page) {
     const pos = new Map(ps.map((p, i) => [p.id, i]));
     const by = new Map(ps.map((p) => [p.id, p]));
     const bad: number[][] = [];
+    // Order-free pairs (v1.5.0: the flower's petals) are left out: either order is right.
+    const free = new Set(((g as unknown as { free?: [number, number][] }).free ?? []).map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
     let pairs = 0;
     for (let i = 0; i < g.filled.length; i++) for (let j = i + 1; j < g.filled.length; j++) {
       const a = g.filled[i], b = g.filled[j];
-      if (!a || !b) continue;
+      if (!a || !b || free.has(`${i}:${j}`)) continue;
       const pa = by.get(a)!, pb = by.get(b)!;
       if (!convexIntersect(placeOutline(hull(pa.shapeId), pa), placeOutline(hull(pb.shapeId), pb))) continue;
       pairs++;
@@ -213,7 +215,7 @@ async function selectPlacedLower(page: Page) {
 
 /** Press an action-bar control (Send backward / Bring forward), as the visitor would. */
 async function pressAction(page: Page, isMobile: boolean, action: 'backward' | 'forward') {
-  await press(isMobile, el(page, `.actions [data-action=${action}]`));
+  await press(isMobile, el(page, `.block [data-block=${action}]`));
 }
 
 /**
@@ -244,7 +246,7 @@ async function answerPrompts(page: Page, isMobile: boolean, label: string, check
 }
 
 /**
- * The callout: inside the viewport and the board, clear of its target, the dock panels, the action bar and the tray, and
+ * The callout: inside the viewport and the board, clear of its target, the dock panels, the button block and the tray, and
  * (v2) clear of every active outline and of the piece being turned toward one.
  */
 async function checkCallout(page: Page, label: string, opts: { panned?: boolean; squeezed?: boolean } = {}) {
@@ -263,8 +265,8 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     if (kind === 'tray') target = rect(sr.querySelector('.tray')!);
     else if (kind === 'handle') target = rect(sr.querySelector('[data-handle] circle')!);
     else if (kind === 'piece') target = rect(sr.querySelector(`[data-piece-id="${g.dataset.piece}"] .bd`)!);
-    else if (kind === 'action') target = rect(sr.querySelector(`.actions [data-action=${g.dataset.action}]`)!);
-    const controls = [...sr.querySelectorAll<HTMLElement>('.dock > .panel, .actions')].filter(shown).map((e) => ({ name: e.className, r: rect(e) }));
+    else if (kind === 'action') target = rect(sr.querySelector(`.block [data-block=${g.dataset.action}]`)!);
+    const controls = [...sr.querySelectorAll<HTMLElement>('.dock > .panel')].filter(shown).map((e) => ({ name: e.className, r: rect(e) }));
     // An outline's box from its real geometry on screen (a rotated SVG element's own box overstates it), dots included.
     const outlines = [...sr.querySelectorAll<SVGGElement>('[data-outline]')].map((g) => {
       const geom = g.querySelector<SVGGeometryElement>('path, polygon')!;
@@ -282,7 +284,7 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
       return r && r.width ? [{ x: r.x + r.width / 2 - 22, y: r.y + r.height / 2 - 22, w: 44, h: 44 }] : [];
     });
     return {
-      kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), target, controls, outlines, handles,
+      kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), noarrow: g.hasAttribute('data-noarrow'), target, controls, outlines, handles,
       turn: turn ? rect(turn) : null, tray: rect(sr.querySelector('.tray')!), board: rect(sr.querySelector('.board')!), vw: window.innerWidth, vh: window.innerHeight,
     };
   });
@@ -298,6 +300,9 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     expect.soft(ov(c, m.target), `${where} overlaps its target ${JSON.stringify(m.target)}`).toBe(false);
     if (m.arrow) expect.soft(ov(m.arrow, m.target), `${where}: the arrow ${JSON.stringify(m.arrow)} overlaps the target`).toBe(false);
   }
+  // v1.5.0: a visible pointer never lands on a control it is not about (the block stands between the callout and the tray
+  // on phones); only step 3's and the prompts' own Back / Forward may be touched by it.
+  if (m.arrow && !m.noarrow && m.kind !== 'action') for (const k of m.controls) expect.soft(ov(m.arrow, k.r), `${where}: the pointer lands on ${k.name}`).toBe(false);
   for (const o of m.outlines) {
     expect.soft(ov(c, o), `${where} overlaps an active outline ${JSON.stringify(o)}`).toBe(false);
     if (!opts.panned) expect.soft(inView(o), `${label}: the outline ${JSON.stringify(o)} is inside the viewport`).toBe(true); // a visitor's pan may take it out
@@ -306,8 +311,8 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
   for (const h of m.handles) expect.soft(ov(c, h), `${where} overlaps a rotate handle's 44px hit box ${JSON.stringify(h)}`).toBe(false);
   expect.soft(ov(c, m.tray), `${where} overlaps the tray`).toBe(false);
   // (squeezed: a pan put the rotate handle where the callout was, at the foot of a ~545 px board between the section and the
-  // action bar: the callout's last resort puts handle and outlines first, the action bar may then be touched.)
-  for (const k of m.controls) if (!(opts.squeezed && k.name.includes('actions'))) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
+  // button block: the callout's last resort puts handle and outlines first, the button block may then be touched.)
+  for (const k of m.controls) if (!(opts.squeezed && k.name.includes('block'))) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
   return m;
 }
 
@@ -321,13 +326,27 @@ async function checkStep3(page: Page, label: string) {
   await expect(guide(page)).toHaveAttribute('data-step', '3');
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[3]);
   expect(await el(page, '[data-outline]').count(), 'no outline at step 3').toBe(0);
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await expect(guide(page)).toHaveAttribute('data-target', 'action');
   await expect(guide(page)).toHaveAttribute('data-action', 'backward');
   const s = await state(page);
   const black = s.filled[s.outlines.findIndex((o) => o.shapeId === 'positive-round')]!;
   expect(s.stack).toEqual({ id: black, dir: 'back', presses: 1 });
   expect(await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { selection: string[] }).selection), 'the black oval is selected').toEqual([black]);
+  // v1.5.0: it points at the block's Back (the down arrow), which is on, and never covers it.
+  await expect(el(page, '.block [data-block=backward]')).toBeEnabled();
+  const geo = await page.evaluate(() => {
+    const sr = document.querySelector('fridge-face')!.shadowRoot!;
+    const r = (e: Element) => e.getBoundingClientRect().toJSON() as DOMRect;
+    const g = sr.querySelector('.guide')!, b = sr.querySelector('.block [data-block=backward]')!, f = sr.querySelector('.block [data-block=forward]')!;
+    return { g: r(g), b: r(b), f: r(f), side: (g as HTMLElement).dataset.side, arrow: r(sr.querySelector('.gpt')!) };
+  });
+  const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  expect(hit(geo.g, geo.b) || hit(geo.g, geo.f), `${label}: the callout never covers Back or Forward`).toBe(false);
+  if (geo.side === 'above' || geo.side === 'below') {
+    const tip = geo.arrow.x + geo.arrow.width / 2;
+    expect(tip >= geo.b.x - 1 && tip <= geo.b.x + geo.b.width + 1, `${label}: the arrow is level with Back ${JSON.stringify(geo)}`).toBe(true);
+  }
   await checkCallout(page, label);
   return black;
 }
@@ -345,6 +364,7 @@ async function buildC(page: Page, isMobile: boolean, project?: string, from = 1)
   await expect.poll(async () => (await state(page)).step).toBe(3);
   await checkStep3(page, 'step 3');
   if (project) await shoot(page, project, 'step3');
+  if (project === 'webkit-iphone') await page.screenshot({ path: `${SHOT}/v150-guide-step3-wk-iphone.png` });
   await pressAction(page, isMobile, 'backward');
   await expect.poll(async () => (await state(page)).step).toBe(4);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[4]);
@@ -363,7 +383,7 @@ async function buildC(page: Page, isMobile: boolean, project?: string, from = 1)
   return wedge;
 }
 
-test('blank start (no intro), then the c with the stacking lesson: white oval, black oval covers it, Send backward from the action bar, white shows, wedge; undo keeps the guide in step', async ({ page, isMobile }, info) => {
+test('blank start (no intro), then the c with the stacking lesson: white oval, black oval covers it, Send backward from the button block, white shows, wedge; undo keeps the guide in step', async ({ page, isMobile }, info) => {
   const errors = collectErrors(page);
   await open(page, '/?n=c');
   expect(await pieceCount(page), 'the toy starts on a blank board').toBe(0);
@@ -410,10 +430,10 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   const o2 = await outline();
   expect(o2).toMatchObject({ n: 1, shape: 'positive-round', line: 'solid', stroke: '#378ADD', dash: null, css: 'none', filters: 0 });
   expect(o2.px).toBeCloseTo(o1.px, 1);
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page), 'one undo removes the drop AND its click-in').toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
-  await press(isMobile, el(page, '[data-history=redo]'));
+  await press(isMobile, el(page, '[data-block=redo]'));
   await expect(guide(page)).toHaveAttribute('data-step', '2');
   await checkCallout(page, 'step 2');
   await shoot(page, info.project.name, 'step2');
@@ -427,8 +447,8 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   const black = await checkStep3(page, 'step 3');
   await expect(el(page, '#ff-live')).toContainText(C_TEXT[3]);
   const nm = NAMES[info.project.name];
-  if (nm === 'desktop' || nm === 'wk-iphone') await page.screenshot({ path: `${SHOT}/g6-step3-sendback-${nm}.png` });
-  // Send backward, from the action bar the callout points at: ONE press steps past the white oval (overlap-aware).
+  if (nm) await page.screenshot({ path: `${SHOT}/g6-step3-sendback-${nm}.png` });
+  // Send backward, from the button block the callout points at: ONE press steps past the white oval (overlap-aware).
   await pressAction(page, isMobile, 'backward');
   await expect.poll(async () => (await state(page)).step).toBe(4);
   ps = await pieces(page);
@@ -436,9 +456,9 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   expect(ps[0].id).toBe(black);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[4]);
   // Undo the send-back: step 3 again (the guide follows the board); redo: step 4.
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect(guide(page)).toHaveAttribute('data-step', '3');
-  await press(isMobile, el(page, '[data-history=redo]'));
+  await press(isMobile, el(page, '[data-block=redo]'));
   await expect(guide(page)).toHaveAttribute('data-step', '4');
 
   await checkCallout(page, 'step 4a');
@@ -458,10 +478,10 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   expect(ps[1].x - ps[0].x).toBeCloseTo(-0.4, 6); // arranged exactly as in the word
   expect(ps[1].y - ps[0].y).toBeCloseTo(4.0, 6);
   // Undo the turn: the wedge goes back (unturned, close) and the guide follows: 4b again. Redo: step 5.
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(async () => (await state(page)).turn).toBe(wedge);
   await expect(guide(page)).toHaveAttribute('data-step', '4');
-  await press(isMobile, el(page, '[data-history=redo]'));
+  await press(isMobile, el(page, '[data-block=redo]'));
   await expect(guide(page)).toHaveAttribute('data-step', '5');
   // Robust: a clicked-in piece moved away shows its outline again (step 2), and moving it back fills it again.
   await page.evaluate(({ id }) => {
@@ -471,7 +491,7 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   }, { id: black });
   await expect(guide(page)).toHaveAttribute('data-step', '2');
   expect(await el(page, '[data-outline]').count()).toBe(1);
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect(guide(page)).toHaveAttribute('data-step', '5');
   expect(errors).toEqual([]);
 });
@@ -537,7 +557,7 @@ test('step 5 without word-create-1: "That\'s a c." and only Clear for free play,
   await press(isMobile, gbtn(page, 'clear'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toBeHidden();
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(3);
   await expect(guide(page), 'the guide stays over').toBeHidden();
   expect(errors).toEqual([]);
@@ -596,13 +616,13 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   }
   // Undo at the start of step 6: Guide me added no undo step, so it takes back the c's last action (the wedge's turn) and
   // never the c itself; the guide stays on the word (batch 0, the c, is current again). Redo: 3 of 32 again.
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(async () => (await state(page)).filled[2]).toBeNull();
   expect(await pieceCount(page), 'the c is still on the board').toBe(3);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await expect(el(page, '.guide .gt2')).toHaveText(`2 of ${total}`);
   await expect.poll(async () => (await shown(page)).idx, 'the wedge\'s outline').toEqual([2]);
-  await press(isMobile, el(page, '[data-history=redo]'));
+  await press(isMobile, el(page, '[data-block=redo]'));
   await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
   await expectCInPlace(page, c, 'undo and redo at the boundary');
   await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { select(id: string | null): void }).select(null));
@@ -611,7 +631,9 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   const landscape = info.project.name.endsWith('landscape');
   const mins: string[] = [];
   let moves = 0, done = 3, seed = 7;
-  let last = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
+  // Batch 1 is compared with the view at step 5 (the undo and redo above already glide between batch 0 and batch 1, so the
+  // view read here may or may not have reached batch 1's framing yet, depending on the machine's speed).
+  let last = view5;
   for (let k = 1; k < CREATE_BATCHES.length; k++) {
     await settled(page);
     const batch = CREATE_BATCHES[k];
@@ -631,6 +653,14 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
     await checkCallout(page, `batch ${k}`);
     if ((nm === 'desktop' || nm === 'wk-iphone') && (k === 1 || k === 3)) await page.screenshot({ path: `${SHOT}/g7-batch${k}-${nm}.png` });
     if (nm === 'wk-iphone-landscape' && k === 2) await page.screenshot({ path: `${SHOT}/g7-batch2-wk-iphone-landscape.png` });
+    if (batch.join() === PETALS.join()) {
+      // The petal batch: all five petal outlines at once (they overlap; their order does not matter).
+      expect(sh.idx, 'all five petal outlines visible at once').toEqual(PETALS);
+      console.log(`[${info.project.name}] petal batch: smallest target ${sh.min.toFixed(1)} CSS px`);
+      info.annotations.push({ type: 'petal batch target', description: `${sh.min.toFixed(1)} CSS px` });
+      if (isMobile) expect(sh.min, 'petal batch: the global floor (24 portrait / 20 landscape)').toBeGreaterThanOrEqual(landscape ? 20 : 24);
+      if (nm === 'wk-iphone') await page.screenshot({ path: `${SHOT}/v150-petals-wk-iphone.png` });
+    }
     // A shuffled order within the batch (fixed seed): any order is right.
     const order = [...batch];
     for (let j = order.length - 1; j > 0; j--) {
@@ -688,7 +718,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   await press(isMobile, gbtn(page, 'fresh'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toBeHidden();
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page), 'one undo restores the whole word').toBe(total);
   expect((await pieces(page)).map((p) => p.id)).toEqual(ps.map((p) => p.id));
   expect(errors).toEqual([]);
@@ -727,7 +757,7 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   const o = (await state(page)).outlines[first];
   await dropNear(page, first);
   await expect(guide(page)).toHaveAttribute('data-step', '2');
-  await press(!!info.project.use.isMobile, el(page, '[data-history=undo]'));
+  await press(!!info.project.use.isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await press(!!info.project.use.isMobile, gbtn(page, 'skip'));
   await expect(guide(page)).toBeHidden();
@@ -889,7 +919,7 @@ test('Escape: the Letters sheet closes first, then the guide is skipped, then th
   await open(page);
   await el(page, '.board svg.surface').focus();
   await page.keyboard.press('3'); // add (and select) a negative stem: not a guide shape, nothing clicks in
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await page.keyboard.press('l');
   await expect(el(page, '.sugg')).toBeVisible();
   await expect(guide(page), 'hidden while the sheet is open').toBeHidden();
@@ -899,9 +929,9 @@ test('Escape: the Letters sheet closes first, then the guide is skipped, then th
   await page.keyboard.press('Escape');
   await expect(guide(page)).toBeHidden();
   expect(await el(page, '[data-outline]').count()).toBe(0);
-  await expect(el(page, '.actions'), 'the selection is still there').toBeVisible();
+  await expect(el(page, '[data-block=x]'), 'the selection is still there').toHaveAttribute('data-mode', 'delete');
   await page.keyboard.press('Escape');
-  await expect(el(page, '.actions')).toBeHidden();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'clear');
 });
 
 test('coexistence: hidden while the Controls dialog or the phone menu is open, back after; Tab reaches its buttons', async ({ page, isMobile, browserName }) => {
@@ -1046,7 +1076,7 @@ test('with a callout showing, the board still works around it: a wrong shape dro
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const blocked = (x: number, y: number) => {
       const e = sr.elementFromPoint(x, y) as Element | null;
-      return !e || !!e.closest('.guide, .dock, .actions, .tray, .menu, [data-piece-id]');
+      return !e || !!e.closest('.guide, .dock, .tray, .menu, [data-piece-id]');
     };
     const ol = sr.querySelector('[data-outline]')!.getBoundingClientRect();
     const b = sr.querySelector('.board')!.getBoundingClientRect();
@@ -1160,11 +1190,11 @@ test('step 0 -> Clear and start: a blank board, the c built; undoing back past t
   await buildC(page, isMobile);
   expect(await pieceCount(page)).toBe(3);
   // Back through the c (turn, wedge, send-back, black oval, white oval): the guide follows to step 1 on a blank board.
-  for (let i = 0; i < 5; i++) await press(isMobile, el(page, '[data-history=undo]'));
+  for (let i = 0; i < 5; i++) await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   // ONE more undo: every one of their pieces back, exactly (ids, places, rotations, stacking order).
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(theirs.length);
   expect(same(theirs, await pieces(page)), 'their pieces restored exactly').toBe(true);
   // Sane: still step 1, the c's outline moved beside their work (never on it), the callout well placed; redo clears again.
@@ -1172,7 +1202,7 @@ test('step 0 -> Clear and start: a blank board, the c built; undoing back past t
   await expect(guide(page)).toBeVisible();
   await expectBeside(page, theirs);
   await checkCallout(page, 'after undoing Clear and start');
-  await press(isMobile, el(page, '[data-history=redo]'));
+  await press(isMobile, el(page, '[data-block=redo]'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   expect(errors).toEqual([]);
@@ -1207,7 +1237,7 @@ test('step 0 -> Keep my pieces: the c beside their work; Clear for free play rem
   await expect(guide(page)).toBeHidden();
   await expect.poll(() => pieceCount(page)).toBe(theirs.length);
   expect(same(theirs, await pieces(page)), 'only the c went').toBe(true);
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page), 'one undo brings the c back').toBe(theirs.length + 3);
   expect(errors).toEqual([]);
 });
@@ -1276,7 +1306,7 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" g
   const end = await pieces(page);
   expect(same(theirs, end.filter((p) => theirs.some((t) => t.id === p.id))), 'their pieces unchanged at the end').toBe(true);
   expect(end.some((p) => p.id === extra.id)).toBe(true);
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page), 'one undo brings the word back').toBe(mineNow.length + total);
   void info;
   expect(errors).toEqual([]);
@@ -1313,9 +1343,11 @@ test('axe: no violations at step 0', async ({ page, browserName }) => {
 
 /** The REAL word-create-1's batches from the built c: the plan curated for it (src/guide-plans.ts; src/batches.test.ts checks the same plan). */
 const CREATE_BATCHES = [
-  [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21, 25], [23, 26], [27, 28],
-  [29], [30, 31],
+  [0, 1, 2], [3], [4, 5], [6], [7, 8], [9], [10, 11, 16], [12, 17, 18], [13, 19], [14], [15, 20, 22], [24], [21], [23],
+  [25, 26, 27, 28, 29], [30, 31],
 ];
+/** v1.5.0: the flower's five petals, order-free among themselves, come up as ONE batch; the white centre (30) after them. */
+const PETALS = [25, 26, 27, 28, 29];
 
 /** Wait until the view is still: no batch framing pending, no glide running. */
 async function settled(page: Page) {
@@ -1423,11 +1455,11 @@ test('undo back across a batch boundary returns to that batch (and its framing);
   await settled(page);
   expect((await shown(page)).idx, 'batch 3 now').toEqual(CREATE_BATCHES[3]);
   const v3 = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await settled(page);
   expect((await shown(page)).idx, 'back in batch 2, its last outline showing').toEqual([CREATE_BATCHES[2][1]]);
-  await press(isMobile, el(page, '[data-history=undo]'));
-  await press(isMobile, el(page, '[data-history=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
+  await press(isMobile, el(page, '[data-block=undo]'));
   await settled(page);
   expect((await shown(page)).idx, 'back in batch 1').toEqual(CREATE_BATCHES[1]);
   await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
@@ -1435,13 +1467,13 @@ test('undo back across a batch boundary returns to that batch (and its framing);
   if (isMobile) expect(v1.x !== v3.x || v1.y !== v3.y || v1.zoom !== v3.zoom, 'phones: the view went back to batch 1').toBe(true);
   expect((await framing(page, CREATE_BATCHES[1])).inView).toBe(true);
   await checkCallout(page, 'undone into batch 1');
-  for (let n = 0; n < 3; n++) await press(isMobile, el(page, '[data-history=redo]'));
+  for (let n = 0; n < 3; n++) await press(isMobile, el(page, '[data-block=redo]'));
   await settled(page);
   expect((await shown(page)).idx).toEqual(CREATE_BATCHES[3]);
   await expect(el(page, '.guide .gt2')).toHaveText('6 of 32');
 });
 
-test('the safety net: the visitor brings a placed lower piece forward out of order: the stacking prompt shows (at the action bar), they fix it, and the batches carry on', async ({ page, isMobile }, info) => {
+test('the safety net: the visitor brings a placed lower piece forward out of order: the stacking prompt shows (at the button block), they fix it, and the batches carry on', async ({ page, isMobile }, info) => {
   test.setTimeout(120_000);
   const errors = collectErrors(page);
   await toWord(page, isMobile, '/?n=safety');
@@ -1449,10 +1481,10 @@ test('the safety net: the visitor brings a placed lower piece forward out of ord
   await settled(page);
   expect((await shown(page)).idx).toEqual(CREATE_BATCHES[5]);
   expect((await state(page)).stack).toBeNull();
-  // Select a placed piece with a placed partner above it that it overlaps, and Bring it forward from the action bar.
+  // Select a placed piece with a placed partner above it that it overlaps, and Bring it forward from the button block.
   const lower = (await selectPlacedLower(page))!;
   expect(lower).not.toBeNull();
-  await expect(el(page, '.actions')).toBeVisible();
+  await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await pressAction(page, isMobile, 'forward');
   await expect.poll(async () => (await state(page)).stack, 'a stacking prompt').not.toBeNull();
   await settled(page);
