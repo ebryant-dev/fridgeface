@@ -2,7 +2,7 @@ import { normalise } from './rotation';
 import { rotatedBounds, type Rect } from './camera';
 
 /**
- * Outlines: the guide's dotted targets (see CONTEXT.md). Pure, no DOM.
+ * Outlines: the guide's targets (see CONTEXT.md): solid lines for positive shapes, dotted for negative ones. Pure, no DOM.
  *
  * An **outline** shows where one piece of a suggestion belongs, at its exact board position and rotation. ONLY while the
  * guide is running, a piece of the outline's shape that is released (a drag ends, a turn ends) close to an active outline
@@ -150,16 +150,15 @@ export function needsTurning(
 }
 
 export interface ClickResult {
-  /** The pieces that clicked in, with their exact new placements. */
+  /** The pieces that clicked in, with their exact new placements. The stacking order never changes (v1.3.0). */
   placements: { id: string; x: number; y: number; rotation: number; outline: number }[];
-  /** The new stacking order (bottom first), or null when it does not change. */
-  order: string[] | null;
 }
 
 /**
- * Click released pieces into the active outlines they are close to, then fix the stacking order so the filled pieces sit in
- * the suggestion's own order (see `stackFix`). The caller applies both as part of the SAME undo step as the release.
- * Returns null when nothing clicks in. Pieces are taken in `released` order; each outline accepts one piece.
+ * Click released pieces into the active outlines they are close to: position and angle only. Since v1.3.0 (copy v3) the
+ * stacking order is NEVER fixed for the visitor: a piece stays wherever it is in the stack (a new one is on top), and the
+ * guide prompts them to restack it (stacking.ts). The caller applies the placements as part of the SAME undo step as the
+ * release. Returns null when nothing clicks in. Pieces are taken in `released` order; each outline accepts one piece.
  */
 export function clickIn(
   outlines: readonly Outline[], active: readonly number[], pieces: readonly OutlinePiece[], released: readonly string[], sizeOf: SizeOf, tol: Tolerance = CLICK_TOLERANCE,
@@ -178,30 +177,7 @@ export function clickIn(
     // Exactly the outline's place, at its rotation or the symmetric equivalent nearest the piece's (no half-turn spin).
     placements.push({ id, x: o.x, y: o.y, rotation: settleRotation(o, p.rotation), outline: i });
   }
-  if (!placements.length) return null;
-  const order = stackFix(pieces.map((p) => p.id), filled);
-  const same = order.every((id, i) => id === pieces[i].id);
-  return { placements, order: same ? null : order };
-}
-
-/**
- * Stacking order with the filled pieces in the suggestion's order: the slots the filled pieces occupy in `order` stay
- * where they are, and are refilled by those pieces sorted by their outline's index (the suggestion lists its pieces bottom
- * first). Every other piece keeps its place. So negative pieces end up above the positive ones they cut, exactly as built.
- */
-export function stackFix(order: readonly string[], filled: readonly (string | null)[]): string[] {
-  const rank = new Map<string, number>();
-  filled.forEach((id, i) => {
-    if (id) rank.set(id, i);
-  });
-  const slots: number[] = [];
-  order.forEach((id, i) => {
-    if (rank.has(id)) slots.push(i);
-  });
-  const sorted = slots.map((i) => order[i]).sort((a, b) => rank.get(a)! - rank.get(b)!);
-  const out = [...order];
-  slots.forEach((slot, k) => (out[slot] = sorted[k]));
-  return out;
+  return placements.length ? { placements } : null;
 }
 
 export type ShapeFrame = { bbox: Rect; centroid: { x: number; y: number }; /** Rotational symmetry order (shapes.ts); absent: none. */ symmetry?: number };

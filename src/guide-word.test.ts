@@ -116,16 +116,16 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
   const c = findWordC(CREATE, shapeOf)!;
   const { word: planned, c: letter } = placeWordC(CREATE, c, shapeOf, { x: 400, y: 120 });
   const built = letter.map((o, i) => on(['a', 'b', 'w'][i], o));
-  const at4 = (): GuideState => recordBuilt(observeGuide(startGuide(letter, world([])), world(built)), ['a', 'b', 'w']);
+  const at5 = (): GuideState => recordBuilt(observeGuide(startGuide(letter, world([])), world(built)), ['a', 'b', 'w']);
 
   it('the word goes in the same board frame as the c: its three pieces sit exactly on their outlines, which count as filled', () => {
-    const s4 = at4();
-    expect(s4.step).toBe(4);
+    const s4 = at5();
+    expect(s4.step).toBe(5);
     const outlines = anchorWord(CREATE, c, s4.letter, shapeOf)!;
     expect(outlines).toEqual(planned);
     expect([outlines[0], outlines[1], outlines[2]], 'the c\'s outlines are the built c').toEqual(letter);
     const s5 = chooseWord(s4, outlines, world(built));
-    expect([s5.step, s5.phase]).toEqual([5, 'word']);
+    expect([s5.step, s5.phase]).toEqual([6, 'word']);
     expect(guideProgress(s5)).toEqual({ done: 3, total: 32 });
     expect(s5.filled.slice(0, 3)).toEqual(['a', 'b', 'w']);
     expect(activeOutlines(s5), 'the c\'s outlines are not shown').toEqual(Array.from({ length: 29 }, (_, i) => i + 3));
@@ -140,23 +140,23 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
     s = chooseWord(s, anchorWord(CREATE, c, s.letter, shapeOf)!, world([...mine, ...built]));
     const rest = planned.slice(3).map((o, i) => on(`k${i}`, o));
     s = observeGuide(recordBuilt(s, rest.map((p) => p.id)), world([...mine, ...built, ...rest]));
-    expect(s.step).toBe(6);
+    expect(s.step).toBe(7);
     expect(guideClearPlan(s, [...mine, ...built, ...rest])).toEqual({ all: false, ids: [...built, ...rest].map((p) => p.id) });
   });
 
   it('phones: section 1 holds the c, already filled, so it shows only its remaining outlines', () => {
     const sections = splitSections(CREATE, shapeOf, 6);
     expect(sections[0]).toEqual(expect.arrayContaining([0, 1, 2]));
-    const s5 = chooseWord(at4(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), sections);
+    const s5 = chooseWord(at5(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), sections);
     expect(currentSection(s5)).toBe(0);
     expect(activeOutlines(s5)).toEqual(sections[0].filter((i) => i > 2).sort((a, b) => a - b));
     expect(activeOutlines(s5)).toEqual([4, 7]);
     // A word whose first section is only the c starts at the next one.
-    const only = chooseWord(at4(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), [[0, 1, 2], CREATE.slice(3).map((_, i) => i + 3)]);
+    const only = chooseWord(at5(), anchorWord(CREATE, c, letter, shapeOf)!, world(built), [[0, 1, 2], CREATE.slice(3).map((_, i) => i + 3)]);
     expect([currentSection(only), activeOutlines(only).length]).toEqual([1, 29]);
   });
 
-  it('undo across the step 4 -> 5 boundary keeps the c: Guide me adds no undo step; an undo there takes back the c\'s last action only, and the guide stays on the word', () => {
+  it('undo across the step 5 -> 6 boundary keeps the c: Guide me adds no undo step; an undo there takes back the c\'s last action only, and the guide stays on the word', () => {
     const h = new History<readonly OutlinePiece[]>([]);
     h.record([built[0]]);
     h.record([built[0], built[1]]);
@@ -164,32 +164,32 @@ describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32'
     h.record([built[0], built[1], unturned]); // the wedge dropped close, unturned
     h.record(built); // ...then turned in
     let s = recordBuilt(observeGuide(startGuide(letter, world([])), world(h.present)), ['a', 'b', 'w']);
-    expect(s.step).toBe(4);
+    expect(s.step).toBe(5);
     const before = h.present;
     s = chooseWord(s, anchorWord(CREATE, c, s.letter, shapeOf)!, world(h.present));
     expect(h.present, 'Guide me changed nothing on the board').toBe(before);
     expect(guideProgress(s).done).toBe(3);
     s = observeGuide(s, world(h.undo()!));
     expect(h.present.map((p) => p.id), 'the c is still on the board').toEqual(['a', 'b', 'w']);
-    expect([s.step, s.phase, guideProgress(s).done, s.turn]).toEqual([5, 'word', 2, 'w']);
+    expect([s.step, s.phase, guideProgress(s).done, s.turn]).toEqual([6, 'word', 2, 'w']);
     expect(activeOutlines(s)[0], 'the wedge\'s outline shows again').toBe(2);
     s = observeGuide(s, world(h.redo()!));
-    expect([s.step, guideProgress(s).done]).toEqual([5, 3]);
+    expect([s.step, guideProgress(s).done]).toEqual([6, 3]);
   });
 });
 
-describe('the c moved after step 3, before Guide me', () => {
+describe('the c moved after step 4, before Guide me', () => {
   const c = findWordC(CREATE, shapeOf)!;
   const { c: letter } = placeWordC(CREATE, c, shapeOf, { x: 0, y: 0 });
   const built = letter.map((o, i) => on(['a', 'b', 'w'][i], o));
-  const at4 = () => recordBuilt(observeGuide(startGuide(letter, world([])), world(built)), ['a', 'b', 'w']);
+  const at5 = () => recordBuilt(observeGuide(startGuide(letter, world([])), world(built)), ['a', 'b', 'w']);
   const moved = (dx: number, dy: number, turn = 0) => built.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy, rotation: p.rotation + turn }));
 
   it('moved as one (rigidly, as built): it is still the c; its outlines and the word re-anchor on the round where it is now', () => {
-    const s4 = at4();
+    const s4 = at5();
     const away = moved(312.37, -48.1);
     const s = observeGuide(s4, world(away));
-    expect(s.step, 'still "That\'s a c."').toBe(4);
+    expect(s.step, 'still "That\'s a c."').toBe(5);
     expect(close(s.letter[0].x, away[0].x) && close(s.letter[0].y, away[0].y)).toBe(true);
     expect(filledBy(s.letter, away)).toEqual(['a', 'b', 'w']);
     const outlines = anchorWord(CREATE, c, s.letter, shapeOf)!;
@@ -202,7 +202,7 @@ describe('the c moved after step 3, before Guide me', () => {
     expect(guideProgress(s5)).toEqual({ done: 3, total: 32 });
     // Undoing the move: the outlines follow it back.
     const back = observeGuide(s, world(built));
-    expect(back.step).toBe(4);
+    expect(back.step).toBe(5);
     back.letter.forEach((o, i) => {
       expect(o.x).toBeCloseTo(letter[i].x, 9);
       expect(o.y).toBeCloseTo(letter[i].y, 9);
@@ -211,16 +211,16 @@ describe('the c moved after step 3, before Guide me', () => {
 
   it('turned, or broken apart: not the c as built any more; the step goes back (the word is never anchored on it)', () => {
     expect(rigidShift(letter, ['a', 'b', 'w'], moved(100, 0, 10))).toBeNull();
-    expect(observeGuide(at4(), world(moved(100, 0, 10))).step).toBe(1);
+    expect(observeGuide(at5(), world(moved(100, 0, 10))).step).toBe(1);
     const apart = [...moved(100, 0).slice(0, 2), built[2]];
-    expect(observeGuide(at4(), world(apart)).step, "the round and its negative moved, the wedge left behind").toBe(1);
+    expect(observeGuide(at5(), world(apart)).step, "the round and its negative moved, the wedge left behind").toBe(1);
     expect(rigidShift(letter, ['a', 'b', 'w'], built), 'not moved at all').toBeNull();
     const turnedLetter = letter.map((o) => ({ ...o, rotation: o.rotation + 10 }));
     expect(anchorWord(CREATE, c, turnedLetter, shapeOf), 'a turned c is not this word\'s c').toBeNull();
   });
 
   it('fallback: moved next to other pieces (the word would overlap them), the c becomes theirs and the word is placed fresh', () => {
-    const s4 = at4();
+    const s4 = at5();
     const theirs = rotatedBounds([{ shapeId: 'positive-stem', x: 900, y: 0, rotation: 0 }], shapeOf)!;
     expect(anchorWord(CREATE, c, s4.letter, shapeOf, [theirs])).toBeNull();
     const s = adoptTheirs(s4, ['a', 'b', 'w']);

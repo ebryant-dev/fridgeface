@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLICK_ANGLE_DEG, CLICK_POS_FRACTION, activeIndices, angleGap, clickIn, clickTarget, filledBy, needsTurning, outlineMatch, outlinesAt,
-  sitsOn, stackFix, type Outline, type OutlinePiece,
+  sitsOn, type Outline, type OutlinePiece,
 } from './outline';
+import { stackRepair } from './stacking';
 import { History } from './history';
 
 const size = () => 100; // every shape 100 units across: 18 units and 12 degrees of tolerance
@@ -66,7 +67,7 @@ describe('clickTarget / clickIn', () => {
   it('snaps to exactly the outline; a far piece stays', () => {
     const r = clickIn(os, [0, 1, 2], [p('x', 'r', 4, -6, 5), p('f', 'w', 400, 0, 111)], ['x', 'f'], size)!;
     expect(r.placements).toEqual([{ id: 'x', x: 0, y: 0, rotation: 0, outline: 0 }]);
-    expect(r.order).toBeNull();
+    expect(Object.keys(r)).toEqual(['placements']); // position and angle only: never a stacking order (v1.3.0)
   });
   it('needsTurning names a near, mis-angled piece of an active outline', () => {
     expect(needsTurning(os, [2], [null, null, null], [p('w1', 'w', 105, 0, 0)], size)).toBe('w1');
@@ -75,16 +76,16 @@ describe('clickTarget / clickIn', () => {
   });
 });
 
-describe('stackFix', () => {
-  it('filled pieces take their slots in the suggestion order; everything else keeps its place', () => {
-    expect(stackFix(['n', 'x', 'p'], ['p', 'n'])).toEqual(['p', 'x', 'n']);
-    expect(stackFix(['a', 'b', 'c'], ['a', null, 'c'])).toEqual(['a', 'b', 'c']);
-    expect(stackFix(['z', 'c', 'b', 'a'], ['a', 'b', 'c'])).toEqual(['z', 'a', 'b', 'c']);
+describe('no auto-reorder (v1.3.0): stackRepair is only Next\'s last resort', () => {
+  it('stackRepair: filled pieces take their slots in the suggestion order; everything else keeps its place', () => {
+    expect(stackRepair(['n', 'x', 'p'], ['p', 'n'])).toEqual(['p', 'x', 'n']);
+    expect(stackRepair(['a', 'b', 'c'], ['a', null, 'c'])).toEqual(['a', 'b', 'c']);
+    expect(stackRepair(['z', 'c', 'b', 'a'], ['a', 'b', 'c'])).toEqual(['z', 'a', 'b', 'c']);
   });
-  it('clickIn fixes the order in the same result (one undo step with the release)', () => {
+  it('clickIn never reorders: a positive clicked in on top of the negative it belongs under stays on top', () => {
     const os = [o('pos', 0, 0), o('neg', 0, 0)];
     const r = clickIn(os, [0], [p('n', 'neg', 0, 0), p('q', 'pos', 2, 2)], ['q'], size)!;
-    expect(r.order).toEqual(['q', 'n']);
+    expect(r).toEqual({ placements: [{ id: 'q', x: 0, y: 0, rotation: 0, outline: 0 }] });
     // History: the release and its click-in are ONE step.
     const h = new History<string>('before');
     h.record('dropped');

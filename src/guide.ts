@@ -4,38 +4,48 @@ import {
   FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
   type ShapeFrame, type SizeOf,
 } from './outline';
+import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stacking';
 
 /**
- * The onboarding guide (v2): the visitor builds Edward's "c" piece by piece onto dotted **outlines**, then may be guided
- * through the whole word "create" (`word-create-1`). Since v1.2.3 the c is the one INSIDE the word (`findWordC`), placed so
- * the whole word aligned to it fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without
- * the word (or a c in it) the c is `lower-c-1`, as before. Pure, no DOM: the step state machine, the "don't show again"
- * storage rule and the callout placement. The component (main.ts) feeds it the board and draws the outlines and the callout.
+ * The onboarding guide (copy v3, v1.3.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
+ * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
+ * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
+ * fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without the word (or a c in it) the c
+ * is `lower-c-1`. Pure, no DOM: the step state machine, the "don't show again" storage rule and the callout placement. The
+ * component (main.ts) feeds it the board and draws the outlines and the callout.
  *
- * 1. outline: the black oval (the c's first piece).            Done when it is filled (a piece sits exactly on it).
- * 2. outline: the white oval, lying on the black oval.          Done when it is filled.
- * 3. outline: the wedge, at its angle. 3a "drag it into place"; 3b (a wedge is close in position but needs turning) "turn it".
- * 4. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
- *    (rigidly, not turned) keeps step 4: its outlines follow it (`rigidShift`).
- * 5. outlines: the whole word, every piece at once, filled in any order. Progress "N of M". Same turning hint as 3b.
- *    v1.2.3: nothing is cleared; the word's outlines are in the c's board frame, so the c's pieces fill theirs ("3 of 32").
- *    Phones (v1.2.2, the compact layout): the word is filled one SECTION at a time (`sections`, split by sections.ts): only
- *    the current section's outlines show and accept a piece. The current section is the first, left to right, with an
- *    unfilled outline, so it too is derived from the board (undoing back into an earlier section makes it current again).
- *    The progress still counts the whole word.
- * 6. no outline. "You made "create"." Start fresh or Keep it.
+ * 1. outline: the white oval (dotted).                          Done when it is filled (a piece sits exactly on it).
+ * 2. outline: the black oval (solid), on the white one.         Done when it is filled. A new piece lands on top, so it
+ *    hides the white oval.
+ * 3. no outline: "Send the black oval back so the white shows through." Points at the action bar's Send backward (the black
+ *    oval is selected for it). Done when the black oval is below the white one in the stacking order (`stack` is the prompt).
+ * 4. outline: the wedge, at its angle. 4a "drag it into place"; 4b (a wedge is close in position but needs turning) "turn it".
+ * 5. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
+ *    (rigidly, not turned) keeps step 5: its outlines follow it (`rigidShift`).
+ * 6. outlines: the whole word, every piece at once, filled in any order. A word piece is DONE when it is placed AND stacked
+ *    right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. A mis-stacked piece
+ *    gets a prompt (`stack`: Send it back / Bring it forward, the most recently placed first). Same turning hint as 4b.
+ *    Nothing is cleared at Guide me; the word's outlines are in the c's board frame, so the c's pieces fill theirs.
+ *    Phones (the compact layout): the word is filled one SECTION at a time (`sections`, split by sections.ts): only the
+ *    current section's outlines show and accept a piece. The current section is the first, left to right, with a piece not
+ *    done (unplaced, or mis-stacked), so it too is derived from the board. The progress still counts the whole word.
+ * 7. no outline. "You made "create"." Start fresh or Keep it. Only once every piece is done: the stacking order of every
+ *    overlapping pair is the word's.
+ *
+ * The guide NEVER fixes the stacking order by itself (a click-in sets position and angle only); only Next, the escape hatch
+ * offered when stuck, restacks the prompted piece for the visitor.
  *
  * Which step shows is DERIVED from the board every time (`observeGuide`): an outline is filled when a piece of its shape
- * sits exactly on it. So deleting or moving a clicked-in piece re-shows its outline, and undo/redo keep the guide in step
- * with the board. The only thing that is never undone is a button the visitor chose: after Guide me the guide stays on
- * the word (steps 5 and 6) whatever happens to the board.
+ * sits exactly on it, and the stacking is read from the board's order. So deleting, moving or restacking a piece, and
+ * undo/redo, keep the guide in step with the board. The only thing that is never undone is a button the visitor chose:
+ * after Guide me the guide stays on the word (steps 6 and 7) whatever happens to the board.
  *
  * Click-in (`guideClickIn`): only while a step with outlines is showing, a released piece of the right shape close to an
  * active outline clicks exactly into it (see outline.ts for the tolerance). With the guide not running, it is always null.
  *
- * 0. (v1.2.1) Only when the guide starts on a board that already has pieces: "Start on a clean fridge?" Clear and start
- *    (the board is cleared as ONE undoable step, then step 1 on a blank board) or Keep my pieces (their pieces stay; the
- *    c's outlines, and later the word's, go in EMPTY board beside them: `besideSpot`, framed by `frameBeside`).
+ * 0. Only when the guide starts on a board that already has pieces: "Start on a clean fridge?" Clear and start (the board
+ *    is cleared as ONE undoable step, then step 1 on a blank board) or Keep my pieces (their pieces stay; the c's outlines,
+ *    and later the word's, go in EMPTY board beside them: `besideSpot`, framed by `frameBeside`).
  *
  * The visitor's own pieces: the pieces on the board when step 0 was answered are THEIRS (`theirs`), and so is anything they
  * add or move during the guide that is not clicked into an outline. The guide only ever removes GUIDE-BUILT pieces
@@ -52,24 +62,28 @@ export const GUIDE_NEXT_MS = 10_000;
 export const GUIDE_LETTER = { char: 'c', variant: 1 } as const;
 export const GUIDE_WORD = { text: 'create', variant: 1 } as const;
 
-/** Edward's approved copy v2 (creative/personal-brand/working/fridgeface/docs/guide-copy.md), word for word. */
+/** Edward's approved copy v3 (creative/personal-brand/working/fridgeface/docs/guide-copy.md), word for word. */
 export const GUIDE_COPY = {
   step0: 'Start on a clean fridge?',
   clearStart: 'Clear and start',
   keepMine: 'Keep my pieces',
-  step1: 'Drag the black oval onto the fridge.',
-  step2: 'Now drag the white oval onto the black one.',
-  step3a: 'Drag the wedge into place.',
-  step3b: 'Now turn it with the round handle to fit.',
+  step1: 'Drag the white oval onto the fridge.',
+  step2: 'Now drag the black oval onto it.',
+  step3: 'Send the black oval back so the white shows through.',
+  step4a: 'Drag the wedge into place.',
+  step4b: 'Now turn it with the round handle to fit.',
   /** Touch devices: one sentence. */
-  step3bTouch: 'Now turn it with the round handle to fit, or twist with two fingers.',
-  step4: "That's a c.",
-  step4Ask: 'Want to spell "create" next?',
+  step4bTouch: 'Now turn it with the round handle to fit, or twist with two fingers.',
+  step5: "That's a c.",
+  step5Ask: 'Want to spell "create" next?',
   guideMe: 'Guide me',
   clearFree: 'Clear for free play',
-  step5: 'Fill in the outlines to spell "create".',
+  step6: 'Fill in the outlines to spell "create".',
   progress: (done: number, total: number) => `${done} of ${total}`,
-  step6: 'You made "create". Now try your own name.',
+  /** Step 6: a placed piece stacked wrongly against a piece it overlaps (points at Send backward / Bring forward). */
+  stackBack: 'Send it back so it sits behind.',
+  stackForward: 'Bring it forward so it sits in front.',
+  step7: 'You made "create". Now try your own name.',
   startFresh: 'Start fresh',
   keepIt: 'Keep it',
   skip: 'Skip',
@@ -78,9 +92,9 @@ export const GUIDE_COPY = {
   replay: 'Show guide',
 } as const;
 
-export type GuideStep = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+export type GuideStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /**
- * 'ask': step 0 (the board already had pieces). 'c': steps 1 to 4 (the letter). 'word': steps 5 and 6, after the visitor
+ * 'ask': step 0 (the board already had pieces). 'c': steps 1 to 5 (the letter). 'word': steps 6 and 7, after the visitor
  * chose Guide me (never goes back). null: the guide is not running.
  */
 export type GuidePhase = 'ask' | 'c' | 'word';
@@ -89,7 +103,16 @@ export interface GuideWorld {
   /** The composition, in stacking order (bottom first). */
   pieces: readonly OutlinePiece[];
   sizeOf: SizeOf;
+  /**
+   * Real-geometry overlap of two pieces (the component passes its convex outlines' intersection). Absent (unit tests with
+   * synthetic shapes): two pieces overlap when their centroids are closer than half their sizes added together.
+   */
+  overlaps?: Overlaps;
 }
+
+const roughOverlap = (sizeOf: SizeOf): Overlaps => (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < (sizeOf(a.shapeId) + sizeOf(b.shapeId)) / 2;
+/** The world's overlap test (or the rough one). */
+export const overlapsOf = (w: GuideWorld): Overlaps => w.overlaps ?? roughOverlap(w.sizeOf);
 
 /** `phase` null: the guide is not running (`step` 0). `phase` 'ask' is step 0 showing. */
 export interface GuideState {
@@ -105,9 +128,15 @@ export interface GuideState {
   built: readonly string[];
   /** Every outline of the current phase, in the suggestion's stacking order (the c's 3, or the whole word). */
   outlines: readonly Outline[];
-  /** Per outline: the piece sitting exactly on it, or null. */
+  /** Per outline: the piece sitting exactly on it (PLACED), or null. */
   filled: readonly (string | null)[];
-  /** A piece close to an active outline of its shape but at the wrong angle (step 3b, or the same hint in step 5), or null. */
+  /** Per outline: placed AND stacked right against every placed piece it overlaps (stacking.ts). What the progress counts. */
+  done: readonly boolean[];
+  /** The placed pieces, in the order they were placed (oldest first): the most recent mis-stacked one is prompted first. */
+  recent: readonly string[];
+  /** Step 3, and step 6 whenever a placed piece is mis-stacked: which piece to restack, which way, how many presses. */
+  stack: StackPrompt | null;
+  /** A piece close to an active outline of its shape but at the wrong angle (step 4b, or the same hint in step 6), or null. */
   turn: string | null;
   /**
    * The word phase on phones: the word's outlines split into sections (outline indices per section, left to right), filled
@@ -118,7 +147,8 @@ export interface GuideState {
 
 const NONE = Object.freeze([]) as readonly never[];
 export const GUIDE_IDLE: GuideState = Object.freeze({
-  step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, turn: null, sections: null,
+  step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, done: NONE, recent: NONE, stack: null, turn: null,
+  sections: null,
 }) as GuideState;
 
 /** Is the guide running (step 0's question included)? */
@@ -130,24 +160,37 @@ export function askGuide(): GuideState {
 }
 
 /**
- * The section being filled (phones, step 5): the first section, left to right, that still has an unfilled outline. -1 when
- * there are no sections (desktop) or every outline is filled.
+ * The section being filled (phones, step 6): the first section, left to right, with a piece not done (unplaced, or placed
+ * but mis-stacked). -1 when there are no sections (desktop) or every piece is done.
  */
 export function currentSection(s: GuideState): number {
   if (s.phase !== 'word' || !s.sections) return -1;
-  return s.sections.findIndex((sec) => sec.some((i) => !s.filled[i]));
+  return s.sections.findIndex((sec) => sec.some((i) => !s.done[i]));
 }
 
 /**
- * The outlines showing (and accepting a piece) in this state: one at a time in steps 1 to 3, every unfilled one in step 5
- * (on phones, every unfilled one of the current section), lowest index (bottom of the stacking order) first.
+ * The c's outlines in the order the guide asks for them (v3): the white oval first, then the black oval, then the rest
+ * (the wedge). Outlines without both ovals: in their own order.
+ */
+export function cSequence(outlines: readonly Outline[]): number[] {
+  const white = outlines.findIndex((o) => o.shapeId === 'negative-round');
+  const black = outlines.findIndex((o) => o.shapeId === 'positive-round');
+  const all = outlines.map((_, i) => i);
+  if (white < 0 || black < 0) return all;
+  return [white, black, ...all.filter((i) => i !== white && i !== black)];
+}
+
+/**
+ * The outlines showing (and accepting a piece) in this state: one at a time in steps 1, 2 and 4 (none in step 3, the
+ * stacking lesson), every unfilled one in step 6 (on phones, every unfilled one of the current section), lowest index
+ * (bottom of the stacking order) first.
  */
 export function activeOutlines(s: GuideState): number[] {
-  if (s.phase === 'c' && s.step >= 1 && s.step <= 3) {
-    const i = s.filled.findIndex((f) => !f);
-    return i < 0 ? [] : [i];
+  if (s.phase === 'c' && (s.step === 1 || s.step === 2 || s.step === 4)) {
+    const i = cSequence(s.outlines).find((k) => !s.filled[k]);
+    return i === undefined ? [] : [i];
   }
-  if (s.phase === 'word' && s.step === 5) {
+  if (s.phase === 'word' && s.step === 6) {
     if (!s.sections) return activeIndices(s.filled);
     const k = currentSection(s);
     return k < 0 ? [] : s.sections[k].filter((i) => !s.filled[i]).sort((a, b) => a - b);
@@ -155,22 +198,61 @@ export function activeOutlines(s: GuideState): number[] {
   return [];
 }
 
-type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'sections'>;
-const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, sections: s.sections });
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'sections' | 'recent'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, sections: s.sections, recent: s.recent });
+
+/** The placed pieces in the order they were placed: the ones still placed keep their turn, newly placed ones go last. */
+function updateRecent(recent: readonly string[], filled: readonly (string | null)[]): readonly string[] {
+  const now = filled.filter((id): id is string => !!id);
+  const kept = recent.filter((id) => now.includes(id));
+  const added = now.filter((id) => !kept.includes(id));
+  return !added.length && kept.length === recent.length ? recent : [...kept, ...added];
+}
+
+/** The c (steps 1 to 5): white oval, black oval, the black oval sent back, the wedge. */
+function deriveC(outlines: readonly Outline[], w: GuideWorld, filled: (string | null)[]): { step: GuideStep; done: boolean[]; stack: StackPrompt | null } {
+  const seq = cSequence(outlines);
+  const [white, black] = seq;
+  const pos = new Map(w.pieces.map((p, i) => [p.id, i]));
+  const done = filled.map(Boolean);
+  if (!filled[white]) return { step: 1, done, stack: null };
+  if (!filled[black]) return { step: 2, done, stack: null };
+  const pair = new Set([filled[white]!, filled[black]!]);
+  if (seq.length > 1 && white !== black && pos.get(filled[black]!)! > pos.get(filled[white]!)!) {
+    // The black oval hides the white one: send it back. (The two ovals always count as overlapping, as they do in the c.)
+    const ov = overlapsOf(w);
+    const only = filled.map((id, i) => (i === white || i === black ? id : null));
+    const stack = stackPrompt(only, w.pieces, (a, b) => (pair.has(a.id) && pair.has(b.id)) || ov(a, b), [filled[white]!, filled[black]!]);
+    done[white] = done[black] = false;
+    return { step: 3, done, stack };
+  }
+  return { step: seq.slice(2).some((i) => !filled[i]) ? 4 : 5, done, stack: null };
+}
 
 function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld, c: Carry): GuideState {
   const filled = filledBy(outlines, w.pieces);
-  const first = filled.findIndex((f) => !f);
-  const step: GuideStep = phase === 'c' ? (first < 0 ? 4 : (Math.min(first + 1, 3) as GuideStep)) : first < 0 ? 6 : 5;
-  const s: GuideState = { ...c, sections: phase === 'word' ? c.sections : null, step, phase, outlines, filled, turn: null };
+  const recent = updateRecent(c.recent, filled);
+  let step: GuideStep, done: boolean[], stack: StackPrompt | null;
+  if (phase === 'c') ({ step, done, stack } = deriveC(outlines, w, filled));
+  else {
+    const ov = overlapsOf(w);
+    done = stackCheck(filled, w.pieces, ov).done;
+    step = done.every(Boolean) ? 7 : 6;
+    stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent) : null;
+  }
+  const s: GuideState = { ...c, recent, sections: phase === 'word' ? c.sections : null, step, phase, outlines, filled, done, stack, turn: null };
   const active = activeOutlines(s);
-  // The turning hint: in step 3 (the wedge) and step 5 (any piece of the word).
-  const turn = step === 3 || step === 5 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
+  // The turning hint: in step 4 (the wedge) and step 6 (any piece of the word).
+  const turn = step === 4 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
   return { ...s, turn };
 }
 
+const sameList = <T>(a: readonly T[], b: readonly T[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+const samePrompt = (a: StackPrompt | null, b: StackPrompt | null) =>
+  a === b || (!!a && !!b && a.id === b.id && a.dir === b.dir && a.presses === b.presses && sameList(a.order, b.order));
 const same = (a: GuideState, b: GuideState) =>
-  a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && a.filled.length === b.filled.length && a.filled.every((f, i) => f === b.filled[i])
+  a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && sameList(a.filled, b.filled) && sameList(a.done, b.done)
+  && sameList(a.recent, b.recent) && samePrompt(a.stack, b.stack)
   && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.sections === b.sections;
 
 /**
@@ -179,7 +261,7 @@ const same = (a: GuideState, b: GuideState) =>
  */
 export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
   if (!cOutlines.length) return GUIDE_IDLE;
-  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, sections: null });
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, sections: null, recent: NONE });
 }
 
 /**
@@ -234,7 +316,7 @@ export function guideClearPlan(s: GuideState, pieces: readonly OutlinePiece[]): 
 export function observeGuide(s: GuideState, w: GuideWorld): GuideState {
   if (!s.step || !s.phase || s.phase === 'ask') return s;
   const next = derive(s.phase, s.outlines, w, carry(s));
-  if (s.phase === 'c' && s.step === 4 && next.step !== 4) {
+  if (s.phase === 'c' && s.step === 5 && next.step !== 5) {
     // The finished c moved as one (a selection dragged, or that drag undone): its outlines follow it, so it is still the c
     // and the word will be anchored on it where it now is. Turned, or broken apart, it is not: the step goes back.
     const shift = rigidShift(s.letter, s.filled, w.pieces);
@@ -263,11 +345,11 @@ export function rigidShift(outlines: readonly Outline[], filled: readonly (strin
 }
 
 /**
- * Step 4's Guide me: the word's outlines (already placed). Only from step 4. `sections` (phones): the outlines split into
+ * Step 5's Guide me: the word's outlines (already placed). Only from step 5. `sections` (phones): the outlines split into
  * sections, filled one at a time (see `withSections`); null: the whole word at once.
  */
 export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: GuideWorld, sections: readonly (readonly number[])[] | null = null): GuideState {
-  if (s.step !== 4 || !wordOutlines.length) return s;
+  if (s.step !== 5 || !wordOutlines.length) return s;
   return derive('word', wordOutlines, w, { ...carry(s), sections: validSections(sections, wordOutlines.length) });
 }
 
@@ -302,9 +384,9 @@ export function endGuide(): GuideState {
   return GUIDE_IDLE;
 }
 
-/** Step 5's progress: outlines filled, of all of them. */
+/** Step 6's progress: pieces DONE (placed and stacked right), of all of them. */
 export function guideProgress(s: GuideState): { done: number; total: number } {
-  return { done: s.filled.filter(Boolean).length, total: s.filled.length };
+  return { done: s.done.filter(Boolean).length, total: s.done.length };
 }
 
 /** A released piece (or several): what clicks into the active outlines, if anything. Always null when the guide is not running. */
@@ -313,9 +395,19 @@ export function guideClickIn(s: GuideState, w: GuideWorld, released: readonly st
   return clickIn(s.outlines, activeOutlines(s), w.pieces, released, w.sizeOf);
 }
 
-/** Next (shown when stuck): the outline it fills for the visitor (the lowest active one), or null on steps without outlines. */
+/** The lowest active outline (the one Next fills when no piece needs restacking), or null on steps without outlines. */
 export function nextOutline(s: GuideState): number | null {
   return activeOutlines(s)[0] ?? null;
+}
+
+/**
+ * Next (shown when stuck) does the current thing for the visitor: restack the prompted piece (step 3, or step 6 while a
+ * piece is mis-stacked), else fill the lowest active outline. Null on steps with nothing to do (5, 7).
+ */
+export function nextAction(s: GuideState): { kind: 'stack'; prompt: StackPrompt } | { kind: 'place'; outline: number } | null {
+  if (s.stack && (s.step === 3 || s.step === 6)) return { kind: 'stack', prompt: s.stack };
+  const i = nextOutline(s);
+  return i === null ? null : { kind: 'place', outline: i };
 }
 
 // ---- outlines beside the visitor's work (Keep my pieces) --------------------------------------------------------

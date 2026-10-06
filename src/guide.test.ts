@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
-  chooseWord, currentSection, endGuide, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
+  cSequence, chooseWord, currentSection, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
   nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, withSections, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
 } from './guide';
 import type { Outline, OutlinePiece } from './outline';
+import { sendBackwardOverlapping } from './selection';
+import { stackCheck, stackPrompt } from './stacking';
 import { History } from './history';
 
 // Synthetic shapes: every shape is 100 board units across, so the click-in tolerance is 18 units and 12 degrees.
@@ -19,19 +21,22 @@ const C = [ol('positive-round', 0, 0), ol('negative-round', 0, 0), ol('wedge', 1
 const WORD = [ol('positive-stem', 500, 0, -5), ol('positive-round', 600, 0), ol('negative-round', 605, 0), ol('wedge', 700, 30, 40)];
 const on = (id: string, o: Outline): OutlinePiece => ({ id, ...o });
 
-describe('copy v2', () => {
+describe('copy v3', () => {
   it('is the approved wording, word for word', () => {
-    expect(GUIDE_COPY.step1).toBe('Drag the black oval onto the fridge.');
-    expect(GUIDE_COPY.step2).toBe('Now drag the white oval onto the black one.');
-    expect(GUIDE_COPY.step3a).toBe('Drag the wedge into place.');
-    expect(GUIDE_COPY.step3b).toBe('Now turn it with the round handle to fit.');
-    expect(GUIDE_COPY.step3bTouch).toBe('Now turn it with the round handle to fit, or twist with two fingers.');
+    expect(GUIDE_COPY.step1).toBe('Drag the white oval onto the fridge.');
+    expect(GUIDE_COPY.step2).toBe('Now drag the black oval onto it.');
+    expect(GUIDE_COPY.step3).toBe('Send the black oval back so the white shows through.');
+    expect(GUIDE_COPY.step4a).toBe('Drag the wedge into place.');
+    expect(GUIDE_COPY.step4b).toBe('Now turn it with the round handle to fit.');
+    expect(GUIDE_COPY.step4bTouch).toBe('Now turn it with the round handle to fit, or twist with two fingers.');
     expect([GUIDE_COPY.step0, GUIDE_COPY.clearStart, GUIDE_COPY.keepMine]).toEqual(['Start on a clean fridge?', 'Clear and start', 'Keep my pieces']);
-    expect([GUIDE_COPY.step4, GUIDE_COPY.step4Ask]).toEqual(["That's a c.", 'Want to spell "create" next?']);
+    expect([GUIDE_COPY.step5, GUIDE_COPY.step5Ask]).toEqual(["That's a c.", 'Want to spell "create" next?']);
     expect([GUIDE_COPY.guideMe, GUIDE_COPY.clearFree]).toEqual(['Guide me', 'Clear for free play']);
-    expect(GUIDE_COPY.step5).toBe('Fill in the outlines to spell "create".');
-    expect(GUIDE_COPY.progress(7, 18)).toBe('7 of 18');
-    expect(GUIDE_COPY.step6).toBe('You made "create". Now try your own name.');
+    expect(GUIDE_COPY.step6).toBe('Fill in the outlines to spell "create".');
+    expect(GUIDE_COPY.progress(7, 32)).toBe('7 of 32');
+    expect(GUIDE_COPY.stackBack).toBe('Send it back so it sits behind.');
+    expect(GUIDE_COPY.stackForward).toBe('Bring it forward so it sits in front.');
+    expect(GUIDE_COPY.step7).toBe('You made "create". Now try your own name.');
     expect([GUIDE_COPY.startFresh, GUIDE_COPY.keepIt, GUIDE_COPY.skip, GUIDE_COPY.dontShow, GUIDE_COPY.next, GUIDE_COPY.replay])
       .toEqual(['Start fresh', 'Keep it', 'Skip', "Don't show again", 'Next', 'Show guide']);
     expect(GUIDE_LETTER).toEqual({ char: 'c', variant: 1 });
@@ -39,63 +44,92 @@ describe('copy v2', () => {
   });
 });
 
-describe('step machine v2: the c (steps 1 to 4)', () => {
-  it('starts at step 1 with ONE outline showing (the black oval), on a blank board', () => {
+describe('step machine v3: the c teaches stacking (steps 1 to 5)', () => {
+  // C is [black, white, wedge] (the suggestion's own order, bottom first); the guide asks for the white oval first.
+  const white = on('b', C[1]), black = on('a', C[0]), wedge = on('w', C[2]);
+
+  it('starts at step 1 with ONE outline showing (the white oval), on a blank board', () => {
     const s = startGuide(C, world([]));
     expect(s.step).toBe(1);
     expect(s.phase).toBe('c');
-    expect(activeOutlines(s)).toEqual([0]);
+    expect(activeOutlines(s)).toEqual([1]);
+    expect(cSequence(C)).toEqual([1, 0, 2]);
     expect(startGuide([], world([]))).toBe(GUIDE_IDLE); // no c: no guide
   });
 
-  it('advances as each outline is filled, one outline at a time: 1 -> 2 -> 3 -> 4', () => {
+  it('1 white -> 2 black (lands on top, hides it) -> 3 send it back -> 4 wedge -> 5', () => {
     let s = startGuide(C, world([]));
-    s = observeGuide(s, world([on('a', C[0])]));
-    expect([s.step, activeOutlines(s)]).toEqual([2, [1]]);
-    s = observeGuide(s, world([on('a', C[0]), on('b', C[1])]));
-    expect([s.step, activeOutlines(s), s.turn]).toEqual([3, [2], null]);
-    s = observeGuide(s, world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
-    expect([s.step, activeOutlines(s)]).toEqual([4, []]);
-    expect(observeGuide(s, world([on('a', C[0]), on('b', C[1]), on('w', C[2])]))).toBe(s); // unchanged: same object
+    s = observeGuide(s, world([white]));
+    expect([s.step, activeOutlines(s), s.stack]).toEqual([2, [0], null]);
+    s = observeGuide(s, world([white, black])); // a newly added piece is on top
+    expect([s.step, activeOutlines(s)]).toEqual([3, []]);
+    expect(s.stack, 'step 3 prompts Send backward on the black oval, one press').toEqual({ id: 'a', dir: 'back', presses: 1, order: ['a', 'b'] });
+    expect(nextAction(s)).toEqual({ kind: 'stack', prompt: s.stack });
+    // Step 3 completes on send-back: the overlap-aware Send backward steps past the white oval in one press.
+    const sent = sendBackwardOverlapping(['b', 'a'], new Set(['a']), () => true)!;
+    expect(sent).toEqual(['a', 'b']);
+    s = observeGuide(s, world([black, white]));
+    expect([s.step, activeOutlines(s), s.stack]).toEqual([4, [2], null]);
+    s = observeGuide(s, world([black, white, wedge]));
+    expect([s.step, activeOutlines(s)]).toEqual([5, []]);
+    expect(observeGuide(s, world([black, white, wedge]))).toBe(s); // unchanged: same object
+  });
+
+  it('step 3 counts the ovals as overlapping whatever the geometry says, and steps past the visitor\'s own pieces', () => {
+    const mine = pc('m', 'positive-stem', 5000, 0);
+    const s = observeGuide(startGuide(C, world([])), { pieces: [white, mine, black], sizeOf: () => 100, overlaps: () => false });
+    expect([s.step, s.stack?.dir, s.stack?.presses]).toEqual([3, 'back', 1]);
+  });
+
+  it('bringing the black oval forward again goes back to step 3 (derived from the board)', () => {
+    const s = observeGuide(startGuide(C, world([])), world([white, black, wedge]));
+    expect(s.step).toBe(3);
   });
 
   it('a piece merely near, or of another shape, fills nothing', () => {
     const s = startGuide(C, world([]));
-    expect(observeGuide(s, world([pc('a', 'positive-round', 5, 0)])).step).toBe(1); // near but not exactly on it
-    expect(observeGuide(s, world([pc('a', 'negative-round', 0, 0)])).step).toBe(1); // exactly there, wrong shape
+    expect(observeGuide(s, world([pc('a', 'negative-round', 5, 0)])).step).toBe(1); // near but not exactly on it
+    expect(observeGuide(s, world([pc('a', 'positive-round', 0, 0)])).step).toBe(1); // exactly there, wrong shape
   });
 
-  it('3a -> 3b: the wedge close to its outline but at the wrong angle; back to 3a when it is moved away', () => {
-    const base = [on('a', C[0]), on('b', C[1])];
+  it('4a -> 4b: the wedge close to its outline but at the wrong angle; back to 4a when it is moved away', () => {
+    const base = [black, white];
     let s = observeGuide(startGuide(C, world([])), world(base));
-    expect([s.step, s.turn]).toEqual([3, null]);
+    expect([s.step, s.turn]).toEqual([4, null]);
     s = observeGuide(s, world([...base, pc('w', 'wedge', 120, 0, 0)])); // dropped near, unturned
-    expect([s.step, s.turn]).toEqual([3, 'w']);
+    expect([s.step, s.turn]).toEqual([4, 'w']);
     expect(activeOutlines(s), 'the outline stays, at its angle').toEqual([2]);
     expect(observeGuide(s, world([...base, pc('w', 'wedge', 400, 0, 0)])).turn).toBe(null);
   });
 
   it('robust: a clicked-in piece moved away or deleted shows its outline again (the step goes back, never past a button)', () => {
-    const all = [on('a', C[0]), on('b', C[1]), on('w', C[2])];
-    let s = observeGuide(startGuide(C, world([])), world(all));
-    expect(s.step).toBe(4);
-    s = observeGuide(s, world([on('a', C[0]), { ...on('b', C[1]), x: 300 }, on('w', C[2])])); // the white oval moved off
-    expect([s.step, activeOutlines(s)]).toEqual([2, [1]]);
-    s = observeGuide(s, world([on('b', C[1]), on('w', C[2])])); // the black oval deleted
-    expect([s.step, activeOutlines(s)]).toEqual([1, [0]]);
+    let s = observeGuide(startGuide(C, world([])), world([black, white, wedge]));
+    expect(s.step).toBe(5);
+    s = observeGuide(s, world([{ ...black, x: 300 }, white, wedge])); // the black oval moved off
+    expect([s.step, activeOutlines(s)]).toEqual([2, [0]]);
+    s = observeGuide(s, world([black, wedge])); // the white oval deleted
+    expect([s.step, activeOutlines(s)]).toEqual([1, [1]]);
   });
 
-  it('undo consistency: undoing a click-in (the board as it was) shows the outline again; redo fills it again', () => {
+  it('undo consistency: undoing a click-in shows the outline again; undoing the send-back returns to step 3; redo moves on again', () => {
     const h = new History<readonly OutlinePiece[]>([]);
     let s = startGuide(C, world([]));
-    const dropped = [pc('a', 'positive-round', 6, -4)];
+    const dropped = [pc('b', 'negative-round', 6, -4)];
     h.record(dropped); // the drag
-    const r = guideClickIn(s, world(dropped), ['a'])!;
-    const snapped = dropped.map((p) => ({ ...p, ...r.placements[0] }));
-    h.amend(snapped); // the click-in: the same undo step
+    const r = guideClickIn(s, world(dropped), ['b'])!;
+    h.amend(dropped.map((p) => ({ ...p, ...r.placements[0] }))); // the click-in: the same undo step
     s = observeGuide(s, world(h.present));
     expect(s.step).toBe(2);
-    s = observeGuide(s, world(h.undo()!)); // ONE undo: back to before the drag
+    h.record([white, black]);
+    s = observeGuide(s, world(h.present));
+    expect(s.step).toBe(3);
+    h.record([black, white]); // Send backward
+    s = observeGuide(s, world(h.present));
+    expect(s.step).toBe(4);
+    s = observeGuide(s, world(h.undo()!));
+    expect([s.step, s.stack?.id]).toEqual([3, 'a']);
+    s = observeGuide(s, world(h.undo()!));
+    s = observeGuide(s, world(h.undo()!)); // ONE undo per release: back to before the first drag
     expect([s.step, h.present]).toEqual([1, []]);
     s = observeGuide(s, world(h.redo()!));
     expect(s.step).toBe(2);
@@ -103,28 +137,31 @@ describe('step machine v2: the c (steps 1 to 4)', () => {
 });
 
 describe('click-in (guide only)', () => {
-  it('a released piece of the right shape within tolerance clicks EXACTLY into the active outline', () => {
+  it('a released piece of the right shape within tolerance clicks EXACTLY into the active outline (position and angle only)', () => {
     const s = startGuide(C, world([]));
-    const r = guideClickIn(s, world([pc('a', 'positive-round', 10, -12, 7)]), ['a']);
-    expect(r?.placements).toEqual([{ id: 'a', x: 0, y: 0, rotation: 0, outline: 0 }]);
+    const r = guideClickIn(s, world([pc('b', 'negative-round', 10, -12, 7)]), ['b']);
+    expect(r).toEqual({ placements: [{ id: 'b', x: 0, y: 0, rotation: 0, outline: 1 }] });
   });
 
   it('the wrong shape, too far, or the wrong angle stays where it was dropped', () => {
     const s = startGuide(C, world([]));
-    expect(guideClickIn(s, world([pc('a', 'negative-round', 1, 1)]), ['a'])).toBeNull();
-    expect(guideClickIn(s, world([pc('a', 'positive-round', 19, 0)]), ['a'])).toBeNull();
-    expect(guideClickIn(s, world([pc('a', 'positive-round', 0, 0, 13)]), ['a'])).toBeNull();
+    expect(guideClickIn(s, world([pc('a', 'positive-round', 1, 1)]), ['a'])).toBeNull();
+    expect(guideClickIn(s, world([pc('a', 'negative-round', 19, 0)]), ['a'])).toBeNull();
+    expect(guideClickIn(s, world([pc('a', 'negative-round', 0, 0, 13)]), ['a'])).toBeNull();
   });
 
-  it('only the ACTIVE outline accepts: the white oval does not click in during step 1', () => {
+  it('only the ACTIVE outline accepts: the black oval does not click in during step 1; nothing clicks in at step 3', () => {
     const s = startGuide(C, world([]));
-    expect(guideClickIn(s, world([pc('b', 'negative-round', 0, 0)]), ['b'])).toBeNull();
+    expect(guideClickIn(s, world([pc('a', 'positive-round', 0, 0)]), ['a'])).toBeNull();
+    const s3 = observeGuide(s, world([on('b', C[1]), on('a', C[0])]));
+    expect(s3.step).toBe(3);
+    expect(guideClickIn(s3, world([on('b', C[1]), on('a', C[0]), pc('w', 'wedge', 113, 2, 111)]), ['w'])).toBeNull();
   });
 
   it('the wedge: within 12 degrees of 111.03 clicks in, wrapping included', () => {
     const base = [on('a', C[0]), on('b', C[1])];
     const s = observeGuide(startGuide(C, world([])), world(base));
-    expect(s.step).toBe(3);
+    expect(s.step).toBe(4);
     const at = (r: number) => guideClickIn(s, world([...base, pc('w', 'wedge', 113, 2, r)]), ['w']);
     expect(at(100)?.placements[0].rotation).toBe(111.03);
     expect(at(122)).not.toBeNull();
@@ -133,72 +170,186 @@ describe('click-in (guide only)', () => {
   });
 
   it('NO snapping when the guide is inactive: idle, ended, or on a step without outlines', () => {
-    const exact = world([on('a', C[0])]);
-    expect(guideClickIn(GUIDE_IDLE, exact, ['a'])).toBeNull();
-    expect(guideClickIn(endGuide(), world([pc('a', 'positive-round', 1, 1)]), ['a'])).toBeNull();
+    const exact = world([on('b', C[1])]);
+    expect(guideClickIn(GUIDE_IDLE, exact, ['b'])).toBeNull();
+    expect(guideClickIn(endGuide(), world([pc('b', 'negative-round', 1, 1)]), ['b'])).toBeNull();
     const done = [on('a', C[0]), on('b', C[1]), on('w', C[2])];
-    const s4 = observeGuide(startGuide(C, world([])), world(done));
-    expect(s4.step).toBe(4);
-    expect(guideClickIn(s4, world([...done, pc('x', 'positive-round', 2, 2)]), ['x'])).toBeNull();
+    const s5 = observeGuide(startGuide(C, world([])), world(done));
+    expect(s5.step).toBe(5);
+    expect(guideClickIn(s5, world([...done, pc('x', 'positive-round', 2, 2)]), ['x'])).toBeNull();
   });
 });
 
-describe('step machine v2: the word (steps 5 and 6)', () => {
-  const at4 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
+describe('step machine v3: the word (steps 6 and 7)', () => {
+  const at5 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
+  // WORD's overlapping pairs (rough overlap, 100-unit shapes): the round and its negative round (1, 2), and the negative
+  // round and the wedge (2, 3). The stem (0) overlaps nothing.
 
-  it('Guide me: from step 4 only; every outline of the word shows at once; any order; progress N of M; then step 6', () => {
+  it('Guide me: from step 5 only; every outline shows at once; done = placed AND stacked right; progress N of M; then step 7', () => {
     expect(chooseWord(startGuide(C, world([])), WORD, world([])).step, 'not from step 1').toBe(1);
-    let s = chooseWord(at4(), WORD, world([]));
-    expect([s.step, s.phase, activeOutlines(s), guideProgress(s)]).toEqual([5, 'word', [0, 1, 2, 3], { done: 0, total: 4 }]);
+    let s = chooseWord(at5(), WORD, world([]));
+    expect([s.step, s.phase, activeOutlines(s), guideProgress(s)]).toEqual([6, 'word', [0, 1, 2, 3], { done: 0, total: 4 }]);
     s = observeGuide(s, world([on('w', WORD[3])])); // the last piece first
-    expect([s.step, activeOutlines(s), guideProgress(s)]).toEqual([5, [0, 1, 2], { done: 1, total: 4 }]);
-    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2]), on('s', WORD[0])]));
-    expect(guideProgress(s)).toEqual({ done: 3, total: 4 });
-    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2]), on('s', WORD[0]), on('r', WORD[1])]));
-    expect([s.step, activeOutlines(s), guideProgress(s)]).toEqual([6, [], { done: 4, total: 4 }]);
+    expect([s.step, activeOutlines(s), guideProgress(s), s.stack]).toEqual([6, [0, 1, 2], { done: 1, total: 4 }, null]);
+    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2])])); // the negative round lands ON TOP of the wedge
+    expect(guideProgress(s).done, 'placed but mis-stacked: neither counts').toBe(0);
+    expect(s.filled.filter(Boolean)).toHaveLength(2);
+    expect(s.stack).toEqual({ id: 'n', dir: 'back', presses: 1, order: ['n', 'w'] });
+    s = observeGuide(s, world([on('n', WORD[2]), on('w', WORD[3]), on('s', WORD[0])]));
+    expect([guideProgress(s).done, s.stack]).toEqual([3, null]);
+    s = observeGuide(s, world([on('n', WORD[2]), on('w', WORD[3]), on('s', WORD[0]), on('r', WORD[1])])); // the round on top of its negative
+    expect([s.step, guideProgress(s).done, s.stack?.id, s.stack?.dir]).toEqual([6, 2, 'r', 'back']);
+    expect(s.stack?.presses, 'past the stem? it does not overlap: one press past the negative round').toBe(1);
+    s = observeGuide(s, world([on('r', WORD[1]), on('n', WORD[2]), on('w', WORD[3]), on('s', WORD[0])]));
+    expect([s.step, activeOutlines(s), guideProgress(s), s.stack]).toEqual([7, [], { done: 4, total: 4 }, null]);
+  });
+
+  it('stackCheck: only overlapping pairs matter; a non-overlapping pair in the "wrong" order is ignored', () => {
+    const pieces = [on('s', WORD[0]), on('r', WORD[1])];
+    // Stem (0) above?.. no: the round (1) is below the stem (0) here, the reverse of the word, but they do not overlap.
+    expect(stackCheck(['s', 'r', null, null], [pieces[1], pieces[0]], (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 100)).toEqual({ done: [true, true, false, false], wrong: [] });
+    expect(stackCheck(['s', 'r', null, null], [pieces[1], pieces[0]], () => true)).toEqual({ done: [false, false, false, false], wrong: ['s', 'r'] });
   });
 
   it('never goes back past Guide me: an emptied board (or an undo bringing the c back) stays on the word', () => {
-    let s = chooseWord(at4(), WORD, world([]));
+    let s = chooseWord(at5(), WORD, world([]));
     s = observeGuide(s, world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
-    expect([s.step, s.phase]).toEqual([5, 'word']);
+    expect([s.step, s.phase]).toEqual([6, 'word']);
     s = observeGuide(s, world(WORD.map((o, i) => on(`p${i}`, o))));
-    expect(s.step).toBe(6);
-    s = observeGuide(s, world(WORD.slice(1).map((o, i) => on(`p${i + 1}`, o)))); // a piece deleted at step 6
-    expect([s.step, activeOutlines(s)]).toEqual([5, [0]]);
+    expect(s.step).toBe(7);
+    s = observeGuide(s, world(WORD.slice(1).map((o, i) => on(`p${i + 1}`, o)))); // a piece deleted at step 7
+    expect([s.step, activeOutlines(s)]).toEqual([6, [0]]);
   });
 
-  it('the turning hint in step 5: a piece close to its outline but mis-angled', () => {
-    const s = observeGuide(chooseWord(at4(), WORD, world([])), world([pc('x', 'wedge', 705, 30, 0)]));
-    expect([s.step, s.turn]).toEqual([5, 'x']);
+  it('the turning hint in step 6: a piece close to its outline but mis-angled', () => {
+    const s = observeGuide(chooseWord(at5(), WORD, world([])), world([pc('x', 'wedge', 705, 30, 0)]));
+    expect([s.step, s.turn]).toEqual([6, 'x']);
   });
 
-  it('stacking order: a negative filled BEFORE its positive still ends up above it, in the same click-in', () => {
-    let s = chooseWord(at4(), WORD, world([]));
+  it('no auto-reorder on click-in: a positive clicked in after its negative stays on top, and is prompted instead', () => {
+    let s = chooseWord(at5(), WORD, world([]));
     const neg = on('n', WORD[2]);
     s = observeGuide(s, world([neg]));
     const board = [neg, pc('r', 'positive-round', 604, 3)]; // the round, added later, is on top
     const r = guideClickIn(s, world(board), ['r'])!;
-    expect(r.placements.map((p) => p.id)).toEqual(['r']);
-    expect(r.order, 'the round goes under the negative round, as in the word').toEqual(['r', 'n']);
+    expect(r).toEqual({ placements: [{ id: 'r', x: 600, y: 0, rotation: 0, outline: 1 }] });
+    s = observeGuide(s, world([neg, on('r', WORD[1])]));
+    expect([guideProgress(s).done, s.stack?.id, s.stack?.dir]).toEqual([0, 'r', 'back']);
   });
 
   it('two pieces released together each click into their own outline', () => {
-    const s = chooseWord(at4(), WORD, world([]));
+    const s = chooseWord(at5(), WORD, world([]));
     const r = guideClickIn(s, world([pc('s', 'positive-stem', 502, 1, -3), pc('w', 'wedge', 698, 31, 45)]), ['s', 'w'])!;
     expect(r.placements.map((p) => [p.id, p.outline])).toEqual([['s', 0], ['w', 3]]);
   });
 
-  it('Next fills the lowest active outline; none on steps 4 and 6', () => {
-    expect(nextOutline(startGuide(C, world([])))).toBe(0);
-    expect(nextOutline(at4())).toBeNull();
-    const s = observeGuide(chooseWord(at4(), WORD, world([])), world([on('s', WORD[0])]));
-    expect(nextOutline(s)).toBe(1);
+  it('Next: fills the lowest active outline, or (first) fixes the prompted piece\'s stacking; nothing on steps 5 and 7', () => {
+    expect(nextOutline(startGuide(C, world([])))).toBe(1);
+    expect(nextAction(startGuide(C, world([])))).toEqual({ kind: 'place', outline: 1 });
+    expect(nextAction(at5())).toBeNull();
+    let s = observeGuide(chooseWord(at5(), WORD, world([])), world([on('s', WORD[0])]));
+    expect(nextAction(s)).toEqual({ kind: 'place', outline: 1 });
+    s = observeGuide(s, world([on('s', WORD[0]), on('w', WORD[3]), on('n', WORD[2])]));
+    const a = nextAction(s);
+    expect(a?.kind).toBe('stack');
+    // Next applies the order the presses would give: the stacking is fixed, and progress counts it.
+    const fixed = a!.kind === 'stack' ? a!.prompt.order : [];
+    const byId = new Map([['s', on('s', WORD[0])], ['w', on('w', WORD[3])], ['n', on('n', WORD[2])]]);
+    s = observeGuide(s, world(fixed.map((id) => byId.get(id)!)));
+    expect([s.stack, guideProgress(s).done]).toEqual([null, 3]);
   });
 
-  it('without the word, step 4 cannot choose it', () => {
-    const s4: GuideState = at4();
-    expect(chooseWord(s4, [], world([]))).toBe(s4);
+  it('undo/redo keep it consistent: undoing a fix brings the prompt back, undoing the placement removes it', () => {
+    const h = new History<readonly OutlinePiece[]>([]);
+    let s = chooseWord(at5(), WORD, world([]));
+    h.record([on('n', WORD[2])]);
+    s = observeGuide(s, world(h.present));
+    h.record([on('n', WORD[2]), on('r', WORD[1])]); // the round lands on top of its negative round
+    s = observeGuide(s, world(h.present));
+    expect([s.stack?.id, guideProgress(s).done]).toEqual(['r', 0]);
+    h.record([on('r', WORD[1]), on('n', WORD[2])]); // Send backward
+    s = observeGuide(s, world(h.present));
+    expect([s.stack, guideProgress(s).done]).toEqual([null, 2]);
+    s = observeGuide(s, world(h.undo()!));
+    expect([s.stack?.id, s.stack?.dir, guideProgress(s).done]).toEqual(['r', 'back', 0]);
+    s = observeGuide(s, world(h.undo()!));
+    expect([s.stack, guideProgress(s).done, s.recent]).toEqual([null, 1, ['n']]);
+    s = observeGuide(s, world(h.redo()!));
+    expect(s.stack?.id).toBe('r');
+    s = observeGuide(s, world(h.redo()!));
+    expect([s.stack, guideProgress(s).done]).toEqual([null, 2]);
+  });
+
+  it('without the word, step 5 cannot choose it', () => {
+    const s5: GuideState = at5();
+    expect(chooseWord(s5, [], world([]))).toBe(s5);
+  });
+});
+
+describe('stackPrompt: direction, fewest presses, most recent first', () => {
+  // Abstract pieces on outlines 0..n-1 (bottom first); `ov` says which pairs overlap.
+  const P = (ids: string[]) => ids.map((id) => pc(id, 'x', 0, 0));
+  const pairs = (list: string[][]) => (a: OutlinePiece, b: OutlinePiece) => list.some(([x, y]) => (x === a.id && y === b.id) || (x === b.id && y === a.id));
+
+  it('a piece on top that belongs underneath: Send it back, as many presses as overlapping pieces it must pass', () => {
+    // Word order a, b, c, d (outline indices). Board: a, b, c, then d... no: d is placed at index 0 but sits on top.
+    const filled = ['d', 'a', 'b', 'c'];
+    const ov = pairs([['d', 'a'], ['d', 'b'], ['d', 'c'], ['a', 'b']]);
+    const p = stackPrompt(filled, P(['a', 'b', 'c', 'd']), ov, ['a', 'b', 'c', 'd'])!;
+    expect([p.id, p.dir, p.presses, p.order]).toEqual(['d', 'back', 3, ['d', 'a', 'b', 'c']]);
+  });
+
+  it('a non-overlapping piece in between costs no press (overlap-aware)', () => {
+    const filled = ['d', 'a', 'b', 'c'];
+    const ov = pairs([['d', 'a'], ['d', 'c']]); // b does not overlap d
+    const p = stackPrompt(filled, P(['a', 'b', 'c', 'd']), ov, ['a', 'b', 'c', 'd'])!;
+    expect([p.id, p.dir, p.presses]).toEqual(['d', 'back', 2]);
+  });
+
+  it('the direction needing fewer presses wins when both could fix it', () => {
+    // Word: x (0) below y (1) below z (2), all overlapping. Board: y, z, x. The most recent placed is z.
+    // z: must be above x and y -> Bring forward 1 press. Ties on recency aside, x (most recent) is checked first:
+    const ov = () => true;
+    const p = stackPrompt(['x', 'y', 'z'], P(['y', 'z', 'x']), ov, ['y', 'z', 'x'])!;
+    expect([p.id, p.dir, p.presses], 'x: Send back past z and y is 2; nothing forward').toEqual(['x', 'back', 2]);
+    // Board z, x, y with z most recent: z must go forward past x and y (2), never back (already at the bottom).
+    const q = stackPrompt(['x', 'y', 'z'], P(['z', 'x', 'y']), ov, ['x', 'y', 'z'])!;
+    expect([q.id, q.dir, q.presses]).toEqual(['z', 'forward', 2]);
+    // Board x, z, y with y most recent: y must be below z: back 1 (forward is impossible: it is on top).
+    const r = stackPrompt(['x', 'y', 'z'], P(['x', 'z', 'y']), ov, ['x', 'z', 'y'])!;
+    expect([r.id, r.dir, r.presses]).toEqual(['y', 'back', 1]);
+    // Same board, z most recent: z must be above y: forward 1.
+    const t = stackPrompt(['x', 'y', 'z'], P(['x', 'z', 'y']), ov, ['x', 'y', 'z'])!;
+    expect([t.id, t.dir, t.presses]).toEqual(['z', 'forward', 1]);
+  });
+
+  it('several mis-stacked: the most recently placed one first', () => {
+    const ov = pairs([['a', 'b'], ['c', 'd']]);
+    // Word a, b, c, d. Board: b, a, d, c: both pairs wrong. Placed in the order b, a, d, c.
+    const p = stackPrompt(['a', 'b', 'c', 'd'], P(['b', 'a', 'd', 'c']), ov, ['b', 'a', 'd', 'c'])!;
+    expect([p.id, p.dir]).toEqual(['c', 'back']);
+    const q = stackPrompt(['a', 'b', 'c', 'd'], P(['b', 'a', 'd', 'c']), ov, ['d', 'c', 'b', 'a'])!;
+    expect([q.id, q.dir]).toEqual(['a', 'back']);
+    expect(stackPrompt(['a', 'b', 'c', 'd'], P(['a', 'b', 'c', 'd']), ov, [])).toBeNull();
+  });
+
+  it('a tangle (no single piece can be put right): the shortest press sequence is prompted, one piece at a time', () => {
+    // Word a (0), b (1), c (2), d (3); overlaps a-b, b-c, c-d only. Board c, d, a, b: b is above c but belongs below it. b
+    // sent back passes a first (wrong then); c brought forward passes d first (wrong then). Three presses fix it: b back
+    // twice (past a, then c), then a back once. The prompt is the first piece's run; the rest is prompted after.
+    const ov = pairs([['a', 'b'], ['b', 'c'], ['c', 'd']]);
+    const p = stackPrompt(['a', 'b', 'c', 'd'], P(['c', 'd', 'a', 'b']), ov, ['c', 'd', 'a', 'b'])!;
+    expect([p.id, p.dir, p.presses, p.order]).toEqual(['b', 'back', 2, ['b', 'c', 'd', 'a']]);
+    const q = stackPrompt(['a', 'b', 'c', 'd'], P(p.order), ov, ['c', 'd', 'a', 'b'])!;
+    expect([q.id, q.dir, q.presses, q.order]).toEqual(['a', 'back', 1, ['a', 'b', 'c', 'd']]);
+  });
+
+  it('a piece that cannot be put right by itself yields to one that can', () => {
+    // Word: l (0), p (1), u (2). p overlaps l and u; l and u do not overlap each other. Board: u, l, p (p on top). p must
+    // sit above l and below u, but u is below l: p alone cannot. Moving u forward past p fixes u's own pair.
+    const ov = pairs([['p', 'l'], ['p', 'u']]);
+    const s = stackPrompt(['l', 'p', 'u'], P(['u', 'l', 'p']), ov, ['l', 'u', 'p'])!;
+    expect([s.id, s.dir, s.presses]).toEqual(['u', 'forward', 1]);
   });
 });
 
@@ -378,7 +529,7 @@ describe('step 0 (v1.2.1): a board that already has pieces', () => {
 
   it('Clear and start: step 1 on the blank board; their pieces are remembered as theirs, nothing is kept', () => {
     const s = answerAsk(askGuide(), 'clear', C, world([]), ['m1', 'm2']);
-    expect([s.step, s.phase, s.kept, s.theirs, s.built, activeOutlines(s)]).toEqual([1, 'c', false, ['m1', 'm2'], [], [0]]);
+    expect([s.step, s.phase, s.kept, s.theirs, s.built, activeOutlines(s)]).toEqual([1, 'c', false, ['m1', 'm2'], [], [1]]);
     expect(s.letter).toBe(C);
   });
 
@@ -432,14 +583,14 @@ describe('guide-built pieces and the scoped clear (v1.2.1)', () => {
   it('after Keep: every guide clear removes ONLY the guide-built pieces (the c at Guide me and Clear for free play, the word at Start fresh)', () => {
     let s = answerAsk(askGuide(), 'keep', C, world(mine), ['m1', 'm2']);
     s = observeGuide(recordBuilt(s, ['a', 'b', 'w']), world([...mine, ...cPieces]));
-    expect(s.step).toBe(4);
+    expect(s.step).toBe(5);
     const extra = pc('x', 'negative-stem', 2000, 0); // added by the visitor during the guide, not clicked in: theirs
     expect(guideClearPlan(s, [...mine, ...cPieces, extra])).toEqual({ all: false, ids: ['a', 'b', 'w'] });
     // Guide me, then the word filled: Start fresh removes the word's pieces only.
     let t = chooseWord(s, WORD, world([...mine, extra]));
     const wordPieces = WORD.map((o, i) => on(`k${i}`, o));
     t = observeGuide(recordBuilt(t, wordPieces.map((p) => p.id)), world([...mine, extra, ...wordPieces]));
-    expect(t.step).toBe(6);
+    expect(t.step).toBe(7);
     expect(guideClearPlan(t, [...mine, extra, ...wordPieces])).toEqual({ all: false, ids: ['k0', 'k1', 'k2', 'k3'] });
     // The c brought back by an undo during the word is still guide-built.
     expect(guideClearPlan(t, [...mine, ...cPieces, ...wordPieces])).toEqual({ all: false, ids: ['a', 'b', 'w', 'k0', 'k1', 'k2', 'k3'] });
@@ -557,37 +708,41 @@ describe('frameBeside: both in view, or the outlines first (v1.2.1)', () => {
 });
 
 describe('phones: the word one section at a time (v1.2.2)', () => {
-  const at4 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
+  const at5 = () => observeGuide(startGuide(C, world([])), world([on('a', C[0]), on('b', C[1]), on('w', C[2])]));
   // Two sections: the stem and the round with its negative round (indices 0 to 2), then the wedge (index 3).
   const SECTIONS = [[0, 2, 1], [3]];
   const ps = (...is: number[]) => is.map((i) => on(`p${i}`, WORD[i]));
 
   it('only the current section shows and accepts pieces; it moves on when complete; progress counts the whole word', () => {
-    let s = chooseWord(at4(), WORD, world([]), SECTIONS);
-    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s)]).toEqual([5, 0, [0, 1, 2], { done: 0, total: 4 }]);
+    let s = chooseWord(at5(), WORD, world([]), SECTIONS);
+    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s)]).toEqual([6, 0, [0, 1, 2], { done: 0, total: 4 }]);
     // A wedge dropped right on the (hidden) next section's outline does not click in.
     expect(guideClickIn(s, world([pc('w', 'wedge', 701, 31, 40)]), ['w'])).toBeNull();
     s = observeGuide(s, world(ps(2)));
     expect([currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([0, [0, 1], 1]);
     expect(nextOutline(s), 'Next: the lowest outline of the CURRENT section').toBe(0);
+    // All three placed, but the round landed on top of its negative round: the section is not complete until it is restacked.
     s = observeGuide(s, world(ps(2, 0, 1)));
-    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([5, 1, [3], 3]);
+    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done, s.stack?.id]).toEqual([6, 0, [], 1, 'p1']);
+    expect(nextAction(s)?.kind, 'Next restacks it').toBe('stack');
+    s = observeGuide(s, world(ps(1, 2, 0)));
+    expect([s.step, currentSection(s), activeOutlines(s), guideProgress(s).done]).toEqual([6, 1, [3], 3]);
     expect(nextOutline(s)).toBe(3);
-    expect(guideClickIn(s, world([...ps(2, 0, 1), pc('w', 'wedge', 701, 31, 40)]), ['w'])!.placements.map((p) => p.outline)).toEqual([3]);
+    expect(guideClickIn(s, world([...ps(1, 2, 0), pc('w', 'wedge', 701, 31, 40)]), ['w'])!.placements.map((p) => p.outline)).toEqual([3]);
     s = observeGuide(s, world(ps(0, 1, 2, 3)));
-    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([6, -1, []]);
+    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([7, -1, []]);
   });
 
   it('undo back across a section boundary returns to the earlier section (derived from the board)', () => {
     const h = new History<readonly OutlinePiece[]>([]);
-    let s = chooseWord(at4(), WORD, world([]), SECTIONS);
+    let s = chooseWord(at5(), WORD, world([]), SECTIONS);
     for (const i of [0, 1, 2, 3]) {
       h.record([...h.present, ...ps(i)]);
       s = observeGuide(s, world(h.present));
     }
-    expect(s.step).toBe(6);
+    expect(s.step).toBe(7);
     s = observeGuide(s, world(h.undo()!)); // the wedge goes: section 2 again
-    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([5, 1, [3]]);
+    expect([s.step, currentSection(s), activeOutlines(s)]).toEqual([6, 1, [3]]);
     s = observeGuide(s, world(h.undo()!)); // the negative round goes: back into section 1
     expect([currentSection(s), activeOutlines(s)]).toEqual([0, [2]]);
     s = observeGuide(s, world(h.redo()!));
@@ -595,18 +750,18 @@ describe('phones: the word one section at a time (v1.2.2)', () => {
   });
 
   it('switching layouts mid-step keeps progress: sections on and off, filled outlines stay filled', () => {
-    let s = observeGuide(chooseWord(at4(), WORD, world([]), SECTIONS), world(ps(3)));
+    let s = observeGuide(chooseWord(at5(), WORD, world([]), SECTIONS), world(ps(3)));
     expect([activeOutlines(s), guideProgress(s).done]).toEqual([[0, 1, 2], 1]); // the wedge, filled early, still counts
     const desk = withSections(s, null, world(ps(3)));
-    expect([desk.sections, desk.step, activeOutlines(desk), guideProgress(desk).done]).toEqual([null, 5, [0, 1, 2], 1]);
+    expect([desk.sections, desk.step, activeOutlines(desk), guideProgress(desk).done]).toEqual([null, 6, [0, 1, 2], 1]);
     s = withSections(desk, SECTIONS, world(ps(3)));
     expect([currentSection(s), activeOutlines(s)]).toEqual([0, [0, 1, 2]]);
-    expect(withSections(at4(), SECTIONS, world([])).sections, 'only in the word phase').toBeNull();
+    expect(withSections(at5(), SECTIONS, world([])).sections, 'only in the word phase').toBeNull();
   });
 
   it('sections that do not cover every outline exactly once fall back to the whole word', () => {
     for (const bad of [[[0, 1], [3]], [[0, 1, 2], [2, 3]], [[0, 1, 2, 3], []], [[0, 1, 2, 9], [3]]]) {
-      const s = chooseWord(at4(), WORD, world([]), bad);
+      const s = chooseWord(at5(), WORD, world([]), bad);
       expect([s.sections, activeOutlines(s)]).toEqual([null, [0, 1, 2, 3]]);
     }
   });
