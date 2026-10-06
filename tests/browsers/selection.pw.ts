@@ -566,7 +566,7 @@ test.describe('phone', () => {
       const rect = (e: Element) => e.getBoundingClientRect().toJSON() as { x: number; y: number; width: number; height: number; name?: string };
       const ui = rect(sr.querySelector('[data-selection-box]')!);
       const others: { name: string; r: ReturnType<typeof rect> }[] = [];
-      for (const [name, sel] of [['tray', '.tray'], ['view', '.dock > .view'], ['actions', '.dock > .block']]) {
+      for (const [name, sel] of [['tray', '.tray'], ['view', '.dock > .view'], ['vmenu', '.dock > .vmenu'], ['actions', '.dock > .block']]) {
         const e = sr.querySelector<HTMLElement>(sel)!;
         if (!e.hidden && getComputedStyle(e).display !== 'none') others.push({ name, r: rect(e) });
       }

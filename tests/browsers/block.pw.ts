@@ -121,7 +121,7 @@ test('the block: X, Undo, Redo, Back, Forward left to right, icons with tooltips
   expect(b[4].svg).toContain('M12 21V4M5 11l7-7 7 7');
   expect(b.map((x) => x.disabled), 'no selection: X on (pieces on the board), Back and Forward off').toEqual([false, false, true, true, true]);
   await expect(el(page, '.actions, .history, [data-action], [data-history]')).toHaveCount(0);
-  if (isMobile) await expect(el(page, '.dock > .view')).toBeVisible(); // the top shows only the view group
+  if (isMobile) { await expect(el(page, '.dock > .view')).toBeVisible(); await expect(el(page, '.dock > .vmenu')).toBeVisible(); } // the top shows the zoom/fit group (left) and the menu button (right)
   await expectClean(page, 'no selection');
   if (nm === 'desktop') await page.screenshot({ path: `${SHOT}/v150-block-desktop-noselect.png` });
 

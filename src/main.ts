@@ -200,6 +200,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 }
 .dock > * { pointer-events: auto; }
 .view { margin-left: auto; }
+.vmenu { margin-left: 0; }
 .exportmenu { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 4px; }
 .exportmenu[hidden], .linkbox[hidden], .notice [hidden] { display: none; }
 .notice { flex: 0 0 100%; display: flex; pointer-events: none; }
@@ -306,6 +307,8 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
    tray. The dock spans the board (it lets every press through), its rows packed at the top; the block is pinned to its foot.
    The notice and the share fallback field wrap onto a row below the view group (order). */
 [data-compact] .dock { left: calc(8px + var(--sal)); right: calc(8px + var(--sar)); top: calc(8px + var(--sat)); bottom: 8px; align-items: flex-start; align-content: flex-start; gap: 6px; }
+[data-compact] .dock > .view { margin-left: 0; }
+[data-compact] .dock > .vmenu { margin-left: auto; } /* v1.5.1: zoom out / Fit / zoom in at the top LEFT, the menu button alone at the top RIGHT */
 [data-compact] .dock > .notice, [data-compact] .dock > .linkbox { order: 2; }
 [data-compact] .dock > .block { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); max-width: 100%; }
 /* The letters sheet covers the bottom of the board: the block hides while it is open (the selection stays). */
@@ -313,7 +316,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] .msg { font-size: 12px; }
 /* The share, export, letters and help buttons live in the menu on phones; the menu button exists only there. */
 [data-compact] .share, [data-compact] [data-view=suggest], [data-compact] [data-view=help] { display: none; }
-.root:not([data-compact]) [data-view=menu], .root:not([data-compact]) .menu { display: none; }
+.root:not([data-compact]) .vmenu, .root:not([data-compact]) .menu { display: none; }
 .menu { position: absolute; z-index: 6; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 3px; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
 .menu[hidden] { display: none; }
 .menu button.b { justify-content: flex-start; gap: 12px; padding: 0 16px 0 10px; white-space: nowrap; text-align: left; }
@@ -699,6 +702,8 @@ export class FridgeFace extends HTMLElement {
             ${btn('data-view="in" aria-label="Zoom in"', '+', 'zoom-in')}
             ${btn('data-view="suggest" aria-label="Letter suggestions" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="L" hidden', 'Letters', 'letters')}
             ${btn('data-view="help" aria-label="Controls" aria-haspopup="dialog" aria-keyshortcuts="?"', '?', 'help')}
+          </div>
+          <div class="vmenu panel" role="group" aria-label="Menu">
             ${btn('data-view="menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false" aria-controls="ff-menu"', 'Menu', 'menu')}
           </div>
         </div>
@@ -825,7 +830,7 @@ export class FridgeFace extends HTMLElement {
     this.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     // Safari reports trackpad pinch as proprietary gesture events; the page must never zoom.
     for (const t of ['gesturestart', 'gesturechange', 'gestureend']) this.addEventListener(t, (e) => e.preventDefault());
-    wrap.querySelector('.view')!.addEventListener('click', (e) => {
+    for (const grp of wrap.querySelectorAll('.view, .vmenu')) grp.addEventListener('click', (e) => {
       const v = (e.target as HTMLElement).closest('button')?.dataset.view;
       if (v === 'in') this.zoomBy(BUTTON_ZOOM);
       else if (v === 'out') this.zoomBy(1 / BUTTON_ZOOM);
@@ -1496,7 +1501,7 @@ export class FridgeFace extends HTMLElement {
     if (!this.isCompact) return 0;
     const board = this.boardEl.getBoundingClientRect();
     let bottom = 0;
-    for (const p of this.dockEl.querySelectorAll<HTMLElement>(':scope > .view')) bottom = Math.max(bottom, p.getBoundingClientRect().bottom);
+    for (const p of this.dockEl.querySelectorAll<HTMLElement>(':scope > .view, :scope > .vmenu')) bottom = Math.max(bottom, p.getBoundingClientRect().bottom);
     return bottom > board.top ? (bottom - board.top + 8) / this.k : 0;
   }
 
@@ -3704,8 +3709,8 @@ export class FridgeFace extends HTMLElement {
     const pad = SECTION_FRAME_PAD;
     const hardBase = bar ? [...obstacles, bar] : [...obstacles];
     // The docks (phones: along the top) block only where they are: the board between them is free (landscape).
-    // Portrait (v1.5.0): the view group alone sits at the top right, but the strip it stands in is kept for the callout (it
-    // steps up there beside the group when a rotate handle pushes it), so the whole strip counts as the dock, as when the
+    // Portrait (v1.5.1): the two top groups stand left and right, but the strip they stand in is kept for the callout (it
+    // steps up there between the groups when a rotate handle pushes it), so the whole strip counts as the dock, as when the
     // undo group stood at its left.
     const band = (r: Rect): Rect => (this.isLandscape ? r : { x: bounds.x, y: r.y, w: bounds.w, h: r.h });
     const docks = obstacles.filter((r) => !bar || !rectsOverlap(r, bar)).map((r) => grow(band(r), 6));
@@ -4034,7 +4039,10 @@ export class FridgeFace extends HTMLElement {
     let best: { w: number; pick: GuideTarget; p: ReturnType<typeof placeCallout>; n: number; a: number; rank: number } | null = null;
     // Phones in portrait (v1.5.0): one narrower form still, the last resort before covering a control (a rotate handle
     // pushed it out of its room; the strip beside the view group at the top fits it). Placement only: framing never plans for it.
-    const NARROW = 180;
+    // v1.5.1: the strip is now between the zoom group (left) and the menu button (right), so this form is as wide as that gap (180 at most).
+    const gapL = this.dockEl.querySelector<HTMLElement>(':scope > .view')?.getBoundingClientRect().right ?? 0;
+    const gapR = this.dockEl.querySelector<HTMLElement>(':scope > .vmenu')?.getBoundingClientRect().left ?? 0;
+    const NARROW = Math.max(150, Math.min(180, Math.floor(gapR - gapL - 4)));
     const tryWidths = this.isCompact && !this.isLandscape ? [...widths, NARROW] : widths;
     for (const w of tryWidths) {
       if (w === NARROW && best && best.rank >= 6) break; // only when nothing wider stays clear of every control

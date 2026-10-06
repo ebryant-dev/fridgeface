@@ -56,6 +56,7 @@ async function boxes(page: Page) {
     add('tray', '.tray');
     add('shape', '.tray button[data-shape]');
     add('view', '.dock > .view');
+    add('vmenu', '.dock > .vmenu'); // v1.5.1: the menu button alone, top right
     add('actions', '.dock > .block'); // the bottom button block (v1.5.0), always showing
     add('menu', '.menu');
     add('sugg', '.sugg');
@@ -120,10 +121,17 @@ test('phone: docks on top, button block just above the tray, menu opens downward
     // idle
     let s = await expectClean(page, `${tag} idle`);
     expectLandscapeTray(s, `${tag} idle`);
-    const dock = [by(s.boxes, 'view')!]; // v1.5.0: only the view group at the top
+    const dock = [by(s.boxes, 'view')!, by(s.boxes, 'vmenu')!]; // v1.5.1: zoom/fit group top LEFT, the menu button alone top RIGHT
     expect.soft(Math.min(...dock.map((r) => r.y)), `${tag} docks at the top`).toBeLessThan(20);
     expect.soft(by(s.boxes, 'actions'), `${tag} the button block shows with nothing selected`).toBeDefined();
-    expect.soft(by(s.boxes, 'view')!.x + by(s.boxes, 'view')!.width, `${tag} view group on the right`).toBeGreaterThan(z.w - 20);
+    const vw = by(s.boxes, 'view')!, vm = by(s.boxes, 'vmenu')!;
+    const boardLeft = land ? by(s.boxes, 'tray')!.x + by(s.boxes, 'tray')!.width : 0;
+    expect.soft(vw.x - boardLeft, `${tag} zoom/fit group at the board's top left (inside the safe area)`).toBeLessThan(24);
+    expect.soft(vm.x + vm.width, `${tag} menu button at the top right`).toBeGreaterThan(z.w - 20);
+    expect.soft(vw.x + vw.width, `${tag} the two top groups do not overlap`).toBeLessThanOrEqual(vm.x);
+    expect.soft(vw.width, `${tag} zoom out, Fit, zoom in: three buttons only (menu is separate)`).toBeLessThan(vm.x - vw.x);
+    const order = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<HTMLElement>('.dock > .view button, .dock > .vmenu button')].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.dataset.view));
+    expect.soft(order.join(' '), `${tag} reading / Tab order`).toBe('out fit in menu');
 
     // selected
     await addPiece(page, isMobile);
@@ -214,7 +222,7 @@ test('phone: Fit and the intro centre in the visible board, below the docks', as
       const rs = [...sr.querySelectorAll('[data-pieces] > [data-piece-id]')].map((g) => g.getBoundingClientRect());
       const top = Math.min(...rs.map((r) => r.top));
       const bottom = Math.max(...rs.map((r) => r.bottom));
-      const dockBottom = Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom));
+      const dockBottom = Math.max(...[...sr.querySelectorAll('.dock > .view, .dock > .vmenu')].map((p) => p.getBoundingClientRect().bottom));
       // The visible board ends at the tray (portrait) or at the board's bottom (landscape: the tray is on the left).
       const board = sr.querySelector('.board')!.getBoundingClientRect();
       const tray = sr.querySelector('.tray')!.getBoundingClientRect();
@@ -273,7 +281,7 @@ test('phone: a suggestion placed from the letters sheet lands below the docks an
       n: rs.length,
       top: Math.min(...rs.map((r) => r.top)),
       bottom: Math.max(...rs.map((r) => r.bottom)),
-      dockBottom: Math.max(...[...sr.querySelectorAll('.dock > .view')].map((p) => p.getBoundingClientRect().bottom)),
+      dockBottom: Math.max(...[...sr.querySelectorAll('.dock > .view, .dock > .vmenu')].map((p) => p.getBoundingClientRect().bottom)),
       // The visible board ends at the tray (portrait) or at the board's bottom (landscape: the tray is on the left).
       trayTop: (() => { const b = sr.querySelector('.board')!.getBoundingClientRect(), t = sr.querySelector('.tray')!.getBoundingClientRect(); return t.top > b.top ? t.top : b.bottom; })(),
       left: Math.min(...rs.map((r) => r.left)),
