@@ -29,23 +29,23 @@ export interface ShadowSpec {
 /** Fraction of a layer's half-width it is pushed along the shadow direction (< 1 keeps the no-rim rule). */
 export const SPREAD = 0.7;
 
-/** Resting magnet: short, soft, down-right. Profile fitted to the reference diagrams. */
-export const REST_SHADOW: ShadowSpec = { dx: 1.2, dy: 1.8, core: 0.22, layers: [[5, 0.18], [10, 0.115], [16, 0.075], [22, 0.05]] };
+/** Resting magnet: short, soft, down-right. Profile fitted to the reference diagrams, then (v1.4.1) offset, spread and opacity all x 0.75. */
+export const REST_SHADOW: ShadowSpec = { dx: 0.9, dy: 1.35, core: 0.165, layers: [[3.75, 0.135], [7.5, 0.08625], [12, 0.05625], [16.5, 0.0375]] };
 /** Lifted (being dragged / rotated / twisted): further and softer. */
-export const LIFT_SHADOW: ShadowSpec = { dx: 3.5, dy: 5.5, core: 0.15, layers: [[12, 0.13], [22, 0.09], [32, 0.06], [44, 0.04]] };
+export const LIFT_SHADOW: ShadowSpec = { dx: 2.625, dy: 4.125, core: 0.1125, layers: [[9, 0.0975], [16.5, 0.0675], [24, 0.045], [33, 0.03]] };
 /**
  * Each soft layer is split in this many on screen (8 strokes + 1 core): 4 steps band visibly on
  * high-DPR screens. Exports split further (see subdivide).
  */
 export const SCREEN_SPLIT = 2;
 /** How far a lifted piece shifts up-left, shadow px (it scales with the shadow). */
-export const LIFT_SHIFT = 1.5;
+export const LIFT_SHIFT = 1.125; // v1.4.1: x 0.75 with the shadow
 export const LIFT_MS = 140;
 
 /** Board units per shadow px: the reference view is 1 / this = 0.4 CSS px per board unit (the default desktop zoom). Exports use it. */
 export const SHADOW_BOARD_SCALE = 2.5;
 /** The shadow's on-screen size, as a multiple of its reference size, is clamped to [SHADOW_MIN, SHADOW_MAX]. */
-export const SHADOW_MIN = 0.45; // zoomed far out: the resting offset stays ~1 px (0.45 x 2.16 px), a faint contact edge
+export const SHADOW_MIN = 0.45; // zoomed far out: the resting offset stays ~1 px (0.45 x 1.62 px), a faint contact edge
 export const SHADOW_MAX = 1.5; // zoomed far in: at most the default-zoom shadow x 1.5
 
 /**

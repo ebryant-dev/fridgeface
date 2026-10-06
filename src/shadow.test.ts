@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  LIFT_SHADOW, REST_SHADOW, SCREEN_SPLIT, SHADOW_BOARD_SCALE, SHADOW_MAX, SHADOW_MIN, SPREAD, layerPush, shadowCss, shadowFactor, shadowLayersMarkup, shadowReach,
+  LIFT_SHADOW, LIFT_SHIFT, REST_SHADOW, SCREEN_SPLIT, SHADOW_BOARD_SCALE, SHADOW_MAX, SHADOW_MIN, SPREAD, layerPush, shadowCss, shadowFactor, shadowLayersMarkup, shadowReach,
   shadowUnit, staticShadowMarkup, subdivide,
 } from './shadow';
 import { EXPORT_SHADOW_SCALE } from './export';
@@ -9,6 +9,15 @@ describe('shadows', () => {
   it('never use filters', () => {
     expect(shadowCss()).not.toMatch(/filter/);
     expect(staticShadowMarkup('<path d="M0 0" {a}/>', 2.5)).not.toMatch(/filter/);
+  });
+
+  it('v1.4.1: offset, spread and opacity are 75% of the v1.4.0 values', () => {
+    const old = { rest: { dx: 1.2, dy: 1.8, core: 0.22, layers: [[5, 0.18], [10, 0.115], [16, 0.075], [22, 0.05]] }, lift: { dx: 3.5, dy: 5.5, core: 0.15, layers: [[12, 0.13], [22, 0.09], [32, 0.06], [44, 0.04]] } };
+    for (const [now, was] of [[REST_SHADOW, old.rest], [LIFT_SHADOW, old.lift]] as const) {
+      expect([now.dx, now.dy, now.core]).toEqual([was.dx * 0.75, was.dy * 0.75, was.core * 0.75].map((n) => expect.closeTo(n, 9)));
+      now.layers.forEach(([w, a], i) => { expect(w).toBeCloseTo(was.layers[i][0] * 0.75, 9); expect(a).toBeCloseTo(was.layers[i][1] * 0.75, 9); });
+    }
+    expect(LIFT_SHIFT).toBeCloseTo(1.125, 9);
   });
 
   it('fall down-right, and grow and soften when lifted', () => {
@@ -61,13 +70,13 @@ describe('shadows', () => {
       expect(shadowReach(REF * 0.5).extent).toBeCloseTo(shadowReach(REF).extent * 0.5, 9);
     });
 
-    it('caps the on-screen size zoomed far in, and keeps a faint ~1 px contact edge zoomed far out', () => {
+    it('caps the on-screen size zoomed far in, and keeps a faint contact edge (under 1 px since v1.4.1) zoomed far out', () => {
       expect(SHADOW_MAX).toBeCloseTo(1.5, 9);
       for (const z of [1.5, 2, 4, 40]) expect(shadowFactor(REF * z)).toBeCloseTo(SHADOW_MAX, 9);
       for (const z of [0.45, 0.25, 0.1, 0.001]) expect(shadowFactor(REF * z)).toBeCloseTo(SHADOW_MIN, 9);
       const far = shadowReach(REF * 0.01);
-      expect(far.offset).toBeGreaterThanOrEqual(0.9); // about one screen px of contact edge
-      expect(far.offset).toBeLessThanOrEqual(1.2);
+      expect(far.offset).toBeGreaterThanOrEqual(0.65); // about 3/4 of a screen px of contact edge (the v1.4.1 shadows are x 0.75)
+      expect(far.offset).toBeLessThanOrEqual(0.9);
       // In board units the clamps hold the on-screen size: shadowUnit x pxPerUnit = the factor.
       expect(shadowUnit(REF * 4) * REF * 4).toBeCloseTo(SHADOW_MAX, 9);
       expect(shadowUnit(REF * 0.1) * REF * 0.1).toBeCloseTo(SHADOW_MIN, 9);
@@ -77,8 +86,8 @@ describe('shadows', () => {
 
     it('the lift scales the same way (one --px for both)', () => {
       const css = shadowCss();
-      expect(css).toMatch(/\.lifted \.sh \{ transform: translate\(calc\(3\.5 \* var\(--px\)\)/);
-      expect(css).toMatch(/\.lifted \.bd \{ transform: translate\(calc\(-1\.5 \* var\(--px\)\)/);
+      expect(css).toMatch(/\.lifted \.sh \{ transform: translate\(calc\(2\.625 \* var\(--px\)\)/);
+      expect(css).toMatch(/\.lifted \.bd \{ transform: translate\(calc\(-1\.125 \* var\(--px\)\)/);
     });
   });
 });

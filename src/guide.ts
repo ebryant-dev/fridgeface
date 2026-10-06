@@ -200,16 +200,6 @@ export function activeOutlines(s: GuideState): number[] {
   return [];
 }
 
-/**
- * Step 6: the word's other unfilled outlines (not in the current batch): drawn very faintly as context on desktop, never
- * active (they accept no piece and the callout need not keep clear of them). Empty in every other step.
- */
-export function contextOutlines(s: GuideState): number[] {
-  if (s.phase !== 'word' || s.step !== 6) return [];
-  const active = new Set(activeOutlines(s));
-  return activeIndices(s.filled).filter((i) => !active.has(i));
-}
-
 type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent'>;
 const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent });
 

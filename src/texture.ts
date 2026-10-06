@@ -10,9 +10,9 @@
 
 /**
  * The BOARD's base tone. v0.4.0 lightened it from rgb(208,206,203) to roughly halve the gap to the negative shapes
- * (#e6e7e8), so they read as white magnets on a light door with less (but still clearly visible) contrast.
+ * (#e6e7e8), so they read as white magnets on a light door with less (but still clearly visible) contrast. v1.4.1 halved the gap again, to rgb(223,222,219).
  */
-export const TEXTURE_BASE: readonly [number, number, number] = [216, 215, 212];
+export const TEXTURE_BASE: readonly [number, number, number] = [223, 222, 219];
 /** The TRAY's base tone: the original reference tone (mean of empty texture, ~rgb(197,195,192)), unchanged in v0.4.0. */
 export const TRAY_TEXTURE_BASE: readonly [number, number, number] = [208, 206, 203];
 /** Texels per tile side. */

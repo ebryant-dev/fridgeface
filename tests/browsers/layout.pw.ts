@@ -177,7 +177,8 @@ test('rotation snapping is gone: no snap or 15 degree buttons on any layout; the
   const labels = await page.locator('fridge-face .actions button').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
   expect(labels).toEqual(['Delete piece', 'Bring forward', 'Send backward']);
   // Nothing about snapping or 15 degree steps anywhere in the toy, including the Controls dialog.
-  const text = await page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.innerHTML);
+  // (Data URLs stripped: the texture tiles are base64 JPEGs, which can contain any letters by chance, "snap" included, v1.4.1.)
+  const text = (await page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.innerHTML)).replace(/data:[a-z/+]+;base64,[A-Za-z0-9+/=]+/g, 'data:');
   expect(text).not.toMatch(/snap|15\u00b0|15°|15 degree/i);
 });
 

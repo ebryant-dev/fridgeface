@@ -13,18 +13,20 @@ describe('texturePixels', () => {
     for (let i = 0; i < n * n; i++) { const l = lum(px, i); s += l; s2 += l * l; }
     const mean = s / (n * n), sd = Math.sqrt(s2 / (n * n) - mean * mean);
     expect(Math.abs(mean - (0.299 * TEXTURE_BASE[0] + 0.587 * TEXTURE_BASE[1] + 0.114 * TEXTURE_BASE[2]))).toBeLessThan(2);
-    expect(mean).toBeLessThan(0xe6 - 12); // still clearly darker than the negative shapes
+    expect(mean).toBeLessThan(0xe6 - 6); // still visibly darker than the negative shapes (v1.4.1 halved the gap again)
     expect(sd).toBeGreaterThan(3);
     expect(sd).toBeLessThan(9);
   });
 
-  it('board is lighter than before (gap to #e6e7e8 roughly halved); the tray keeps the original tone and the same texture', () => {
+  it('board is lighter than before (v1.4.1: gap to #e6e7e8 halved again, from the v0.4.0 base 216,215,212); the tray keeps the original tone and the same texture', () => {
     const l = (c: readonly number[]) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
     const neg = l([0xe6, 0xe7, 0xe8]);
     expect(TRAY_TEXTURE_BASE).toEqual([208, 206, 203]);
-    const oldGap = neg - l(TRAY_TEXTURE_BASE), newGap = neg - l(TEXTURE_BASE);
-    expect(newGap).toBeGreaterThan(oldGap * 0.5);
-    expect(newGap).toBeLessThan(oldGap * 0.7);
+    expect(TEXTURE_BASE).toEqual([223, 222, 219]);
+    const oldGap = neg - l([216, 215, 212]), newGap = neg - l(TEXTURE_BASE);
+    expect(newGap).toBeGreaterThan(oldGap * 0.45);
+    expect(newGap).toBeLessThan(oldGap * 0.6);
+    expect(newGap, 'the white pieces still read').toBeGreaterThan(6);
     // Same character: the two tones differ by a constant offset per channel (barring clamping, which never happens here).
     const tray = texturePixels(o, TRAY_TEXTURE_BASE);
     for (let i = 0; i < n * n; i += 97) for (let c = 0; c < 3; c++) expect(px[i * 4 + c] - tray[i * 4 + c]).toBe(TEXTURE_BASE[c] - TRAY_TEXTURE_BASE[c]);

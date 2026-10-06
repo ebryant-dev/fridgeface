@@ -18,7 +18,7 @@ import { columnTrayScale, layoutState } from './layout';
 import {
   GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
   findWordC, placeWordC, type WordC,
-  contextOutlines, currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
+  currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
   observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type CalloutSide, type GuideState,
   type GuideWorld, type Rect,
 } from './guide';
@@ -105,9 +105,6 @@ const BATCH_SPAN_STEMS = 1.6;
 const BATCH_CONTEXT_STEMS = 0.1;
 /** Desktop, the word's batches: CSS px of air a batch keeps from the visible board's edges before the view moves. */
 const BATCH_DESKTOP_PAD = 48;
-/** Desktop, step 6: the word's other outlines are drawn this faintly (stroke opacity), thinner, as context only. */
-const CONTEXT_OPACITY = 0.2;
-const CONTEXT_PX = 1.5;
 /** Phones, framing: the zoom cap, and the fraction of the zoom that fits the room to use (default 1). */
 interface SectionContext { maxZoom: number; /** CSS px kept free above what is framed (room for a rotate handle on the board), and the zoom it may not push below. */ vpad?: number; minZoom?: number; /** Fraction of the zoom that fits the room to use (default 1): spare room for the callout to step aside into. */ slack?: number }
 /** Phones, the guide's c: it uses this share of the zoom that just fits the room, so the callout can step aside (a rotate handle pushes it) without covering the c. */
@@ -3501,34 +3498,28 @@ export class FridgeFace extends HTMLElement {
     this.outlineZoom = this.view.zoom;
     const s = this.guide;
     const active = s.step ? activeOutlines(s) : [];
-    // Desktop, step 6: the rest of the word, very faint, so the visitor sees what the batches are building (phones show the
-    // current batch alone: their close-up has no room for it). Context only: never a target, never clicked into.
-    const context = s.step && !this.isCompact ? contextOutlines(s) : [];
     layer.replaceChildren();
-    if (!active.length && !context.length) return;
+    if (!active.length) return;
     const k = this.k * this.view.zoom; // CSS px per board unit
-    const draw = (i: number, ctx: boolean) => {
+    const draw = (i: number) => {
       const o = s.outlines[i];
       const sh = SHAPE_BY_ID.get(o.shapeId);
       if (!sh) return;
       const solid = sh.polarity === 'positive';
-      const w = n3((ctx ? CONTEXT_PX : OUTLINE_PX) / k);
-      const dash = OUTLINE_DASH.map((d) => n3((ctx ? d * 0.7 : d) / k)).join(' ');
+      const w = n3(OUTLINE_PX / k);
+      const dash = OUTLINE_DASH.map((d) => n3(d / k)).join(' ');
       const g = svgEl('g', {
-        [ctx ? 'data-context' : 'data-outline']: String(i), 'data-shape': o.shapeId, 'data-line': solid ? 'solid' : 'dotted',
+        'data-outline': String(i), 'data-shape': o.shapeId, 'data-line': solid ? 'solid' : 'dotted',
         transform: `translate(${n3(o.x)} ${n3(o.y)}) rotate(${n3(o.rotation)}) translate(${n3(-sh.centroid.x)} ${n3(-sh.centroid.y)})`,
       });
-      const look = ctx
-        ? `fill="none" stroke="${OUTLINE_COLOR}" stroke-opacity="${CONTEXT_OPACITY}"`
-        : `fill="${OUTLINE_COLOR}" fill-opacity="0.1" stroke="${OUTLINE_COLOR}"`;
+      const look = `fill="${OUTLINE_COLOR}" fill-opacity="0.1" stroke="${OUTLINE_COLOR}"`;
       g.innerHTML = geometryTemplate(sh).replace(
         '{a}',
         `${look} stroke-width="${w}"${solid ? '' : ` stroke-dasharray="${dash}"`} stroke-linecap="round" stroke-linejoin="round"`,
       );
       layer.append(g);
     };
-    for (const i of context) draw(i, true); // beneath the batch's own outlines
-    for (const i of active) draw(i, false);
+    for (const i of active) draw(i);
   }
 
   /** A board point in client px (through the camera state, not the DOM, which lags by a frame). */
@@ -3630,7 +3621,7 @@ export class FridgeFace extends HTMLElement {
   /**
    * The layout switched between compact and desktop (a phone rotated, a window resized): the batches are the same on every
    * layout (nothing on the board or in the guide changes); only the framing does, so the current batch is framed again,
-   * and the outlines are redrawn (desktop draws the rest of the word faintly as context, phones do not).
+   * and the outlines are redrawn (the same batch outlines on every layout).
    */
   private syncGuideLayout() {
     const s = this.guide;

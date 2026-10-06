@@ -512,20 +512,8 @@ test('outline styles: a positive outline is SOLID and a negative one DOTTED, the
     expect(l.dash, `${l.shape}: a dash pattern`).not.toBe('none');
   }
   for (const l of lines) expect(l.px, 'the same weight').toBeCloseTo(2.75, 1);
-  // Desktop: the rest of the word very faintly, as context (thinner, no fill, never a target); phones: none.
-  const ctx = await page.evaluate(() => {
-    const sr = document.querySelector('fridge-face')!.shadowRoot!;
-    return [...sr.querySelectorAll<SVGGElement>('[data-context]')].map((g) => {
-      const geom = g.querySelector('path, polygon')!;
-      return { line: g.dataset.line, opacity: geom.getAttribute('stroke-opacity'), fill: geom.getAttribute('fill'), events: getComputedStyle(g).pointerEvents };
-    });
-  });
-  if (isMobile) expect(ctx, 'phones: no context outlines').toEqual([]);
-  else {
-    expect(ctx.length, 'desktop: the rest of the word, faintly').toBe(32 - 3 - 1 - CREATE_BATCHES[2].length);
-    for (const c of ctx) expect([c.opacity, c.fill]).toEqual(['0.2', 'none']);
-    expect(new Set(ctx.map((c) => c.line))).toEqual(new Set(['solid', 'dotted']));
-  }
+  // v1.4.1: desktop behaves like phones, only the batch's outlines show (no faint preview of the rest of the word).
+  expect(await contextShown(page), 'no faint context outlines on any layout').toEqual([]);
   if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g6-outline-styles-desktop.png` });
 });
 
@@ -629,9 +617,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
     const batch = CREATE_BATCHES[k];
     const sh = await shown(page);
     expect(sh.idx, `batch ${k}: only its outlines show`).toEqual(batch);
-    const ctx = await contextShown(page);
-    const rest = Array.from({ length: total }, (_, i) => i).filter((i) => i >= 3 && !CREATE_BATCHES.slice(0, k + 1).flat().includes(i));
-    expect(ctx, `batch ${k}: ${isMobile ? 'no context on phones' : 'the rest of the word, faintly, on desktop'}`).toEqual(isMobile ? [] : rest);
+    expect(await contextShown(page), `batch ${k}: no faint preview of the rest of the word`).toEqual([]);
     await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
     const f = await framing(page, batch);
     expect(f.inView, `batch ${k}: its outlines are in view, clear of the docks`).toBe(true);
@@ -1358,7 +1344,7 @@ async function shown(page: Page) {
   });
 }
 
-/** Desktop's faint context outlines (their indices). */
+/** Faint context outlines (their indices): removed in v1.4.1, so always empty; kept to prove it. */
 async function contextShown(page: Page) {
   return page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<SVGGElement>('[data-context]')].map((g) => Number(g.dataset.context)).sort((a, b) => a - b));
 }
@@ -1483,7 +1469,7 @@ test('the safety net: the visitor brings a placed lower piece forward out of ord
   expect(errors).toEqual([]);
 });
 
-test('rotating or resizing mid-step keeps the batch and the progress (portrait, landscape, desktop and back); only desktop draws the context', async ({ page, isMobile }, info) => {
+test('rotating or resizing mid-step keeps the batch and the progress (portrait, landscape, desktop and back)', async ({ page, isMobile }, info) => {
   test.skip(info.project.name.endsWith('landscape'), 'portrait and desktop start points cover both directions');
   test.setTimeout(120_000);
   const start = page.viewportSize()!;
@@ -1508,7 +1494,7 @@ test('rotating or resizing mid-step keeps the batch and the progress (portrait, 
     await expect(el(page, '.guide .gt2')).toHaveText('5 of 32');
     expect((await shown(page)).idx, `${z.name}: still batch 2's last outline`).toEqual(rest2);
     expect((await framing(page, rest2)).inView, `${z.name}: framed`).toBe(true);
-    expect((await contextShown(page)).length, `${z.name}: context outlines`).toBe(z.compact ? 0 : 32 - 5 - 1);
+    expect(await contextShown(page), `${z.name}: no context outlines`).toEqual([]);
     await checkCallout(page, `after switching to ${z.name}`);
   }
   await fillByHand(page, rest2[0]);

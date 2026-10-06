@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EXPORT_MIN_MARGIN, EXPORT_SHADOW_SCALE, exportFilename, pngSize, renderCompositionSvg, type ExportShape } from './export';
+import { EXPORT_BACKGROUND, EXPORT_MIN_MARGIN, EXPORT_SHADOW_SCALE, exportFilename, pngSize, renderCompositionSvg, type ExportShape } from './export';
 import { REST_SHADOW, SHADOW_BOARD_SCALE, shadowUnit } from './shadow';
 
 const shape = (id: string, fill: string): ExportShape => ({
@@ -41,8 +41,13 @@ describe('renderCompositionSvg', () => {
     expect(EXPORT_SHADOW_SCALE).toBe(SHADOW_BOARD_SCALE);
     expect(shadowUnit(0.4)).toBeCloseTo(EXPORT_SHADOW_SCALE, 9); // the board at the default desktop zoom draws it the same size
     const r = renderCompositionSvg([{ shapeId: 'a', x: 0, y: 0, rotation: 0 }], of);
-    expect(r.svg).toContain('<g transform="translate(3 4.5)">'); // the resting offset (1.2, 1.8) x 2.5
-    expect(r.svg).toContain('stroke-width="55"'); // the widest soft layer, 22 x 2.5
+    expect(r.svg).toContain('<g transform="translate(2.25 3.375)">'); // the resting offset (0.9, 1.35) x 2.5 (v1.4.1: x 0.75)
+    expect(r.svg).toContain('stroke-width="41.25"'); // the widest soft layer, 16.5 x 2.5
+  });
+
+  it('exports use the v1.4.1 board colour', () => {
+    expect(EXPORT_BACKGROUND).toBe('rgb(223,222,219)');
+    expect(renderCompositionSvg([{ shapeId: 'a', x: 0, y: 0, rotation: 0 }], of).svg).toContain('fill="rgb(223,222,219)"');
   });
 
   it('embeds the texture as a data-URL pattern anchored at the board origin', () => {

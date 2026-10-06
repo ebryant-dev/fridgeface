@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
-  cSequence, chooseWord, contextOutlines, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
+  cSequence, chooseWord, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter,
   nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
 } from './guide';
@@ -762,15 +762,6 @@ describe('the word in batches (v1.4.0, every layout)', () => {
     s = observeGuide(s, world(h.redo()!));
     expect(currentBatch(s)).toBe(1);
     expect(s.batches, 'the plan itself never changes').toEqual([[0, 1], [2], [3]]);
-  });
-
-  it('context: the word\'s other unfilled outlines (desktop draws them faintly), never the current batch\'s, only in step 6', () => {
-    let s = chooseWord(at5(), WORD, world([]));
-    expect(contextOutlines(s)).toEqual([2, 3]);
-    s = observeGuide(s, world(ps(1, 0)));
-    expect([activeOutlines(s), contextOutlines(s)]).toEqual([[2], [3]]);
-    expect(contextOutlines(at5())).toEqual([]);
-    expect(contextOutlines(observeGuide(s, world(ps(1, 0, 2, 3))))).toEqual([]);
   });
 
   it('the pieces already placed at Guide me are batch 0 (done); the plan follows on from them', () => {
