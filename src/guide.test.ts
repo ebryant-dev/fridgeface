@@ -86,9 +86,14 @@ describe('step machine v4: the c, wedge first, teaches stacking (steps 1 to 5)',
     expect([s.step, s.stack?.id, s.stack?.dir, s.stack?.presses]).toEqual([4, 'w', 'forward', 1]);
   });
 
-  it('when the wedge overlaps the white oval too, it must pass both: more than one press', () => {
+  it('v1.6.2: the wedge and the white oval are both white, so their order never matters: ONE press even when they overlap', () => {
     const s = observeGuide(startGuide(C, world([])), { pieces: [wedge, black, white], sizeOf: () => 100, overlaps: () => true });
-    expect([s.step, s.stack?.id, s.stack?.dir, s.stack?.presses, s.stack?.order]).toEqual([4, 'w', 'forward', 2, ['a', 'b', 'w']]);
+    expect([s.step, s.stack?.id, s.stack?.dir, s.stack?.presses, s.stack?.order]).toEqual([4, 'w', 'forward', 1, ['a', 'w', 'b']]);
+    // Done after that one press, with the wedge still under the white oval; also done with it above.
+    let t = observeGuide(s, { pieces: [black, wedge, white], sizeOf: () => 100, overlaps: () => true });
+    expect([t.step, t.stack]).toEqual([5, null]);
+    t = observeGuide(t, { pieces: [black, white, wedge], sizeOf: () => 100, overlaps: () => true });
+    expect([t.step, t.stack]).toEqual([5, null]);
   });
 
   it('the wedge first, then any other c piece the visitor mis-stacked (the plain prompt)', () => {
@@ -251,10 +256,12 @@ describe('step machine: the word (steps 6 and 7)', () => {
     // (Out of the plan: the last piece first, as a load or a hand-placed piece could put it; the board is read as it is.)
     s = observeGuide(s, world([on('w', WORD[3])]));
     expect([s.step, activeOutlines(s), guideProgress(s), s.stack]).toEqual([6, [0, 1], { done: 1, total: 4 }, null]);
-    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2])])); // the negative round lands ON TOP of the wedge
-    expect(guideProgress(s).done, 'placed but mis-stacked: neither counts').toBe(0);
-    expect(s.filled.filter(Boolean)).toHaveLength(2);
-    expect(s.stack).toEqual({ id: 'n', dir: 'back', presses: 1, order: ['n', 'w'] });
+    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2])])); // the negative round on top of the wedge: both white, either order is right
+    expect([guideProgress(s).done, s.stack]).toEqual([2, null]);
+    s = observeGuide(s, world([on('w', WORD[3]), on('n', WORD[2]), on('r', WORD[1])])); // the black round lands ON TOP of the white one
+    expect(guideProgress(s).done, 'placed but mis-stacked: neither counts').toBe(1);
+    expect(s.filled.filter(Boolean)).toHaveLength(3);
+    expect(s.stack).toEqual({ id: 'r', dir: 'back', presses: 1, order: ['w', 'r', 'n'] });
     s = observeGuide(s, world([on('n', WORD[2]), on('w', WORD[3]), on('s', WORD[0])]));
     expect([guideProgress(s).done, s.stack]).toEqual([3, null]);
     s = observeGuide(s, world([on('n', WORD[2]), on('w', WORD[3]), on('s', WORD[0]), on('r', WORD[1])])); // the round on top of its negative
@@ -265,10 +272,31 @@ describe('step machine: the word (steps 6 and 7)', () => {
   });
 
   it('stackCheck: only overlapping pairs matter; a non-overlapping pair in the "wrong" order is ignored', () => {
-    const pieces = [on('s', WORD[0]), on('r', WORD[1])];
-    // Stem (0) above?.. no: the round (1) is below the stem (0) here, the reverse of the word, but they do not overlap.
-    expect(stackCheck(['s', 'r', null, null], [pieces[1], pieces[0]], (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < 100)).toEqual({ done: [true, true, false, false], wrong: [] });
-    expect(stackCheck(['s', 'r', null, null], [pieces[1], pieces[0]], () => true)).toEqual({ done: [false, false, false, false], wrong: ['s', 'r'] });
+    // The black round (1) above the white round (2) is the reverse of the word, but they do not overlap.
+    const pieces = [on('n', WORD[2]), on('r', WORD[1])];
+    expect(stackCheck([null, 'r', 'n', null], pieces, () => false)).toEqual({ done: [false, true, true, false], wrong: [] });
+    expect(stackCheck([null, 'r', 'n', null], pieces, () => true)).toEqual({ done: [false, false, false, false], wrong: ['r', 'n'] });
+  });
+
+  it('v1.6.2: pieces of the same colour never matter, overlapping or not, in either order: no wrong pair, no prompt', () => {
+    const ov = () => true;
+    const stem = on('s', WORD[0]), round = on('r', WORD[1]), neg = on('n', WORD[2]), wedge = on('w', WORD[3]);
+    // Black on black (stem, round) and white on white (negative round, wedge), both orders.
+    for (const [lo, hi] of [[stem, round], [round, stem]]) {
+      expect(stackCheck(['s', 'r', null, null], [lo, hi], ov).wrong).toEqual([]);
+      expect(stackPrompt(['s', 'r', null, null], [lo, hi], ov)).toBeNull();
+    }
+    for (const [lo, hi] of [[neg, wedge], [wedge, neg]]) {
+      expect(stackCheck([null, null, 'n', 'w'], [lo, hi], ov).wrong).toEqual([]);
+      expect(stackPrompt([null, null, 'n', 'w'], [lo, hi], ov)).toBeNull();
+    }
+    // A black/white pair still counts: the round above the negative round, and the stem above the wedge.
+    expect(stackCheck([null, 'r', 'n', null], [neg, round], ov).wrong).toEqual(['r', 'n']);
+    expect(stackPrompt([null, 'r', 'n', null], [neg, round], ov)).toMatchObject({ id: 'r', dir: 'back', presses: 1 });
+    expect(stackCheck(['s', null, null, 'w'], [wedge, stem], ov).wrong).toEqual(['s', 'w']);
+    // Only the black/white partner counts: the wedge under the black stem, with a white negative round above, needs one press (past the stem), as in the c.
+    const p = stackPrompt(['s', null, 'n', 'w'], [wedge, stem, neg], ov, ['s', 'n', 'w'])!;
+    expect([p.id, p.dir, p.presses, p.order]).toEqual(['w', 'forward', 1, ['s', 'w', 'n']]);
   });
 
   it('never goes back past Guide me: an emptied board (or an undo bringing the c back) stays on the word', () => {
@@ -312,12 +340,12 @@ describe('step machine: the word (steps 6 and 7)', () => {
     expect(nextAction(at5())).toBeNull();
     let s = observeGuide(chooseWord(at5(), WORD, world([])), world([on('s', WORD[0])]));
     expect(nextAction(s)).toEqual({ kind: 'place', outline: 1 });
-    s = observeGuide(s, world([on('s', WORD[0]), on('w', WORD[3]), on('n', WORD[2])]));
+    s = observeGuide(s, world([on('s', WORD[0]), on('n', WORD[2]), on('r', WORD[1])])); // the black round on top of the white one
     const a = nextAction(s);
     expect(a?.kind).toBe('stack');
     // Next applies the order the presses would give: the stacking is fixed, and progress counts it.
     const fixed = a!.kind === 'stack' ? a!.prompt.order : [];
-    const byId = new Map([['s', on('s', WORD[0])], ['w', on('w', WORD[3])], ['n', on('n', WORD[2])]]);
+    const byId = new Map([['s', on('s', WORD[0])], ['r', on('r', WORD[1])], ['n', on('n', WORD[2])]]);
     s = observeGuide(s, world(fixed.map((id) => byId.get(id)!)));
     expect([s.stack, guideProgress(s).done]).toEqual([null, 3]);
   });

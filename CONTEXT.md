@@ -45,10 +45,6 @@ In visitor-facing copy the board may be called **the fridge** ("Drag the black o
 A guide-only target that shows where one piece of a suggestion belongs during the guide: a solid line for a positive shape, a dotted one for a negative shape. A piece released close to its outline clicks exactly into place (position and angle only: its stacking order is never changed for it); outside the guide, pieces never snap. The guide's first outline, the wedge's, is drawn at first at the angle a piece from the tray lands at: a wedge released close to it clicks into position only, then turns into the outline.
 _Avoid_: ghost, placeholder, template, snap target
 
-**Order-free pair**:
-Two pieces of a suggestion whose relative stacking order does not matter, declared for that word (in "create", any two of the flower's petals). The guide never treats either order of such a pair as wrong.
-_Avoid_: free pair, unordered pair
-
 **Tray**:
 Where a player takes new pieces from. It always holds all five shapes and never runs out.
 _Avoid_: palette, toolbar, inventory
@@ -83,6 +79,7 @@ _Avoid_: join, connector, kerning
 - A **piece** is a copy of exactly one **shape**. A **board** holds any number of pieces.
 - A **composition** is the set of **pieces** on one **board**, together with their **stacking order**.
 - A **negative shape** shows as a cut only when it sits above a **positive shape** in the **stacking order**.
+- The **stacking order** of two pieces of the same colour (two black, or two white) never matters; only a black/white pair has a meaningful order. The guide never checks or prompts for a same-colour pair.
 - Bringing a **selection** forward or back moves it past the next **piece** it actually overlaps, keeping the selection's own internal **stacking order**.
 - Many different **suggestions** can exist for the same letter or word.
 - A **word composition** is not the sum of letter **suggestions** placed in a row; letters set side by side are only a fallback when no word composition exists.

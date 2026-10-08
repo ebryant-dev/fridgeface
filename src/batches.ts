@@ -1,5 +1,5 @@
 import type { Outline, OutlinePiece } from './outline';
-import { freeTest, type FreePairs, type Overlaps } from './stacking';
+import { sameColour, type Overlaps } from './stacking';
 
 interface Rect { x: number; y: number; w: number; h: number }
 const union = (a: Rect, b: Rect): Rect => {
@@ -45,16 +45,17 @@ const union = (a: Rect, b: Rect): Rect => {
  * stacking prompts remain only as the safety net for a visitor who reorders pieces themselves (or drags in a piece of their
  * own that is not on top).
  *
- * ORDER-FREE PAIRS (v1.5.0). A curated plan (guide-plans.ts) may declare pairs of outlines whose relative order does not
- * matter (the flower's five petals in "create"). The stacking check never looks at such a pair (stacking.ts), so neither
- * order of it is an error. A batch may then hold outlines that overlap, but ONLY when every overlapping pair inside it is
- * order-free, and an order-free pair is no dependency (neither needs the other placed first). The proof above holds with
- * the pairs it is about restricted to the pairs that are checked (overlapping and not order-free): q in B overlapping p is
- * then either impossible (as before) or an order-free pair, which no order can make wrong; q in an earlier batch or the c
- * overlapping p (not order-free) is below p in the word by the same dependency argument, because every pair that is not
- * order-free keeps the old rule (it is still a dependency). So the guide still never prompts, and the word's order holds for
- * every checked pair. A batch of outlines that are ALL pairwise order-free may also exceed BATCH_MAX (the five petals come
- * up together); every other batch keeps the limit.
+ * SAME-COLOUR PAIRS (v1.6.2; v1.5.0 declared them per word). The order of two pieces of the same colour never matters (stacking.ts
+ * `sameColour`: black on black, white on white), so the stacking check never looks at such a pair and neither order of it is
+ * an error. For a CURATED plan (`validatePlan`) a batch may then hold outlines that overlap, but ONLY when every overlapping
+ * pair inside it is the same colour, and a same-colour pair is no dependency (neither needs the other placed first). The proof
+ * above holds with the pairs it is about restricted to the pairs that are checked (overlapping and of different colours): q in
+ * B overlapping p is then either impossible (as before) or a same-colour pair, which no order can make wrong; q in an earlier
+ * batch or the c overlapping p (different colours) is below p in the word by the same dependency argument, because every
+ * black/white pair keeps the old rule (it is still a dependency). So the guide still never prompts, and the word's order holds
+ * for every checked pair. A batch of outlines that are ALL pairwise the same colour may also exceed BATCH_MAX (the five black
+ * petals come up together); every other batch keeps the limit. The automatic planner (`planBatches`) keeps the stricter
+ * rules (every overlap is a dependency), so its plans are unchanged; the relaxed rule applies to validating curated plans.
  */
 
 /** At most this many outlines in a batch. */
@@ -174,16 +175,17 @@ export function batchOf(batches: readonly (readonly number[])[], n: number): num
  * batch 0 is exactly `placed` (when any), and every later batch is non-empty, at most `max` long, ready when it starts (every
  * lower outline it overlaps is in an earlier batch) with no two outlines overlapping. Returns null when valid, else why not.
  * These are the rules the correctness proof above needs; used to check a curated plan (guide-plans.ts) before it is used.
- * `free` (order-free pairs, v1.5.0): such a pair is no dependency and may overlap inside a batch; a batch whose outlines are
- * ALL pairwise order-free may exceed `max`. Every other pair keeps the rules.
+ * Same-colour pairs (v1.6.2, was the curated "order-free pairs" of v1.5.0): such a pair is no dependency and may overlap
+ * inside a batch; a batch whose outlines are ALL pairwise the same colour may exceed `max`. Every other pair keeps the rules.
  */
 export function validatePlan(
-  outlines: readonly Outline[], overlaps: Overlaps, placed: readonly number[], plan: readonly (readonly number[])[], max = BATCH_MAX, free: FreePairs = [],
+  outlines: readonly Outline[], overlaps: Overlaps, placed: readonly number[], plan: readonly (readonly number[])[], max = BATCH_MAX,
 ): string | null {
   const n = outlines.length;
-  const isFree = freeTest(free);
+  // A same-colour pair imposes no order (stacking.ts `sameColour`).
+  const isFree = (i: number, j: number) => sameColour(outlines[i], outlines[j]);
   const deps = dependencies(outlines, overlaps);
-  // The dependencies that count: an order-free pair imposes no order.
+  // The dependencies that count: a same-colour pair imposes no order.
   const need = deps.map((d, i) => d.filter((j) => !isFree(i, j)));
   const seen = new Set<number>();
   for (const b of plan) for (const i of b) {

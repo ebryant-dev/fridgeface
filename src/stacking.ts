@@ -1,5 +1,5 @@
 import { bringForwardOverlapping, sendBackwardOverlapping } from './selection';
-import type { OutlinePiece } from './outline';
+import type { Outline, OutlinePiece } from './outline';
 
 /**
  * Stacking in the guide (v1.3.0, copy v3). Pure, no DOM.
@@ -9,9 +9,11 @@ import type { OutlinePiece } from './outline';
  * its order is right against every other placed word piece it actually OVERLAPS (real geometry): for each such pair, the
  * one whose outline comes first in the suggestion (bottom first) is the lower one. Pairs that do not overlap never matter.
  *
- * ORDER-FREE PAIRS (v1.5.0): a word may declare pairs of outlines whose relative order does not matter (the flower's petals in
- * "create": petal over petal reads the same either way; guide-plans.ts). Such a pair is never checked, never makes a piece
- * mis-stacked and never causes a prompt, whatever its order on the board. Every other overlapping pair keeps the rule above.
+ * SAME-COLOUR PAIRS (v1.6.2): the order of two pieces of the SAME colour never matters (white on white: both negative
+ * shapes; black on black: both positive shapes; a white piece over a white one cuts nothing more, a black over a black adds
+ * nothing). Only a black/white pair (one positive, one negative shape) has a meaningful order. So a same-colour pair is never
+ * checked, never makes a piece mis-stacked and never causes a prompt, whatever its order on the board; the rule is derived from
+ * the shapes' polarity (`sameColour`), not from any list. It replaces the v1.5.0 per-word "order-free pairs" of the curated plan.
  *
  * When a placed piece is stacked wrongly, the guide prompts the visitor to fix it with the button block's overlap-aware Send
  * backward or Bring forward (selection.ts): `stackPrompt` picks the piece (the most recently placed first), the direction
@@ -21,14 +23,24 @@ import type { OutlinePiece } from './outline';
 /** Real-geometry overlap of two pieces on the board. */
 export type Overlaps = (a: OutlinePiece, b: OutlinePiece) => boolean;
 
-/** Pairs of outline indices whose relative stacking order does not matter (order-free; see the file comment). */
-export type FreePairs = readonly (readonly [number, number])[];
+/**
+ * The polarity ('positive' = black, 'negative' = white) of a shape id, or undefined for an unknown shape. Read from the id, as
+ * the shape table names them (shapes.ts: `positive-stem`, `positive-round`, `negative-stem`, `negative-round`, and the
+ * wedge, which is white), so this module stays free of the DOM-bound shape table and runs in the unit tests.
+ */
+export function polarityOf(shapeId: string): 'positive' | 'negative' | undefined {
+  if (shapeId.startsWith('positive-')) return 'positive';
+  if (shapeId.startsWith('negative-') || shapeId === 'wedge') return 'negative';
+  return undefined;
+}
 
-/** A fast test for `pairs`: is the pair (i, j) (either way round) order-free? */
-export function freeTest(pairs: FreePairs = []): (i: number, j: number) => boolean {
-  if (!pairs.length) return () => false;
-  const set = new Set(pairs.map(([a, b]) => (a < b ? `${a}:${b}` : `${b}:${a}`)));
-  return (i, j) => set.has(i < j ? `${i}:${j}` : `${j}:${i}`);
+/**
+ * Are these two pieces (or outlines) the same colour, so their stacking order never matters? True for two black or two white
+ * shapes (the wedge is white). An unknown shape is never "the same colour": its order counts.
+ */
+export function sameColour(a: Pick<Outline, 'shapeId'>, b: Pick<Outline, 'shapeId'>): boolean {
+  const pa = polarityOf(a.shapeId);
+  return pa !== undefined && pa === polarityOf(b.shapeId);
 }
 
 export interface StackCheck {
@@ -40,10 +52,8 @@ export interface StackCheck {
 
 /**
  * Which placed pieces are in the right stacking order (see the file comment). `filled[i]`: the piece on outline i, or null.
- * `free`: order-free pairs (outline indices), never checked.
  */
-export function stackCheck(filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, free: FreePairs = []): StackCheck {
-  const isFree = freeTest(free);
+export function stackCheck(filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps): StackCheck {
   const pos = new Map(pieces.map((p, i) => [p.id, i]));
   const byId = new Map(pieces.map((p) => [p.id, p]));
   const bad = new Set<number>();
@@ -53,7 +63,7 @@ export function stackCheck(filled: readonly (string | null)[], pieces: readonly 
     for (let j = i + 1; j < filled.length; j++) {
       const b = filled[j];
       if (!b || pos.get(a)! < pos.get(b)!) continue; // right order (or nothing there): nothing to check
-      if (isFree(i, j)) continue; // an order-free pair: either order is right
+      if (sameColour(byId.get(a)!, byId.get(b)!)) continue; // the same colour: either order is right
       if (overlaps(byId.get(a)!, byId.get(b)!)) {
         bad.add(i);
         bad.add(j);
@@ -143,13 +153,13 @@ export const UNTANGLE_DEPTH = 5;
  * overlaps one) that lead to fewer wrong pairs are searched (`UNTANGLE_DEPTH` deep); the prompt is the first piece and
  * direction of that sequence (the guide prompts the rest as it goes). Only when nothing is found within that depth is the
  * most recent prompted toward its first wrong partner with 0 presses, and Next repairs the whole order (`stackRepair`).
- * Null when nothing is mis-stacked. `free`: order-free pairs (outline indices): never a wrong pair, never prompted (the
- * presses themselves are simulated with the real overlaps, as the buttons press them).
+ * Null when nothing is mis-stacked. Same-colour pairs are never a wrong pair and never counted toward the presses
+ * (only black/white pairs are); the presses themselves are simulated with the real overlaps, as the buttons press them.
  */
 export function stackPrompt(
-  filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, recent: readonly string[] = [], free: FreePairs = [],
+  filled: readonly (string | null)[], pieces: readonly OutlinePiece[], overlaps: Overlaps, recent: readonly string[] = [],
 ): StackPrompt | null {
-  const check = stackCheck(filled, pieces, overlaps, free);
+  const check = stackCheck(filled, pieces, overlaps);
   if (!check.wrong.length) return null;
   const byId = new Map(pieces.map((p) => [p.id, p]));
   const memo = new Map<string, boolean>();
@@ -167,9 +177,8 @@ export function stackPrompt(
   filled.forEach((id, i) => {
     if (id) rank.set(id, i);
   });
-  // Overlapping AND order matters (not an order-free pair): the pairs the stacking check is about.
-  const isFree = freeTest(free);
-  const counts = (a: string, b: string) => ov(a, b) && !isFree(rank.get(a)!, rank.get(b)!);
+  // Overlapping AND order matters (a black/white pair): the pairs the stacking check is about.
+  const counts = (a: string, b: string) => ov(a, b) && !sameColour(byId.get(a)!, byId.get(b)!);
   const order = pieces.map((p) => p.id);
   const wrongSet = new Set(check.wrong);
   const byRecency = [...recent].reverse().filter((id) => wrongSet.has(id));
@@ -209,7 +218,7 @@ function untangle(
   order: readonly string[], placed: readonly string[], rank: ReadonlyMap<string, number>, ov: (a: string, b: string) => boolean, wrongFirst: readonly string[],
   counts: (a: string, b: string) => boolean = ov,
 ): StackPrompt | null {
-  const pairs: [string, string][] = []; // [belongs lower, belongs higher], overlapping (order-free pairs left out), both placed
+  const pairs: [string, string][] = []; // [belongs lower, belongs higher], overlapping (same-colour pairs left out), both placed
   for (const a of placed) for (const b of placed) if (rank.get(a)! < rank.get(b)! && counts(a, b)) pairs.push([a, b]);
   const wrongCount = (o: readonly string[]) => {
     const pos = new Map(o.map((id, i) => [id, i]));

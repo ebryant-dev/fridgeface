@@ -50,6 +50,9 @@ const guide = (page: Page) => el(page, '.guide');
 const gbtn = (page: Page, id: string) => el(page, `.guide [data-guide=${id}]`);
 const press = (isMobile: boolean, l: Locator) => (isMobile ? l.tap() : l.click());
 const pieces = (page: Page) => page.evaluate(() => (document.querySelector('fridge-face') as FF).composition.pieces.map((p) => ({ ...p })));
+/** The c's pieces in OUTLINE order (black oval, white oval, wedge), whatever their stacking order: v1.6.2, the white oval and the wedge may be either way round. */
+const C_ORDER = ['positive-round', 'negative-round', 'wedge'];
+const inOutlineOrder = <T extends { shapeId: string }>(ps: T[]) => [...ps].sort((a, b) => C_ORDER.indexOf(a.shapeId) - C_ORDER.indexOf(b.shapeId));
 const pieceCount = async (page: Page) => (await pieces(page)).length;
 const state = (page: Page) => page.evaluate(() => {
   const g = (document.querySelector('fridge-face') as FF).guide;
@@ -205,13 +208,14 @@ async function misStacked(page: Page) {
     const pos = new Map(ps.map((p, i) => [p.id, i]));
     const by = new Map(ps.map((p) => [p.id, p]));
     const bad: number[][] = [];
-    // Order-free pairs (v1.5.0: the flower's petals) are left out: either order is right.
-    const free = new Set(((g as unknown as { free?: [number, number][] }).free ?? []).map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+    // Same-colour pairs (v1.6.2: two black or two white shapes) are left out: either order is right.
+    const pol = (id: string) => (SHAPES as { id: string; polarity: string }[]).find((x) => x.id === id)!.polarity;
     let pairs = 0;
     for (let i = 0; i < g.filled.length; i++) for (let j = i + 1; j < g.filled.length; j++) {
       const a = g.filled[i], b = g.filled[j];
-      if (!a || !b || free.has(`${i}:${j}`)) continue;
+      if (!a || !b) continue;
       const pa = by.get(a)!, pb = by.get(b)!;
+      if (pol(pa.shapeId) === pol(pb.shapeId)) continue;
       if (!convexIntersect(placeOutline(hull(pa.shapeId), pa), placeOutline(hull(pb.shapeId), pb))) continue;
       pairs++;
       if (pos.get(a)! > pos.get(b)!) bad.push([i, j]);
@@ -231,11 +235,23 @@ async function selectPlacedLower(page: Page) {
     const { convexIntersect, placeOutline } = await import(/* @vite-ignore */ '/src/selection.ts' as string);
     const hull = (id: string) => (SHAPES as { id: string; hull: unknown }[]).find((x) => x.id === id)!.hull;
     const g = ff.guide;
-    for (let i = g.filled.length - 1; i >= 0; i--) for (let j = i + 1; j < g.filled.length; j++) {
-      if (!g.filled[i] || !g.filled[j]) continue;
-      if (!convexIntersect(placeOutline(hull(g.outlines[i].shapeId), g.outlines[i]), placeOutline(hull(g.outlines[j].shapeId), g.outlines[j]))) continue;
-      ff.select(g.filled[i]);
-      return { i, id: g.filled[i]! };
+    const ps = ff.composition.pieces;
+    const pos = new Map(ps.map((p, k) => [p.id, k]));
+    const pol = (id: string) => (SHAPES as { id: string; polarity: string }[]).find((x) => x.id === id)!.polarity;
+    // v1.6.2: the piece's NEXT overlapping piece above it (the one Bring forward passes) must be the other colour, or the press is not a mistake.
+    for (let i = g.filled.length - 1; i >= 0; i--) {
+      const a = g.filled[i];
+      if (!a) continue;
+      let next: number | null = null;
+      for (let j = 0; j < g.filled.length; j++) {
+        const b = g.filled[j];
+        if (j === i || !b || pos.get(b)! < pos.get(a)!) continue;
+        if (!convexIntersect(placeOutline(hull(g.outlines[i].shapeId), g.outlines[i]), placeOutline(hull(g.outlines[j].shapeId), g.outlines[j]))) continue;
+        if (next === null || pos.get(b)! < pos.get(g.filled[next]!)!) next = j;
+      }
+      if (next === null || pol(g.outlines[next].shapeId) === pol(g.outlines[i].shapeId)) continue;
+      ff.select(a);
+      return { i, id: a };
     }
     return null;
   });
@@ -541,14 +557,16 @@ test('blank start (no intro), then the c with the stacking lesson (copy v4): the
   await shoot(page, info.project.name, 'step4');
   // Bring forward, from the button block the callout points at: the wedge passes each overlapping piece above it.
   const presses = await bringWedgeForward(page, isMobile);
-  expect(presses, 'it passes the black oval and the white one').toBe(2);
+  expect(presses, 'v1.6.2: it passes the black oval only (the white oval is white too): ONE press').toBe(1);
+  await expect(el(page, '.guide .gt1')).toContainText("That's a c.");
+  await page.screenshot({ path: `${SHOTS}/v162-${info.project.name}-one-press.png` });
   s = await state(page);
   ps = await pieces(page);
-  expect(ps.map((p) => p.shapeId), 'stacking order of the c (as in word-create-1)').toEqual(['positive-round', 'negative-round', 'wedge']);
-  ps.forEach((p, i) => expect(onOutline(p, s.outlines[i]), `piece ${i} exactly on its outline`).toBe(true));
-  expect(ps[2].rotation, 'the c inside word-create-1: its wedge at 101.22 degrees').toBeCloseTo(101.22, 2);
-  expect(ps[1].x - ps[0].x).toBeCloseTo(-0.4, 6); // arranged exactly as in the word
-  expect(ps[1].y - ps[0].y).toBeCloseTo(4.0, 6);
+  expect(ps.map((p) => p.shapeId), 'the wedge is above the black oval (the white oval and the wedge are both white: their order is free; one press leaves it below the white oval)').toEqual(['positive-round', 'wedge', 'negative-round']);
+  inOutlineOrder(ps).forEach((p, i) => expect(onOutline(p, s.outlines[i]), `piece ${i} exactly on its outline`).toBe(true));
+  expect(inOutlineOrder(ps)[2].rotation, 'the c inside word-create-1: its wedge at 101.22 degrees').toBeCloseTo(101.22, 2);
+  expect(inOutlineOrder(ps)[1].x - inOutlineOrder(ps)[0].x).toBeCloseTo(-0.4, 6); // arranged exactly as in the word
+  expect(inOutlineOrder(ps)[1].y - inOutlineOrder(ps)[0].y).toBeCloseTo(4.0, 6);
   // Undo the last press: step 4 again (the guide follows the board); redo: step 5.
   await historyKey(page, 'undo');
   await expect(guide(page)).toHaveAttribute('data-step', '4');
@@ -695,8 +713,11 @@ async function expectCInPlace(page: Page, c: P[], label: string) {
   const got = c.map((p) => now.find((q) => q.id === p.id));
   expect(got.every(Boolean), `${label}: the c's pieces are all still on the board`).toBe(true);
   got.forEach((q, i) => expect({ x: q!.x, y: q!.y, rotation: q!.rotation, shapeId: q!.shapeId }, `${label}: piece ${i} of the c did not move`).toEqual({ x: c[i].x, y: c[i].y, rotation: c[i].rotation, shapeId: c[i].shapeId }));
-  const order = c.map((p) => now.findIndex((q) => q.id === p.id));
-  expect([...order].sort((x, y) => x - y), `${label}: their stacking order among themselves`).toEqual(order);
+  // Stacking among themselves (v1.6.2: only the black/white pairs matter; the white oval and the wedge may be either way round):
+  // the black oval is below both white pieces.
+  const at = (shape: string) => now.findIndex((q) => q.id === c.find((p) => p.shapeId === shape)!.id);
+  expect(at('positive-round'), `${label}: the black oval below the white oval`).toBeLessThan(at('negative-round'));
+  expect(at('positive-round'), `${label}: the black oval below the wedge`).toBeLessThan(at('wedge'));
 }
 
 /** Every outline of the word in the same board frame as the c: outlines 0, 1, 2 are exactly the c's pieces. */
@@ -721,7 +742,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   await expect(gbtn(page, 'clear')).toHaveText('No, clear for free play');
   await checkCallout(page, 'step 5');
   await shoot(page, info.project.name, 'step5');
-  const c = await pieces(page);
+  const c = inOutlineOrder(await pieces(page));
   expect(c).toHaveLength(3);
   const view5 = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
 
@@ -747,7 +768,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   await press(isMobile, el(page, '[data-block=undo]'));
   await expect.poll(async () => (await state(page)).stack).not.toBeNull();
   const und = await state(page);
-  expect([und.filled[1], und.filled[2]], 'the white oval or the wedge').toContain(und.stack!.id);
+  expect([und.filled[0], und.filled[2]], 'the black oval or the wedge (the wrong black/white pair)').toContain(und.stack!.id);
   expect(await pieceCount(page), 'the c is still on the board').toBe(3);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await expect(el(page, '.guide .gt2')).toHaveText(`1 of ${total}`);
@@ -872,7 +893,7 @@ test('the c moved as one after step 4: the word is anchored on it where it now i
   await expect.poll(async () => (await pieces(page)).map((p, i) => [Math.round(p.x - was[i].x), Math.round(p.y - was[i].y)]), 'moved as one').toEqual([[40, 20], [40, 20], [40, 20]]);
   await page.waitForTimeout(400); // the nudges are judged once they pause
   await expect(guide(page), 'still "That\'s a c."').toHaveAttribute('data-step', '5');
-  const c = await pieces(page);
+  const c = inOutlineOrder(await pieces(page));
   const s4 = await state(page);
   c.forEach((p, i) => expect(onOutline(p, s4.outlines[i]), 'the c\'s outlines followed it').toBe(true));
   await press(isMobile, gbtn(page, 'word'));
@@ -951,8 +972,8 @@ test('Next (after waiting, shortened timer) does the current thing for the visit
   }
   const ps = await pieces(page);
   const s = await state(page);
-  expect(ps.map((p) => p.shapeId), 'Next brought the wedge forward').toEqual(['positive-round', 'negative-round', 'wedge']);
-  ps.forEach((p, i) => expect(onOutline(p, s.outlines[i])).toBe(true));
+  expect(ps.map((p) => p.shapeId), 'Next brought the wedge forward').toEqual(['positive-round', 'wedge', 'negative-round']);
+  inOutlineOrder(ps).forEach((p, i) => expect(onOutline(p, s.outlines[i])).toBe(true));
   await expect(gbtn(page, 'next'), 'step 5 has no Next').toBeHidden();
   await page.keyboard.press('Control+z');
   await expect(guide(page)).toHaveAttribute('data-step', '4');
@@ -1323,9 +1344,9 @@ test('step 0 -> Clear and start: a blank board, the c built; undoing back past t
   await checkCallout(page, 'clear and start, step 1');
   await buildC(page, isMobile);
   expect(await pieceCount(page)).toBe(3);
-  // Back through the c (two Bring forwards, white oval, black oval, turn, wedge): the guide follows to step 1 on a blank board.
+  // Back through the c (one Bring forward, white oval, black oval, turn, wedge): the guide follows to step 1 on a blank board.
   // (v1.6.0: on phones the step 1 to 3 callouts may sit over the button block: undo from the keyboard.)
-  for (let i = 0; i < 6; i++) await historyKey(page, 'undo');
+  for (let i = 0; i < 5; i++) await historyKey(page, 'undo');
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   // ONE more undo: every one of their pieces back, exactly (ids, places, rotations, stacking order).
@@ -1386,7 +1407,7 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" g
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   await buildC(page, isMobile);
   await expect(guide(page)).toHaveAttribute('data-step', '5');
-  const c = (await pieces(page)).filter((p) => !theirs.some((t) => t.id === p.id));
+  const c = inOutlineOrder((await pieces(page)).filter((p) => !theirs.some((t) => t.id === p.id)));
   expect(c).toHaveLength(3);
   await setNextMs(page, 50); // step 6's Next comes quickly (used for the rest of the word below)
   await press(isMobile, gbtn(page, 'word'));
@@ -1552,7 +1573,7 @@ async function toWord(page: Page, isMobile: boolean, url = '/?n=batch'): Promise
     for (let i = 0; i < 4; i++) ff.guideNextFill();
   });
   await expect(guide(page)).toHaveAttribute('data-step', '5');
-  const c = await pieces(page);
+  const c = inOutlineOrder(await pieces(page));
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   expect(await pieceCount(page), 'the c stays').toBe(3);

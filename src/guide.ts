@@ -4,7 +4,7 @@ import {
   FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineMatch, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
   type ShapeFrame, type SizeOf,
 } from './outline';
-import { stackCheck, stackPrompt, type FreePairs, type Overlaps, type StackPrompt } from './stacking';
+import { stackCheck, stackPrompt, type Overlaps, type StackPrompt } from './stacking';
 import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
@@ -32,9 +32,10 @@ import { curatedPlan } from './guide-plans';
  * 3. outline: the white oval (dotted), on the black one. Done when it is filled (it lands on top too).
  * 4. no outline: "Bring the wedge forward so it cuts into the black." Points at the button block's Forward (Bring forward)
  *    (the wedge is selected for it). Done when every c piece is stacked as in the letter against every c piece it overlaps
- *    (stacking.ts; the wedge and the black oval always count as overlapping, as they do in the c). `stack` is the prompt,
- *    the wedge first (several presses may be needed: it passes each overlapping piece above it); any other mis-stacked c
- *    piece (the visitor restacked one) gets the generic Send it back / Bring it forward prompt.
+ *    AND whose colour differs (v1.6.2: the white oval and the wedge are both white, so their order never matters; stacking.ts;
+ *    the wedge and the black oval always count as overlapping, as they do in the c). So the wedge only has to pass the black
+ *    oval: ONE Bring forward press whether or not it is above the white oval. `stack` is the prompt, the wedge first; any
+ *    other mis-stacked c piece (the visitor restacked one) gets the generic Send it back / Bring it forward prompt.
  * 5. no outline. "That's a c." / "Do you want to continue the tutorial?" with Guide me ("Yes, continue"; only when
  *    word-create-1 exists, as is the question) or Clear for free play ("No, clear for free play"). A finished c moved as one
  *    (rigidly, not turned) keeps step 5: its outlines follow it (`rigidShift`).
@@ -45,8 +46,8 @@ import { curatedPlan } from './guide-plans';
  *    done, so it too is derived from the board (undo and redo move between batches). A word piece is DONE when it is placed
  *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. The
  *    stacking prompts (`stack`: Send it back / Bring it forward, the most recently placed first) remain only as a safety net,
- *    for a visitor who reorders pieces themselves. A curated plan may declare ORDER-FREE pairs (v1.5.0: the flower's petals,
- *    which come up together as one batch): their order is never checked. Same turning hint as 1b. Nothing is cleared at Guide me; the word's
+ *    for a visitor who reorders pieces themselves. The order of two pieces of the SAME colour never matters (v1.6.2: black on
+ *    black, white on white; stacking.ts), so such a pair is never checked (the flower's black petals come up together as one batch). Same turning hint as 1b. Nothing is cleared at Guide me; the word's
  *    outlines are in the c's board frame, so the c's pieces fill theirs (they are batch 0, already done).
  * 7. no outline. "Great work! Now you're ready to create on your own." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
@@ -172,17 +173,12 @@ export interface GuideState {
    * pieces already placed at Guide me), filled one batch at a time (batches.ts). null outside the word phase.
    */
   batches: readonly (readonly number[])[] | null;
-  /**
-   * The word phase: order-free outline pairs (v1.5.0, from a curated plan: the flower's petals in "create"). Their relative
-   * stacking order never makes a piece mis-stacked nor causes a prompt (stacking.ts). Empty otherwise.
-   */
-  free: FreePairs;
 }
 
 const NONE = Object.freeze([]) as readonly never[];
 export const GUIDE_IDLE: GuideState = Object.freeze({
   step: 0, phase: null, letter: NONE, kept: false, theirs: NONE, built: NONE, outlines: NONE, filled: NONE, done: NONE, recent: NONE, stack: null, turn: null,
-  batches: null, free: NONE,
+  batches: null,
 }) as GuideState;
 
 /** Is the guide running (step 0's question included)? */
@@ -258,8 +254,8 @@ export function activeOutlines(s: GuideState): number[] {
   return [];
 }
 
-type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent' | 'free'>;
-const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent, free: s.free });
+type Carry = Pick<GuideState, 'letter' | 'kept' | 'theirs' | 'built' | 'batches' | 'recent'>;
+const carry = (s: GuideState): Carry => ({ letter: s.letter, kept: s.kept, theirs: s.theirs, built: s.built, batches: s.batches, recent: s.recent });
 
 /** The placed pieces in the order they were placed: the ones still placed keep their turn, newly placed ones go last. */
 function updateRecent(recent: readonly string[], filled: readonly (string | null)[]): readonly string[] {
@@ -303,11 +299,11 @@ function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld
   if (phase === 'c') ({ step, done, stack } = deriveC(outlines, w, filled, recent));
   else {
     const ov = overlapsOf(w);
-    done = stackCheck(filled, w.pieces, ov, c.free).done;
+    done = stackCheck(filled, w.pieces, ov).done;
     step = done.every(Boolean) ? 7 : 6;
-    stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent, c.free) : null;
+    stack = step === 6 ? stackPrompt(filled, w.pieces, ov, recent) : null;
   }
-  const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, free: phase === 'word' ? c.free : NONE, step, phase, outlines, filled, done, stack, turn: null };
+  const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, step, phase, outlines, filled, done, stack, turn: null };
   const active = activeOutlines(s);
   // The turning hint: in step 1 (the wedge) and step 6 (any piece of the word).
   const turn = step === 1 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
@@ -320,7 +316,7 @@ const samePrompt = (a: StackPrompt | null, b: StackPrompt | null) =>
 const same = (a: GuideState, b: GuideState) =>
   a.step === b.step && a.phase === b.phase && a.outlines === b.outlines && a.turn === b.turn && sameList(a.filled, b.filled) && sameList(a.done, b.done)
   && sameList(a.recent, b.recent) && samePrompt(a.stack, b.stack)
-  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.batches === b.batches && a.free === b.free;
+  && a.letter === b.letter && a.kept === b.kept && a.theirs === b.theirs && a.built === b.built && a.batches === b.batches;
 
 /**
  * Start (or replay) at step 1 with the c's outlines (already placed on the board). An empty list cannot start it.
@@ -328,7 +324,7 @@ const same = (a: GuideState, b: GuideState) =>
  */
 export function startGuide(cOutlines: readonly Outline[], w: GuideWorld, from: { kept?: boolean; theirs?: readonly string[] } = {}): GuideState {
   if (!cOutlines.length) return GUIDE_IDLE;
-  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, batches: null, recent: NONE, free: NONE });
+  return derive('c', cOutlines, w, { letter: cOutlines, kept: !!from.kept, theirs: from.theirs ?? NONE, built: NONE, batches: null, recent: NONE });
 }
 
 /**
@@ -427,11 +423,10 @@ export function chooseWord(s: GuideState, wordOutlines: readonly Outline[], w: G
     const z = w.sizeOf(o.shapeId);
     return { x: o.x - z / 2, y: o.y - z / 2, w: z, h: z };
   });
-  // A plan curated by hand for this very word (guide-plans.ts), when there is one and it is valid (with its order-free
-  // pairs: the stacking check ignores them); else the automatic planner (no order-free pairs).
+  // A plan curated by hand for this very word (guide-plans.ts), when there is one and it is valid; else the automatic planner.
   const curated = curatedPlan(wordOutlines, overlapsOf(w), placed);
   const batches = curated?.batches ?? planBatches(wordOutlines, overlapsOf(w), placed, { ...plan, boxOf, span: plan.span ?? Infinity });
-  return derive('word', wordOutlines, w, { ...carry(s), batches, free: curated?.free ?? NONE });
+  return derive('word', wordOutlines, w, { ...carry(s), batches });
 }
 
 /** Skip, Don't show again, Clear for free play, Start fresh, Keep it (and step 0's Skip / Don't show again). */

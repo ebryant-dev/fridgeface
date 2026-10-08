@@ -145,7 +145,7 @@ describe('copy v4 on the REAL c (real geometry): wedge, black oval, white oval, 
     for (let i = 0; i < presses; i++) order = bringForwardOverlapping(order, new Set(['w']), ovId)!;
     s = observeGuide(s, world(order.map((id) => byId.get(id)!)));
     expect(s.step, `after ${presses} press(es): ${order.join(',')}`).toBe(5);
-    expect([presses, order, ovId('w', 'b')], 'it overlaps the white oval too: two presses, and the c is in the word\'s order').toEqual([2, ['a', 'b', 'w'], true]);
+    expect([presses, order, ovId('w', 'b')], 'it overlaps the white oval too, but both are white: ONE press (v1.6.2), the c is right').toEqual([1, ['a', 'w', 'b'], true]);
     expect(order.indexOf('w')).toBeGreaterThan(order.indexOf('a'));
     // Guide me: the c is batch 0, done; 3 of 32.
     const built = order.map((id) => byId.get(id)!);
