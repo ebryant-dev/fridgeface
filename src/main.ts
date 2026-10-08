@@ -17,7 +17,7 @@ import { icon } from './icons';
 import { BLOCK_ORDER, blockState } from './block';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_WORD, backSteps, guideBarCount, guideBarShown, guidePosition, teachingTurn, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, welcomeGuide, besideSpot, chooseWord, coverage,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_WORD, backSteps, guideBarCount, guideBarShown, guidePosition, teachingTurn, trayHints, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, welcomeGuide, besideSpot, chooseWord, coverage,
   findWordC, placeWordC, type WordC,
   currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
   landingOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type CalloutSide, type GuideState,
@@ -454,6 +454,17 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
    (steady, not animated, with reduced motion: the rule below stops every animation). */
 [data-pulse] { transform-box: fill-box; transform-origin: center; animation: ff-pulse 1.3s ease-out infinite; }
 @keyframes ff-pulse { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(1.8); opacity: 0; } }
+/* The tray shape to drag (v1.6.4, c steps 1a, 2, 3 and the word's batch): a blueprint-blue ring of the shape's own
+   silhouette pulses out from it, like the handle's. --sw/--sh: the shape's size in source units; --tk: CSS px per unit, so
+   each axis grows by the same distance in px (--pd at full spread). Steady at half spread with reduced motion. */
+.tray button { position: relative; }
+.tray .tpulse { display: none; --pd: 36; transform-box: fill-box; transform-origin: center;
+  --ax: calc(1 + var(--pd) / (var(--sw) * var(--tk))); --ay: calc(1 + var(--pd) / (var(--sh) * var(--tk)));
+  --bx: calc(1 + var(--pd) / (var(--sw) * var(--tk) * 2)); --by: calc(1 + var(--pd) / (var(--sh) * var(--tk) * 2));
+  transform: scale(var(--bx), var(--by)); }
+[data-compact] .tray .tpulse { --pd: 22; }
+.tray button[data-hint] .tpulse { display: inline; animation: ff-tray-pulse 1.3s ease-out infinite; }
+@keyframes ff-tray-pulse { 0% { transform: scale(1); opacity: 1; } 45% { opacity: 0.85; } 100% { transform: scale(var(--ax), var(--ay)); opacity: 0; } }
 
 /* ---- motion: none at all when the visitor asks for less ---- */
 @media (prefers-reduced-motion: reduce) {
@@ -510,6 +521,23 @@ function geometryHtml(s: Shape): string {
   return geometryTemplate(s).replace('{a}', `fill="${s.fill}"`);
 }
 
+/**
+ * The tray ring's spread (v1.6.4): --sw/--sh, the sizes the CSS divides the spread by. A triangle (the wedge) grows about its
+ * INCENTRE, so every edge moves out evenly (by two thirds of the others' distance: 3 x its inradius, as its sharp point
+ * reaches much further than its edges); every other shape about its box's centre, each axis by the same distance.
+ */
+function trayPulseStyle(s: Shape): string {
+  const g = s.geometry;
+  const v = g.kind === 'polygon' ? g.points.trim().split(/[\s,]+/).map(Number) : [];
+  if (v.length === 8 && v[6] === v[0] && v[7] === v[1]) v.length = 6; // (a closing point repeating the first)
+  if (v.length !== 6 || v.some((n) => !Number.isFinite(n))) return `--sw:${n3(s.bbox.w)};--sh:${n3(s.bbox.h)}`;
+  const [ax, ay, bx, by, cx, cy] = v;
+  const a = Math.hypot(bx - cx, by - cy), b = Math.hypot(ax - cx, ay - cy), c = Math.hypot(ax - bx, ay - by), p = a + b + c;
+  const ix = (a * ax + b * bx + c * cx) / p, iy = (a * ay + b * by + c * cy) / p;
+  const r = Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / p; // area x 2 / perimeter
+  return `--sw:${n3(3 * r)};--sh:${n3(3 * r)};transform-origin:${n3(ix - s.bbox.x)}px ${n3(iy - s.bbox.y)}px`; // (fill-box: from the box's corner)
+}
+
 /** A shape at rest in its own source coordinates, with its magnet shadow (tray and drag preview). */
 function shapeSvg(s: Shape): string {
   const { x, y, w, h } = s.bbox;
@@ -545,6 +573,8 @@ export class FridgeFace extends HTMLElement {
   private surface!: SVGSVGElement;
   private cameraEl!: SVGGElement;
   private piecesLayer!: SVGGElement;
+  /** The piece being turned whose outline is drawn behind it (v1.6.4), or null. */
+  private underOutline: string | null = null;
   private overlay!: SVGGElement;
   private outlinesEl!: SVGGElement;
   /** The bottom button block (X, Undo, Redo, Back, Forward; src/block.ts). */
@@ -854,6 +884,9 @@ export class FridgeFace extends HTMLElement {
       b.style.setProperty('--w', String(s.bbox.w + 2 * PAD));
       b.style.setProperty('--h', String(s.bbox.h + 2 * PAD));
       b.innerHTML = shapeSvg(s);
+      // The guide's "drag this one" ring (v1.6.4): the shape's own silhouette, under it, shown only with data-hint.
+      b.querySelector('svg')!.insertAdjacentHTML('afterbegin', geometryTemplate(s).replace('{a}',
+        `class="tpulse" fill="${PULSE_COLOR}" fill-opacity="0.18" stroke="${PULSE_COLOR}" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke" pointer-events="none" style="${trayPulseStyle(s)}"`));
       wrap.querySelector(`.tray [data-polarity=${s.polarity}]`)!.appendChild(b);
     }
     root.append(style, wrap, ...outer.children);
@@ -3027,7 +3060,12 @@ export class FridgeFace extends HTMLElement {
       }
       if (el.last !== p) {
         // Pieces are immutable snapshots: an unchanged piece keeps its object, so it costs nothing here.
-        if (!el.last || el.last.x !== p.x || el.last.y !== p.y) el.g.setAttribute('transform', `translate(${n3(p.x)} ${n3(p.y)})`);
+        if (!el.last || el.last.x !== p.x || el.last.y !== p.y) {
+          el.g.setAttribute('transform', `translate(${n3(p.x)} ${n3(p.y)})`);
+          // The outline drawn behind a turning piece stays where it is on the board when the piece moves.
+          const u = this.underOutline === p.id ? el.g.querySelector(':scope > [data-under]') : null;
+          if (u) u.setAttribute('transform', `translate(${n3(-p.x)} ${n3(-p.y)})`);
+        }
         if (!el.last || el.last.rotation !== p.rotation) {
           const rot = rotationTransform(p, s);
           for (const r of el.rots) r.setAttribute('transform', rot);
@@ -3273,6 +3311,13 @@ export class FridgeFace extends HTMLElement {
     else this.guideObserve();
   }
 
+  /** The tray shapes the guide asks for wear the pulsing ring (`trayHints`); the rest lose it. */
+  private syncTrayHints() {
+    if (!this.trayEl) return;
+    const want = trayHints(this.guide, (id) => this.composition.pieces.find((p) => p.id === id)?.shapeId);
+    for (const b of this.trayEl.querySelectorAll<HTMLElement>('button[data-shape]')) b.toggleAttribute('data-hint', want.includes(b.dataset.shape!));
+  }
+
   private setGuide(next: GuideState) {
     const prev = this.guide;
     if (next === prev) return;
@@ -3283,6 +3328,7 @@ export class FridgeFace extends HTMLElement {
     if (next.phase === 'word' && !this.wordFitPending
       && (currentBatch(next) !== currentBatch(prev) || next.batches !== prev.batches || next.step !== prev.step)) this.wordFitPending = 'smooth';
     this.renderOutlines();
+    this.syncTrayHints();
     if (next.step === prev.step && next.phase === prev.phase && (next.phase !== 'c' || next.letter === prev.letter || next.step === 5)) {
       // (Step 5 with a new letter: the finished c moved as one and its outlines followed it; nothing new to say.)
       // The same step: its outlines, its turning hint, its stacking prompt or its progress moved.
@@ -3736,7 +3782,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   /**
-   * The active outlines, drawn above the pieces in blueprint blue, in screen px: a SOLID line for a positive (black) shape, a
+   * The active outlines, drawn above the pieces (the turning lesson's one behind its piece) in blueprint blue, in screen px: a SOLID line for a positive (black) shape, a
    * DOTTED one for a negative (white) shape, the same weight. Never takes pointer events.
    */
   private renderOutlines() {
@@ -3746,8 +3792,16 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide;
     const active = s.step ? activeOutlines(s) : [];
     layer.replaceChildren();
+    for (const g of this.piecesLayer.querySelectorAll('[data-under]')) g.remove();
+    this.underOutline = null;
     if (!active.length) return;
     const k = this.k * this.view.zoom; // CSS px per board unit
+    // The turning lesson (v1.6.4): the outline of the piece being turned is drawn BEHIND it (the first child of the piece's
+    // own group, under its shadow), so the piece covers it where they overlap. The nearest active outline of its shape.
+    const turning = teachingTurn(s);
+    const tp = turning ? this.composition.pieces.find((p) => p.id === turning) : undefined;
+    const under = tp ? active.filter((i) => s.outlines[i].shapeId === tp.shapeId)
+      .sort((a, b) => Math.hypot(s.outlines[a].x - tp.x, s.outlines[a].y - tp.y) - Math.hypot(s.outlines[b].x - tp.x, s.outlines[b].y - tp.y))[0] : undefined;
     const draw = (i: number) => {
       const o = shownOutline(s, i); // step 1a: the wedge at the angle it lands at
       const sh = SHAPE_BY_ID.get(o.shapeId);
@@ -3764,7 +3818,15 @@ export class FridgeFace extends HTMLElement {
         '{a}',
         `${look} stroke-width="${w}"${solid ? '' : ` stroke-dasharray="${dash}"`} stroke-linecap="round" stroke-linejoin="round"`,
       );
-      layer.append(g);
+      const host = i === under && tp ? this.els.get(tp.id)?.g : undefined;
+      if (host) {
+        // A wrapper undoes the piece's own translation, so the outline keeps its board transform.
+        // (pointer-events: the outlines layer has it; inside the piece the piece would take its presses.)
+        const wrap = svgEl('g', { 'data-under': '', 'pointer-events': 'none', transform: `translate(${n3(-tp!.x)} ${n3(-tp!.y)})` });
+        wrap.append(g);
+        this.underOutline = tp!.id;
+        host.prepend(wrap);
+      } else layer.append(g);
     };
     for (const i of active) draw(i);
   }

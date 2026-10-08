@@ -11,7 +11,8 @@ import { curatedPlan } from './guide-plans';
 /**
  * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Don't show again" only at step 0, and
  * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise; v1.6.3:
- * the guide bar, below, carries Back / Next / Exit on the instruction steps): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
+ * the guide bar, below, carries Back / Next / Exit on the instruction steps; v1.6.4: the tray shape to drag pulses, `trayHints`, and the
+ * turning lesson's outline is drawn behind its piece): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
  * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
  * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
  * fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without the word (or a c in it) the c
@@ -29,7 +30,7 @@ import { curatedPlan } from './guide-plans';
  *    carries it into the true outline. 1b (a wedge is close in position but needs turning: `needsTurning`): the outline is
  *    drawn at its TRUE angle and the callout says "Now turn it with the round handle to fit." (pointing at the rotate
  *    handle; v1.6.3: that handle wears a pulsing blueprint-blue ring and the piece's dashed selection box is hidden,
- *    `teachingTurn`, as for step 6's turning hint); turned close to the angle it clicks in (position and angle) as any piece
+ *    `teachingTurn`, as for step 6's turning hint; v1.6.4: that piece's outline is drawn BEHIND it); turned close to the angle it clicks in (position and angle) as any piece
  *    does. Done when it is filled.
  * 2. outline: the black oval (solid), on the wedge. Done when it is filled. A new piece lands on top, so it covers the wedge.
  * 3. outline: the white oval (dotted), on the black one. Done when it is filled (it lands on top too).
@@ -54,6 +55,10 @@ import { curatedPlan } from './guide-plans';
  *    outlines are in the c's board frame, so the c's pieces fill theirs (they are batch 0, already done).
  * 7. no outline. "Great work! Now you're ready to create on your own." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
+ *
+ * The tray hint (v1.6.4, `trayHints`): while the guide asks the visitor to drag a shape from the tray (1a, 2, 3, and every
+ * shape the word's current batch still needs in 6), that tray button wears a pulsing blueprint-blue ring of the shape's
+ * silhouette (main.ts). None on 1b (the wedge is out), 4, 5, 7, the questions, or while a stacking prompt shows.
  *
  * The guide NEVER fixes the stacking order by itself (a click-in sets position and angle only); only Next (the guide bar)
  * restacks the prompted piece for the visitor.
@@ -555,6 +560,24 @@ export function backSteps(
  */
 export function teachingTurn(s: GuideState): string | null {
   return s.turn && ((s.phase === 'c' && s.step === 1) || (s.phase === 'word' && s.step === 6)) ? s.turn : null;
+}
+
+/**
+ * The tray shapes the guide is asking the visitor to drag (v1.6.4): their tray buttons wear a pulsing blueprint-blue
+ * ring. c step 1a (the wedge), 2 (the black oval), 3 (the white oval); word step 6: every shape an unfilled outline of the
+ * current batch still needs. A piece already out and waiting to be turned (`turn`, whose shape `shapeOf` gives) covers one
+ * outline of its shape, so 1b shows none. None while a stacking prompt shows (the callout points at Back / Forward then),
+ * nor on any other step. Shape ids, each once, in outline order.
+ */
+export function trayHints(s: GuideState, shapeOf: (id: string) => string | undefined = () => undefined): string[] {
+  if (s.stack) return [];
+  if (!(s.phase === 'c' && (s.step === 1 || s.step === 2 || s.step === 3)) && !(s.phase === 'word' && s.step === 6)) return [];
+  const need = new Map<string, number>();
+  for (const i of activeOutlines(s)) need.set(s.outlines[i].shapeId, (need.get(s.outlines[i].shapeId) ?? 0) + 1);
+  // (`turn` is always close to an active outline of its own shape; in the c that is the one outline showing.)
+  const t = s.turn ? (shapeOf(s.turn) ?? (s.phase === 'c' ? [...need.keys()][0] : undefined)) : undefined;
+  if (t && need.has(t)) need.set(t, need.get(t)! - 1);
+  return [...need].filter(([, n]) => n > 0).map(([id]) => id);
 }
 
 // ---- outlines beside the visitor's work (Keep my pieces) --------------------------------------------------------

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BESIDE_ORDER, C_STEPS, GUIDE_COPY, backSteps, guideBarCount, guideBarShown, guidePosition, teachingTurn, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, welcomeGuide, besideRect, besideSpot,
+  BESIDE_ORDER, C_STEPS, GUIDE_COPY, backSteps, guideBarCount, guideBarShown, guidePosition, teachingTurn, trayHints, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, welcomeGuide, besideRect, besideSpot,
   cSequence, chooseWord, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, landingOutline, moveLetter,
   nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
@@ -964,6 +964,30 @@ describe('the guide bar (v1.6.3): shown on instruction steps, the step count, Ba
     expect(turned.turn, 'the stem in place, to be turned').toBe('s');
     expect(teachingTurn(turned)).toBe('s');
     expect(teachingTurn(askGuide())).toBeNull();
+  });
+
+  it('trayHints (v1.6.4): the shape to drag on 1a, 2 and 3 and the word\'s batch; none on 1b, 4, 5, the questions, idle', () => {
+    expect(trayHints(at([]))).toEqual(['wedge']);
+    expect(trayHints(at([landed])), '1b: the wedge is out, to be turned').toEqual([]);
+    expect(trayHints(at([landed]), (id) => (id === 'w' ? 'wedge' : undefined))).toEqual([]);
+    expect(trayHints(at([wedge]))).toEqual(['positive-round']);
+    expect(trayHints(at([wedge, black]))).toEqual(['negative-round']);
+    const four = at([wedge, black, white]);
+    expect(four.step).toBe(4);
+    expect(trayHints(four)).toEqual([]);
+    const five = at([black, wedge, white]);
+    expect(five.step).toBe(5);
+    expect(trayHints(five)).toEqual([]);
+    for (const q of [GUIDE_IDLE, askGuide(), welcomeGuide()]) expect(trayHints(q)).toEqual([]);
+    const word = chooseWord(five, WORD, world([]));
+    expect(word.step).toBe(6);
+    const need = trayHints(word);
+    expect(need.length).toBeGreaterThan(0);
+    expect(need).toEqual([...new Set(activeOutlines(word).map((i) => word.outlines[i].shapeId))]);
+    // The stem out and to be turned: its outline is covered, so the stem no longer pulses (if it was the only stem needed).
+    const turned = observeGuide(word, world([on('s', { ...WORD[0], rotation: WORD[0].rotation + 25 })]));
+    expect(turned.turn).toBe('s');
+    expect(trayHints(turned, (id) => (id === 's' ? 'positive-stem' : undefined))).not.toContain('positive-stem');
   });
 
   it('History.past: the undo stack, most recent first, without changing it', () => {
