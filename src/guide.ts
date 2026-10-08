@@ -9,7 +9,7 @@ import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
 /**
- * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Don't show again" only at step 0, and
+ * The onboarding guide (copy v4, v1.6.0; v1.6.6: a piece that fits its outline completely is deselected (main.ts `guideSnap`, `guideNextFill`), so the next step starts clean: the wedge in position but still to turn (1b) keeps its selection, step 4 and the word's stacking prompts select their piece on purpose and deselect it once answered; v1.6.1: black callout, "Don't show again" only at step 0, and
  * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise; v1.6.3:
  * the guide bar, below, carries Back / Next / Exit on the instruction steps; v1.6.5: the block's Back / Forward the callout points at pulses blue too (`syncBlockHint`, main.ts: c step 4 and the word's stacking prompts; only while the callout targets it), step 5 reads "That's the letter 'c'."; v1.6.4: the tray shape to drag pulses, `trayHints`, and the
  * turning lesson's outline is drawn behind its piece): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**

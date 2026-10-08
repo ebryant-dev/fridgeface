@@ -3559,6 +3559,8 @@ export class FridgeFace extends HTMLElement {
 
   /** The prompt the auto-selection last served ('' none): a new prompt selects its piece once, never fighting the visitor. */
   private guideSelectedFor = '';
+  /** The piece that auto-selection chose for that prompt ('' none): deselected again once the prompt is answered (v1.6.6). */
+  private guideSelectedId = '';
 
   /**
    * A new stacking prompt selects the piece it is about, so the block's Back / Forward (Send backward / Bring forward) act on it.
@@ -3568,7 +3570,11 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide;
     const key = this.promptKey(s);
     if (!key) {
+      // (v1.6.6) The stacking prompt is answered: the piece it selected is done, so the selection goes with it.
+      const done = this.guideSelectedId;
       this.guideSelectedFor = '';
+      this.guideSelectedId = '';
+      if (done && this.selection.length === 1 && this.selection[0] === done && !this.inGesture) this.select(null);
       return;
     }
     if (key === this.guideSelectedFor) return;
@@ -3576,6 +3582,7 @@ export class FridgeFace extends HTMLElement {
     if (busy) return; // tried again when the board is next judged (the gesture's end)
     this.guideSelectedFor = key;
     const id = s.stack!.id;
+    this.guideSelectedId = id;
     if (!(this.selection.length === 1 && this.selection[0] === id) && this.composition.getPiece(id)) this.select(id);
   }
 
@@ -3614,6 +3621,15 @@ export class FridgeFace extends HTMLElement {
     this.settle(r.placements, before);
     this.say(r.placements.length === 1 ? 'Clicked into place.' : `${r.placements.length} pieces clicked into place.`);
     this.setGuide(recordBuilt(this.guide, r.placements.map((p) => p.id))); // guide-built (never one of theirs)
+    // (v1.6.6) A piece that now fits its outline completely is done: deselect it so the next step starts clean. One only
+    // placed in position (the wedge at step 1a, still to turn) keeps its selection, handle and pulse.
+    const after = observeGuide(this.guide, this.guideWorld());
+    const placed = r.placements.map((p) => p.id).filter((id) => after.filled.includes(id) && after.turn !== id);
+    if (placed.some((id) => this.selection.includes(id))) {
+      this.select(null);
+      this.guideSelectedFor = ''; // a stacking prompt that stands (or comes up) selects its own piece again, after the deselect
+      this.guideSelectedId = '';
+    }
     this.guideObserve();
   }
 
@@ -3692,12 +3708,14 @@ export class FridgeFace extends HTMLElement {
     } else {
       const [p] = this.composition.addPieces([o]);
       built = p.id;
-      this.select(p.id);
-      // (v1.6.3) The board was judged as the piece landed, before it was selected: a stacking prompt that came up with it
-      // (Next's white oval brings step 4) selects its own piece again, so Forward acts on the wedge.
-      this.guideSelectedFor = '';
-      this.guideAutoSelect();
     }
+    // (v1.6.6) Either way the piece now fits its outline: nothing stays selected. The board was judged as it landed, so a
+    // stacking prompt that came up with it (Next's white oval brings step 4) selects its own piece again, so Forward acts
+    // on the wedge (v1.6.3).
+    this.select(null);
+    this.guideSelectedFor = '';
+    this.guideSelectedId = '';
+    this.guideAutoSelect();
     this.say('Placed for you.');
     this.setGuide(recordBuilt(this.guide, [built].filter(Boolean)));
     this.guideObserve();

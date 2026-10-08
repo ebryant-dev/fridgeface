@@ -1981,3 +1981,80 @@ test('step 0 on a blank board: pieces loaded while the question shows turn it in
   await expect(guide(page)).not.toHaveAttribute('data-welcome', '');
   await expect(el(page, '.guide .gt1')).toHaveText('Start on a clean fridge?');
 });
+
+// ---- v1.6.6: a piece placed correctly is deselected --------------------------------------------------------------------
+
+const selectionOf = (page: Page) => page.evaluate(() => [...(document.querySelector('fridge-face') as unknown as { selection: string[] }).selection]);
+const V166 = process.env.FF_SHOTS166 || SHOT;
+
+test('v1.6.6: a piece that fits its outline is deselected (wedge after turning, black oval, white oval, a word piece, Next); the wedge stays selected at 1b; step 4 selects the wedge and one Forward press leaves nothing selected; undo is untouched', async ({ page, isMobile }, info) => {
+  test.setTimeout(120_000);
+  await open(page, '/?n=desel');
+  // 1a -> 1b: in position but not turned: still selected (its handle and pulse show).
+  await dropNear(page, 2);
+  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
+  let s = await state(page);
+  const wedge = s.turn!;
+  expect(await selectionOf(page), 'the wedge stays selected at 1b').toEqual([wedge]);
+  await expect(el(page, '[data-handle]').first()).toBeAttached();
+  await landed(page);
+  // Turned in: placed correctly, nothing selected, no box and no handle.
+  await turnTo(page, wedge, s.outlines[2].rotation, 5);
+  await expect.poll(async () => (await state(page)).step).toBe(2);
+  expect(await selectionOf(page), 'wedge placed: nothing selected').toEqual([]);
+  expect(await el(page, '[data-selection-box]').count()).toBe(0);
+  expect(await el(page, '[data-handle]').count()).toBe(0);
+  await landed(page);
+  await frames(page);
+  await page.screenshot({ path: `${V166}/v166-${info.project.name}-step2.png` });
+  // Black oval.
+  await dropNear(page, await activeOutline(page));
+  await expect.poll(async () => (await state(page)).step).toBe(3);
+  expect(await selectionOf(page), 'black oval placed: nothing selected').toEqual([]);
+  expect(await el(page, '[data-selection-box]').count()).toBe(0);
+  await landed(page);
+  await frames(page);
+  await page.screenshot({ path: `${V166}/v166-${info.project.name}-step3.png` });
+  // White oval -> step 4: the wedge is selected on purpose.
+  await dropNear(page, await activeOutline(page));
+  await expect.poll(async () => (await state(page)).step).toBe(4);
+  expect(await selectionOf(page), 'step 4 selects the wedge').toEqual([wedge]);
+  // Undo / redo are not polluted by selection: undo the white oval (step 3), redo (step 4).
+  await historyKey(page, 'undo');
+  await expect(guide(page)).toHaveAttribute('data-step', '3');
+  await historyKey(page, 'redo');
+  await expect(guide(page)).toHaveAttribute('data-step', '4');
+  await checkStep4(page, 'step 4 (v1.6.6)');
+  // ONE Forward press answers it; step 5, nothing selected.
+  expect(await bringWedgeForward(page, isMobile), 'one press').toBe(1);
+  expect(await selectionOf(page), 'stacking answered: nothing selected').toEqual([]);
+});
+
+test('v1.6.6: Next (fill, and the stacking Bring forward) leaves nothing selected; a word batch piece placed by hand is deselected; free play keeps the dropped piece selected', async ({ page, isMobile }) => {
+  test.setTimeout(120_000);
+  await open(page, '/?n=desel2');
+  for (let i = 0; i < 3; i++) {
+    await nextFill(page);
+    expect(await selectionOf(page), `Next filled outline ${i}: nothing selected`).toEqual(i === 2 ? [(await state(page)).stack!.id] : []);
+  }
+  expect((await state(page)).step).toBe(4);
+  await nextFill(page); // brings the wedge forward
+  await expect.poll(async () => (await state(page)).step).toBe(5);
+  expect(await selectionOf(page), 'Next answered the stacking step: nothing selected').toEqual([]);
+  // The word: a batch piece dropped by hand and turned in is deselected.
+  await press(isMobile, gbtn(page, 'word'));
+  await expect(guide(page)).toHaveAttribute('data-step', '6');
+  const first = (await state(page)).batches![1][0];
+  await settled(page);
+  await fillByHand(page, first);
+  expect(await selectionOf(page), 'word piece placed: nothing selected').toEqual([]);
+  // Outside the guide nothing changes: after Exit, a dropped piece is selected.
+  await press(isMobile, bbtn(page, 'exit'));
+  await expect(guide(page)).toBeHidden();
+  const n = await pieceCount(page);
+  const t = await el(page, '.tray button[data-shape="positive-stem"]').boundingBox();
+  const b = await el(page, '.board').boundingBox();
+  await drag(page, { x: t!.x + t!.width / 2, y: t!.y + t!.height / 2 }, { x: b!.x + b!.width * 0.5, y: b!.y + b!.height * 0.6 });
+  await expect.poll(() => pieceCount(page)).toBe(n + 1);
+  expect((await selectionOf(page)).length, 'free play: the dropped piece is selected').toBe(1);
+});
