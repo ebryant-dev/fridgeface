@@ -9,7 +9,8 @@ import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
 /**
- * The onboarding guide (copy v4, v1.6.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
+ * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Exit guide" on every step, "Don't show again" only at step 0, and
+ * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
  * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
  * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
  * fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without the word (or a c in it) the c
@@ -83,6 +84,10 @@ export const GUIDE_WORD = { text: 'create', variant: 1 } as const;
 /** Edward's approved copy v4 (v1.6.0), word for word. */
 export const GUIDE_COPY = {
   step0: 'Start on a clean fridge?',
+  /** Step 0 on a blank board (v1.6.1, automatic starts only): the offer. */
+  welcome: 'Would you like a tutorial?',
+  yes: 'Yes',
+  no: 'No',
   clearStart: 'Clear and start',
   keepMine: 'Keep my pieces',
   /** Step 1a: the wedge, its outline at the angle it lands at. */
@@ -108,7 +113,8 @@ export const GUIDE_COPY = {
   step7: "Great work! Now you're ready to create on your own.",
   startFresh: 'Start fresh',
   keepIt: 'Keep it',
-  skip: 'Skip',
+  /** Closes the guide for this visit (pieces stay; it returns next visit). */
+  skip: 'Exit guide',
   dontShow: "Don't show again",
   next: 'Next',
   replay: 'Show guide',
@@ -116,10 +122,11 @@ export const GUIDE_COPY = {
 
 export type GuideStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /**
- * 'ask': step 0 (the board already had pieces). 'c': steps 1 to 5 (the letter). 'word': steps 6 and 7, after the visitor
+ * 'ask': step 0 (the board already had pieces). 'welcome': step 0 on a blank board (v1.6.1: an automatic start asks "Would
+ * you like a tutorial?" with Yes / No / Don't show again; "Show guide" skips it). 'c': steps 1 to 5 (the letter). 'word': steps 6 and 7, after the visitor
  * chose Guide me (never goes back). null: the guide is not running.
  */
-export type GuidePhase = 'ask' | 'c' | 'word';
+export type GuidePhase = 'ask' | 'welcome' | 'c' | 'word';
 
 export interface GuideWorld {
   /** The composition, in stacking order (bottom first). */
@@ -136,7 +143,7 @@ const roughOverlap = (sizeOf: SizeOf): Overlaps => (a, b) => Math.hypot(a.x - b.
 /** The world's overlap test (or the rough one). */
 export const overlapsOf = (w: GuideWorld): Overlaps => w.overlaps ?? roughOverlap(w.sizeOf);
 
-/** `phase` null: the guide is not running (`step` 0). `phase` 'ask' is step 0 showing. */
+/** `phase` null: the guide is not running (`step` 0). `phase` 'ask' or 'welcome' is step 0 showing. */
 export interface GuideState {
   step: GuideStep;
   phase: GuidePhase | null;
@@ -180,6 +187,11 @@ export const GUIDE_IDLE: GuideState = Object.freeze({
 
 /** Is the guide running (step 0's question included)? */
 export const guideRunning = (s: GuideState): boolean => s.phase !== null;
+
+/** Step 0 on a blank board (an automatic start): "Would you like a tutorial?". Yes starts step 1, No closes the guide. */
+export function welcomeGuide(): GuideState {
+  return { ...GUIDE_IDLE, phase: 'welcome' };
+}
 
 /** Step 0: the guide starts on a board that already has pieces. */
 export function askGuide(): GuideState {
@@ -372,7 +384,7 @@ export function guideClearPlan(s: GuideState, pieces: readonly OutlinePiece[]): 
  * Returns the same object when nothing changed.
  */
 export function observeGuide(s: GuideState, w: GuideWorld): GuideState {
-  if (!s.step || !s.phase || s.phase === 'ask') return s;
+  if (!s.step || !s.phase || s.phase === 'ask' || s.phase === 'welcome') return s;
   const next = derive(s.phase, s.outlines, w, carry(s));
   if (s.phase === 'c' && s.step === 5 && next.step !== 5) {
     // The finished c moved as one (a selection dragged, or that drag undone): its outlines follow it, so it is still the c

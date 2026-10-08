@@ -111,6 +111,8 @@ test.describe('the guide\'s c', () => {
     const nm = info.project.name.endsWith('landscape') ? 'wk-iphone-landscape' : 'wk-iphone';
     await page.goto('/?n=zoomc');
     await ready(page);
+    await expect(page.locator('fridge-face .guide')).toHaveAttribute('data-welcome', '', { timeout: 5000 });
+    await page.locator('fridge-face .guide [data-guide=yes]').tap(); // v1.6.1: the welcome question first
     await expect(page.locator('fridge-face .guide')).toHaveAttribute('data-step', '1', { timeout: 5000 });
     await frames(page);
     const measure = () => page.evaluate(async () => {

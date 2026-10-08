@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, besideRect, besideSpot,
+  BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, welcomeGuide, besideRect, besideSpot,
   cSequence, chooseWord, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, landingOutline, moveLetter,
   nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
@@ -38,7 +38,8 @@ describe('copy v4', () => {
     expect(GUIDE_COPY.stackForward).toBe('Bring it forward so it sits in front.');
     expect(GUIDE_COPY.step7).toBe("Great work! Now you're ready to create on your own.");
     expect([GUIDE_COPY.startFresh, GUIDE_COPY.keepIt, GUIDE_COPY.skip, GUIDE_COPY.dontShow, GUIDE_COPY.next, GUIDE_COPY.replay])
-      .toEqual(['Start fresh', 'Keep it', 'Skip', "Don't show again", 'Next', 'Show guide']);
+      .toEqual(['Start fresh', 'Keep it', 'Exit guide', "Don't show again", 'Next', 'Show guide']);
+    expect([GUIDE_COPY.welcome, GUIDE_COPY.yes, GUIDE_COPY.no]).toEqual(['Would you like a tutorial?', 'Yes', 'No']);
     expect(GUIDE_LETTER).toEqual({ char: 'c', variant: 1 });
     expect(GUIDE_WORD).toEqual({ text: 'create', variant: 1 });
   });
@@ -847,5 +848,20 @@ describe('freeRect: the largest free strip to frame a section in (v1.2.2)', () =
     const f = freeRect({ w: 100, h: 590 }, area, [{ x: 0, y: 0, w: 150, h: 70 }, { x: 250, y: 0, w: 150, h: 70 }]);
     expect(f.rect).toEqual({ x: 150, y: 0, w: 100, h: 600 });
     expect(rectsOverlap(f.rect, { x: 0, y: 0, w: 150, h: 70 })).toBe(false);
+  });
+});
+
+describe('step 0 on a blank board (v1.6.1)', () => {
+  it('is its own phase, running, at step 0, distinct from the clean-fridge question', () => {
+    const w = welcomeGuide();
+    expect(w.phase).toBe('welcome');
+    expect(w.step).toBe(0);
+    expect(guideRunning(w)).toBe(true);
+    expect(w).not.toEqual(askGuide());
+    expect(w.outlines).toEqual([]);
+  });
+  it('answerAsk does nothing from it (only the clean-fridge question answers)', () => {
+    const w = welcomeGuide();
+    expect(answerAsk(w, 'clear', C, world([]), [])).toBe(w);
   });
 });

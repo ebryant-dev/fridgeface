@@ -87,10 +87,21 @@ async function ready(page: Page) {
   await page.waitForFunction(() => !!document.querySelector('fridge-face')?.shadowRoot?.querySelector('.tray button[data-shape]'));
 }
 
-/** Load the page and wait for step 1. */
+/** Load the page on a blank board and wait for step 0's welcome question ("Would you like a tutorial?"). */
+async function openWelcome(page: Page, url = '/?n=w') {
+  await page.goto(url);
+  await ready(page);
+  await expect(guide(page)).toHaveAttribute('data-welcome', '', { timeout: 5000 });
+  await expect(guide(page)).toHaveAttribute('data-step', '0');
+  await expect(guide(page)).toBeVisible();
+}
+
+/** Load the page and wait for step 1 (v1.6.1: answering the welcome question with Yes first, when it is asked). */
 async function open(page: Page, url = '/?n=g') {
   await page.goto(url);
   await ready(page);
+  await expect(guide(page)).toHaveAttribute('data-step', /^[01]$/, { timeout: 5000 });
+  if (await guide(page).getAttribute('data-welcome') !== null) await gbtn(page, 'yes').dispatchEvent('click');
   await expect(guide(page)).toHaveAttribute('data-step', '1', { timeout: 5000 });
   await expect(guide(page)).toBeVisible();
 }
@@ -436,16 +447,16 @@ test('blank start (no intro), then the c with the stacking lesson (copy v4): the
   expect(await page.evaluate(() => !!document.querySelector('fridge-face')!.shadowRoot!.activeElement?.closest('.guide'))).toBe(false);
   await expect(el(page, '#ff-live')).toContainText(C_TEXT[1]);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[1]);
-  await expect(gbtn(page, 'skip')).toHaveText('Skip');
-  await expect(gbtn(page, 'off')).toHaveText("Don't show again");
+  await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
+  await expect(gbtn(page, 'off'), "Don't show again is at step 0 only").toBeHidden();
   await expect(gbtn(page, 'next')).toBeHidden();
-  // v1.6.0: the callout is filled with a light tint of the blueprint blue; its buttons keep their paper background.
+  // v1.6.1: the callout is black with white text; its secondary buttons are transparent (white edge and text).
   const look = await page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const g = sr.querySelector('.guide')!;
     return { bg: getComputedStyle(g).backgroundColor, color: getComputedStyle(g).color, btn: getComputedStyle(sr.querySelector('.guide [data-guide=skip]')!).backgroundColor, arrow: sr.querySelector('.gpt path')!.getAttribute('fill') };
   });
-  expect(look).toEqual({ bg: 'rgb(228, 239, 251)', color: 'rgb(0, 0, 0)', btn: 'rgb(255, 255, 255)', arrow: '#E4EFFB' });
+  expect(look).toEqual({ bg: 'rgb(0, 0, 0)', color: 'rgb(255, 255, 255)', btn: 'rgba(0, 0, 0, 0)', arrow: '#000' });
   // ONE outline: the wedge, blueprint blue, DOTTED (a negative shape), about 2.75 screen px, no filters, no pointer events,
   // drawn at the angle a piece from the tray lands at (0), at the true outline's position.
   const outline = () => page.evaluate(() => {
@@ -561,7 +572,7 @@ test('copy v4 walk-through, guide ON: every c step (and Guide me) in screenshots
   test.setTimeout(120_000);
   const errors = collectErrors(page);
   await open(page, '/?n=v4');
-  const tag = `${SHOTS}/v160-${info.project.name}`;
+  const tag = `${SHOTS}/v161-${info.project.name}`;
   // How far the callout stands from its target (px between their edges), logged per step: it should hug it.
   const gapToTarget = async () => (await frames(page), await page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
@@ -723,7 +734,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
   await expect(el(page, '#ff-live')).toContainText(`3 of ${total}`);
   await expect(gbtn(page, 'skip')).toBeVisible();
-  await expect(gbtn(page, 'off')).toBeVisible();
+  await expect(gbtn(page, 'off')).toBeHidden();
   await settled(page);
   if (!isMobile) {
     const v = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
@@ -949,7 +960,7 @@ test('Next (after waiting, shortened timer) does the current thing for the visit
   await expect(guide(page), 'undoing Next\'s white oval').toHaveAttribute('data-step', '3');
 });
 
-test('Skip ends it for this visit; it comes back on the next one', async ({ page, isMobile }) => {
+test('Exit guide ends it for this visit; it comes back (asking first) on the next one', async ({ page, isMobile }) => {
   await open(page);
   await press(isMobile, gbtn(page, 'skip'));
   await expect(guide(page)).toBeHidden();
@@ -957,13 +968,13 @@ test('Skip ends it for this visit; it comes back on the next one', async ({ page
   await page.waitForTimeout(500);
   await page.reload();
   await ready(page);
-  await expect(guide(page)).toHaveAttribute('data-step', '1', { timeout: 5000 });
+  await expect(guide(page)).toHaveAttribute('data-welcome', '', { timeout: 5000 });
   await expect(guide(page)).toBeVisible();
 });
 
 test("Don't show again survives a reload; Show guide in Controls replays it from step 1 without unsetting it", async ({ page, isMobile }) => {
-  await open(page);
-  await press(isMobile, gbtn(page, 'off'));
+  await openWelcome(page);
+  await press(isMobile, gbtn(page, 'optout'));
   await expect(guide(page)).toBeHidden();
   expect(await stored(page)).toBe('off');
   await page.reload();
@@ -1126,6 +1137,7 @@ test('reduced motion: the pointer does not move, and a click-in does not animate
     const ctx = await browser.newContext({ ...(info.project.use as Record<string, unknown>), storageState: { cookies: [], origins: [] }, reducedMotion: reduce ? 'reduce' : 'no-preference' });
     const p = await ctx.newPage();
     await open(p);
+    if (!reduce) await expect.poll(() => p.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.querySelector('.gpt svg')!.getAnimations().length), 'the pointer nudges toward the target').toBeGreaterThan(0);
     const running = await p.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.querySelector('.gpt svg')!.getAnimations().length);
     if (reduce) expect(running, 'no pointer animation with reduced motion').toBe(0);
     else expect(running, 'the pointer nudges toward the target').toBeGreaterThan(0);
@@ -1176,8 +1188,8 @@ test('storage that throws: the guide still shows, and "Don\'t show again" still 
     Object.defineProperty(window, 'localStorage', { get() { throw new Error('SecurityError'); }, configurable: true });
   });
   const errors = collectErrors(page);
-  await open(page);
-  await press(isMobile, gbtn(page, 'off'));
+  await openWelcome(page);
+  await press(isMobile, gbtn(page, 'optout'));
   await expect(guide(page)).toBeHidden();
   expect(errors).toEqual([]);
   void process;
@@ -1280,7 +1292,7 @@ test('step 0: a saved board on load asks "Start on a clean fridge?" with Clear a
   await expect(el(page, '.guide .gt2')).toBeHidden();
   await expect(gbtn(page, 'clean')).toHaveText('Clear and start');
   await expect(gbtn(page, 'mine')).toHaveText('Keep my pieces');
-  await expect(gbtn(page, 'skip')).toBeVisible();
+  await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
   await expect(gbtn(page, 'off')).toBeVisible();
   await expect(gbtn(page, 'next')).toBeHidden();
   for (const b of ['word', 'clear', 'fresh', 'keep']) await expect(gbtn(page, b)).toBeHidden();
@@ -1814,4 +1826,104 @@ test('v1.2.4 symmetry: an oval half a turn round clicks in where it is (no spin)
   expect(gap(white.after.rotation, white.before)).toBeCloseTo(6, 6);
   await expect.poll(async () => (await state(page)).step, 'on top of the wedge: bring it forward').toBe(4);
   expect(errors).toEqual([]);
+});
+
+/** v1.6.1: on narrow phones every visible callout button label keeps >= 6px clear inside its border, and the callout stays on screen. */
+for (const [w, h] of [[375, 812], [320, 568]] as const) {
+  test(`v1.6.1: callout button labels clear their borders at ${w}x${h}; step shots`, async ({ page, isMobile }, info) => {
+    test.skip(!isMobile || info.project.name.includes('landscape'), 'phone portrait only');
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: w, height: h });
+    await open(page, '/?n=v161');
+    const tag = `${SHOTS}/v161-${w}x${h}-${info.project.name}`;
+    const clear = async (label: string) => {
+      await settled(page);
+      const r = await page.evaluate(() => {
+        const sr = document.querySelector('fridge-face')!.shadowRoot!;
+        const g = sr.querySelector<HTMLElement>('.guide')!, gr = g.getBoundingClientRect();
+        const out: { name: string; l: number; r: number }[] = [];
+        for (const b of sr.querySelectorAll<HTMLElement>('.guide button.b')) {
+          if (!b.getClientRects().length) continue;
+          const cs = getComputedStyle(b), bw = parseFloat(cs.borderLeftWidth);
+          const rg = document.createRange(); rg.selectNodeContents(b.querySelector('.tx')!);
+          const t = rg.getBoundingClientRect(), br = b.getBoundingClientRect();
+          out.push({ name: b.dataset.guide || '', l: t.left - br.left - bw, r: br.right - bw - t.right });
+        }
+        return { out, inside: gr.left >= 0 && gr.top >= 0 && gr.right <= innerWidth && gr.bottom <= innerHeight };
+      });
+      expect(r.inside, `${label}: callout on screen`).toBe(true);
+      for (const b of r.out) { expect.soft(b.l, `${label} ${b.name} left`).toBeGreaterThanOrEqual(6); expect.soft(b.r, `${label} ${b.name} right`).toBeGreaterThanOrEqual(6); }
+    };
+    await clear('1a');
+    await page.screenshot({ path: `${tag}-1a-drag-wedge.png` });
+    if (w === 320) return;
+    await wedgeIn(page, isMobile, undefined, tag);
+    await clear('1b');
+    await dropNear(page, await activeOutline(page));
+    await dropNear(page, await activeOutline(page));
+    await expect.poll(async () => (await state(page)).step).toBe(4);
+    await clear('4');
+    await page.screenshot({ path: `${tag}-4-bring-forward.png` });
+    await bringWedgeForward(page, isMobile);
+    await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+    await clear('5');
+    await page.screenshot({ path: `${tag}-5-thats-a-c.png` });
+  });
+}
+
+test('step 0 on a blank board (v1.6.1): "Would you like a tutorial?" with Yes, No and Don\'t show again; Yes starts step 1, centred and clear of the controls', async ({ page, isMobile }, info) => {
+  const errors = collectErrors(page);
+  await openWelcome(page);
+  await expect(el(page, '.guide .gt1')).toHaveText('Would you like a tutorial?');
+  await expect(gbtn(page, 'yes')).toHaveText('Yes');
+  await expect(gbtn(page, 'no')).toHaveText('No');
+  await expect(gbtn(page, 'optout')).toHaveText("Don't show again");
+  for (const b of ['skip', 'off', 'next', 'clean', 'mine', 'word']) await expect(gbtn(page, b)).toBeHidden();
+  expect(await el(page, '[data-outline]').count(), 'no outlines at step 0').toBe(0);
+  await expect(el(page, '#ff-live')).toContainText('Would you like a tutorial?');
+  const m = await checkCallout(page, 'welcome');
+  expect(m.side).toBe('centre');
+  await page.screenshot({ path: `${SHOTS}/v161-welcome-${info.project.name}.png` });
+  // Undo and redo with the question showing change nothing (and never start the guide).
+  await page.keyboard.press('ControlOrMeta+z');
+  await page.keyboard.press('ControlOrMeta+Shift+z');
+  await expect(guide(page)).toHaveAttribute('data-welcome', '');
+  await press(isMobile, gbtn(page, 'yes'));
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await expect(guide(page)).not.toHaveAttribute('data-welcome', '');
+  expect(await el(page, '[data-outline]').count()).toBe(1);
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[1]);
+  await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
+  await expect(gbtn(page, 'off')).toBeHidden();
+  await page.screenshot({ path: `${SHOTS}/v161-1a-exit-only-${info.project.name}.png` });
+  expect(errors).toEqual([]);
+});
+
+test('step 0 on a blank board: No closes it for this visit and it asks again next visit; storage stays empty', async ({ page, isMobile }) => {
+  await openWelcome(page);
+  await press(isMobile, gbtn(page, 'no'));
+  await expect(guide(page)).toBeHidden();
+  expect(await stored(page)).toBeNull();
+  await page.waitForTimeout(500);
+  await page.reload();
+  await ready(page);
+  await expect(guide(page)).toHaveAttribute('data-welcome', '', { timeout: 5000 });
+});
+
+test('Show guide (replay) on a blank board skips the welcome question and starts step 1', async ({ page, isMobile }) => {
+  await openWelcome(page);
+  await press(isMobile, gbtn(page, 'no'));
+  await expect(guide(page)).toBeHidden();
+  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { replayGuide(): void }).replayGuide());
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await expect(guide(page)).not.toHaveAttribute('data-welcome', '');
+});
+
+test('step 0 on a blank board: pieces loaded while the question shows turn it into "Start on a clean fridge?"', async ({ page }) => {
+  await openWelcome(page);
+  await page.evaluate(() => (document.querySelector('fridge-face') as FF).loadComposition({ v: 1, pieces: [{ s: 'positive-stem', x: 0, y: 0, r: 0 }] }));
+  await expect.poll(() => pieceCount(page)).toBe(1);
+  await expect(guide(page)).toHaveAttribute('data-ask', '');
+  await expect(guide(page)).not.toHaveAttribute('data-welcome', '');
+  await expect(el(page, '.guide .gt1')).toHaveText('Start on a clean fridge?');
 });

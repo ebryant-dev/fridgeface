@@ -17,7 +17,7 @@ import { icon } from './icons';
 import { BLOCK_ORDER, blockState } from './block';
 import { columnTrayScale, layoutState } from './layout';
 import {
-  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
+  GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, welcomeGuide, besideSpot, chooseWord, coverage,
   findWordC, placeWordC, type WordC,
   currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
   landingOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type CalloutSide, type GuideState,
@@ -379,12 +379,13 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .helpbody .or { font-size: 11px; align-self: center; color: #4a4a4a; }
 
 /* ---- the guide: one small callout on the real UI, flat, Jost caps (see src/guide.ts) ---- */
-/* v1.6.0: a light tint of the outlines' blueprint blue (#378ADD) fills the callout and its pointer; black text on it is
-   about 17:1. Its buttons keep their own paper background. */
+/* v1.6.1: the callout and its pointer are black with white text (21:1). Inside it, secondary buttons are transparent with
+   a white edge and white text (hover: 12% white); primary buttons are white with black text (hover #ddd, 15:1 or better).
+   The focus ring is the button's own text colour (white on black, black on white), so it reads on both. */
 .guide {
-  --guide-fill: #E4EFFB;
+  --guide-fill: #000;
   position: absolute; z-index: 7; left: 0; top: 0; box-sizing: border-box; width: max-content; max-width: min(340px, calc(100% - 32px));
-  padding: 12px 12px 12px 14px; background: var(--guide-fill); color: var(--ink); border: 2px solid var(--ink);
+  padding: 12px 12px 12px 14px; background: var(--guide-fill); color: #fff; border: 2px solid var(--ink);
   box-shadow: 4px 6px 0 rgb(0 0 0 / 0.25); pointer-events: auto; touch-action: manipulation;
 }
 .guide[hidden], .guide [hidden] { display: none !important; }
@@ -393,8 +394,12 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .gtext .gt2.gprog { font-weight: 500; letter-spacing: 0.12em; }
 .grow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .grow.gctl button.b { font-size: 11px; padding: 0 10px; }
-.guide button.b.pri { background: var(--ink); color: var(--paper); }
-.guide button.b.pri:hover { background: #333; }
+.guide button.b { background: transparent; color: #fff; border-color: #fff; }
+.guide button.b:hover:not(:disabled) { background: rgb(255 255 255 / 0.12); }
+.guide button.b:disabled { background: transparent; color: #a0a0a0; border-color: #a0a0a0; }
+.guide button.b.pri, .guide button.b.pri:disabled { background: #fff; color: #000; border-color: #fff; }
+.guide button.b.pri:hover:not(:disabled) { background: #ddd; }
+.guide button.b.pri:disabled { background: #bbb; color: #333; border-color: #bbb; }
 /* The pointer: a flat triangle in the callout's fill (black edge, so it reads on the board and on black pieces) just outside the callout, tip toward the target. */
 .gpt { position: absolute; width: 22px; height: 13px; pointer-events: none; line-height: 0; }
 .gpt svg { display: block; animation: ff-guide-nudge 1.2s ease-in-out infinite; }
@@ -413,11 +418,11 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 [data-compact] .gtext { font-size: 12px; line-height: 1.3; letter-spacing: 0.06em; }
 [data-compact] .grow { margin-top: 6px; gap: 4px; }
 [data-compact] .grow.gctl { flex-wrap: nowrap; gap: 12px; margin-top: 4px; }
-[data-compact] .grow.gctl button.b { min-width: 0; min-height: 28px; padding: 0 6px; font-size: 10px; letter-spacing: 0.08em; border-width: 1.5px; white-space: nowrap; }
+[data-compact] .grow.gctl button.b { min-width: 0; min-height: 28px; padding: 0 7px; font-size: 10px; letter-spacing: 0.08em; border-width: 1.5px; white-space: nowrap; }
 [data-compact] .grow.gctl button.b::after { inset: -8px -6px; }
 /* The narrowest callout (v1.5.0, a last resort on phones in portrait): the small controls tighten to fit its width. */
-[data-compact] .guide[data-narrow] .grow.gctl { gap: 8px; }
-[data-compact] .guide[data-narrow] .grow.gctl button.b { padding: 0 5px; font-size: 9.5px; letter-spacing: 0.02em; }
+[data-compact] .guide[data-narrow] .grow.gctl { gap: 6px 8px; flex-wrap: wrap; }
+[data-compact] .guide[data-narrow] .grow.gctl button.b { padding: 0 8px; font-size: 9.5px; letter-spacing: 0.02em; }
 [data-compact] .gpick button.b { position: relative; min-height: 34px; font-size: 11px; padding: 0 10px; }
 [data-compact] .gpick button.b::after { content: ""; position: absolute; inset: -5px -2px; }
 
@@ -742,11 +747,16 @@ export class FridgeFace extends HTMLElement {
         <div class="grp" role="group" aria-label="Negative shapes"><div class="shapes" data-polarity="negative"></div><div class="bracket" aria-hidden="true"><span>Negative</span></div></div>
       </div>
       <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
-        <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#E4EFFB" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg></span>
+        <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg></span>
         <p class="gtext"><span class="gt1"></span><span class="gt2" hidden></span><span class="gt3" hidden></span></p>
         <div class="grow gpick" data-pick="0" hidden>
           <button type="button" class="b" data-guide="clean"><span class="tx">${GUIDE_COPY.clearStart}</span></button>
           <button type="button" class="b pri" data-guide="mine"><span class="tx">${GUIDE_COPY.keepMine}</span></button>
+        </div>
+        <div class="grow gpick" data-pick="w" hidden>
+          <button type="button" class="b pri" data-guide="yes"><span class="tx">${GUIDE_COPY.yes}</span></button>
+          <button type="button" class="b" data-guide="no"><span class="tx">${GUIDE_COPY.no}</span></button>
+          <button type="button" class="b" data-guide="optout"><span class="tx">${GUIDE_COPY.dontShow}</span></button>
         </div>
         <div class="grow gpick" data-pick="5" hidden>
           <button type="button" class="b pri" data-guide="word"><span class="tx">${GUIDE_COPY.guideMe}</span></button>
@@ -3086,7 +3096,7 @@ export class FridgeFace extends HTMLElement {
       return;
     }
     this.guideQueued = false;
-    this.setGuide(this.firstGuideState());
+    this.setGuide(this.firstGuideState(true));
   }
 
   /** "Show guide": from the start (step 0 when the board has pieces, else step 1), even when "Don't show again" is set (which stays set). */
@@ -3099,8 +3109,9 @@ export class FridgeFace extends HTMLElement {
   }
 
   /** Step 0 when the board already has pieces (and there is a c to build); otherwise step 1 on the blank board. */
-  private firstGuideState(): GuideState {
+  private firstGuideState(welcome = false): GuideState {
     if (this.composition.pieces.length && this.guideLetter()) return askGuide();
+    if (welcome) return welcomeGuide(); // v1.6.1: an automatic start on a blank board asks first ("Show guide" and reloads do not)
     return startGuide(this.letterOutlines(), this.guideWorld());
   }
 
@@ -3147,6 +3158,12 @@ export class FridgeFace extends HTMLElement {
     const avoid = avoidPieces.map((p) => rotatedBounds([p], shape)!).filter(Boolean);
     const spot = besideSpot(work, { w: own.w, h: own.h }, { margin: GUIDE_BESIDE_MARGIN * STEM_LENGTH, view, pad, minZoom, avoid });
     return { x: spot.rect.x + spot.rect.w / 2, y: spot.rect.y + spot.rect.h / 2 };
+  }
+
+  /** The welcome question's Yes: step 1 on the blank board (or, if pieces arrived meanwhile, the clean-fridge question). */
+  private guideWelcomeYes() {
+    if (this.guide.phase !== 'welcome') return;
+    this.setGuide(this.composition.pieces.length && this.guideLetter() ? askGuide() : startGuide(this.letterOutlines(), this.guideWorld()));
   }
 
   /** Step 0's answer: Clear and start (one undoable clear, then step 1 on the blank board) or Keep my pieces. */
@@ -3204,7 +3221,10 @@ export class FridgeFace extends HTMLElement {
    */
   private guideAfterLoad() {
     const s = this.guide;
-    if (s.phase === 'c' && !s.filled.some(Boolean) && !s.built.length && this.boardEl.clientWidth) this.setGuide(this.firstGuideState());
+    if (s.phase === 'welcome') {
+      // A share link or a load put pieces on the board under the question: it is the clean-fridge question now.
+      if (this.composition.pieces.length && this.guideLetter()) this.setGuide(askGuide());
+    } else if (s.phase === 'c' && !s.filled.some(Boolean) && !s.built.length && this.boardEl.clientWidth) this.setGuide(this.firstGuideState());
     else this.guideObserve();
   }
 
@@ -3260,10 +3280,10 @@ export class FridgeFace extends HTMLElement {
     this.guideNext = false;
     if (was) this.renderGuideContent();
     const s = this.guide;
-    if (!this.guideHasControls(s.step) || s.phase === 'ask' || !guideRunning(s)) return;
+    if (!this.guideHasControls(s.step) || s.phase === 'ask' || s.phase === 'welcome' || !guideRunning(s)) return;
     const step = s.step;
     this.guideNextTimer = window.setTimeout(() => {
-      if (this.guide.step !== step || this.guide.phase === 'ask') return;
+      if (this.guide.step !== step || this.guide.phase === 'ask' || this.guide.phase === 'welcome') return;
       this.guideNext = true;
       this.renderGuideContent();
       this.scheduleGuide();
@@ -3313,6 +3333,7 @@ export class FridgeFace extends HTMLElement {
   private guideObserve() {
     if (!guideRunning(this.guide)) return;
     this.guideAutoSelect(); // a prompt that waited for a gesture to end
+    if (this.guide.phase === 'welcome') return; // the question stands whatever the board does (undo, redo, a placed piece)
     if (this.guide.phase === 'ask') {
       // The visitor emptied the board themselves (or undid back to blank): nothing left to ask about.
       if (!this.composition.pieces.length && this.boardEl.clientWidth) this.setGuide(startGuide(this.letterOutlines(), this.guideWorld()));
@@ -3439,6 +3460,7 @@ export class FridgeFace extends HTMLElement {
   private guideLines(): [string, string, string] {
     const s = this.guide;
     if (s.phase === 'ask') return [GUIDE_COPY.step0, '', ''];
+    if (s.phase === 'welcome') return [GUIDE_COPY.welcome, '', ''];
     switch (s.step) {
       case 1: return [s.turn ? this.turnText() : GUIDE_COPY.step1, '', ''];
       case 2: return [GUIDE_COPY.step2, '', ''];
@@ -3465,7 +3487,9 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide.step;
     const ask = this.guide.phase === 'ask';
     g.dataset.step = String(s);
+    const welcome = this.guide.phase === 'welcome';
     g.toggleAttribute('data-ask', ask);
+    g.toggleAttribute('data-welcome', welcome);
     g.toggleAttribute('data-turn', !!this.guide.turn);
     const lines = this.guideLines();
     ['.gt1', '.gt2', '.gt3'].forEach((sel, i) => {
@@ -3481,11 +3505,13 @@ export class FridgeFace extends HTMLElement {
     const word = g.querySelector<HTMLElement>('[data-guide=word]')!, clear = g.querySelector<HTMLElement>('[data-guide=clear]')!;
     const ctl = g.querySelector<HTMLElement>('.gctl')!, next = g.querySelector<HTMLElement>('[data-guide=next]')!;
     g.querySelector<HTMLElement>('[data-pick="0"]')!.hidden = !ask;
+    g.querySelector<HTMLElement>('[data-pick="w"]')!.hidden = !welcome;
+    g.querySelector<HTMLElement>('[data-guide=off]')!.hidden = !ask; // "Don't show again" lives at step 0 only (the welcome row has its own)
     pick5.hidden = s !== 5;
     word.hidden = !hasWord;
     clear.classList.toggle('pri', !hasWord); // alone, it is the main button
     pick7.hidden = s !== 7;
-    ctl.hidden = !guideRunning(this.guide) || !this.guideHasControls(s);
+    ctl.hidden = !guideRunning(this.guide) || welcome || !this.guideHasControls(s);
     next.hidden = !(this.guideNext && !ctl.hidden);
     // A focused button that just went away hands focus to the first button still showing.
     if (active && g.contains(active) && (active as HTMLElement).closest('[hidden]')) g.querySelector<HTMLElement>('.grow:not([hidden]) button:not([hidden])')?.focus();
@@ -3497,8 +3523,9 @@ export class FridgeFace extends HTMLElement {
     if (act === 'next') {
       this.guideNextFill();
       this.scheduleGuide();
-    } else if (act === 'skip') this.skipGuide();
-    else if (act === 'off') {
+    } else if (act === 'skip' || act === 'no') this.skipGuide();
+    else if (act === 'yes') this.guideWelcomeYes();
+    else if (act === 'off' || act === 'optout') {
       writeGuideOff(() => localStorage); // if storage fails, it still ends for this visit
       this.setGuide(endGuide());
       this.say('Guide turned off. Show it again from Controls.');
