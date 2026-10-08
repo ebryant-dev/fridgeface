@@ -11,7 +11,7 @@ import { curatedPlan } from './guide-plans';
 /**
  * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Don't show again" only at step 0, and
  * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise; v1.6.3:
- * the guide bar, below, carries Back / Next / Exit on the instruction steps; v1.6.4: the tray shape to drag pulses, `trayHints`, and the
+ * the guide bar, below, carries Back / Next / Exit on the instruction steps; v1.6.5: the block's Back / Forward the callout points at pulses blue too (`syncBlockHint`, main.ts: c step 4 and the word's stacking prompts; only while the callout targets it), step 5 reads "That's the letter 'c'."; v1.6.4: the tray shape to drag pulses, `trayHints`, and the
  * turning lesson's outline is drawn behind its piece): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
  * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
  * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
@@ -40,7 +40,7 @@ import { curatedPlan } from './guide-plans';
  *    the wedge and the black oval always count as overlapping, as they do in the c). So the wedge only has to pass the black
  *    oval: ONE Bring forward press whether or not it is above the white oval. `stack` is the prompt, the wedge first; any
  *    other mis-stacked c piece (the visitor restacked one) gets the generic Send it back / Bring it forward prompt.
- * 5. no outline. "That's a c." / "Do you want to continue the tutorial?" with Guide me ("Yes, continue"; only when
+ * 5. no outline. "That's the letter 'c'." / "Do you want to continue the tutorial?" with Guide me ("Yes, continue"; only when
  *    word-create-1 exists, as is the question) or Clear for free play ("No, clear for free play"). A finished c moved as one
  *    (rigidly, not turned) keeps step 5: its outlines follow it (`rigidShift`).
  * 6. outlines: the word, built in STACKING ORDER one small BATCH at a time (v1.4.0, every layout; batches.ts): only the
@@ -124,7 +124,7 @@ export const GUIDE_COPY = {
   step2: 'Now drag the black oval into place.',
   step3: 'Now drag the white oval onto it.',
   step4: 'Bring the wedge forward so it cuts into the black.',
-  step5: "That's a c.",
+  step5: "That's the letter 'c'.",
   step5Ask: 'Do you want to continue the tutorial?',
   /** Step 5's "Guide me" button (into the word "create"). */
   guideMe: 'Yes, continue',

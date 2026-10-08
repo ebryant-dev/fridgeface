@@ -591,7 +591,7 @@ test('blank start (no intro), then the c with the stacking lesson (copy v4): the
   // Bring forward, from the button block the callout points at: the wedge passes each overlapping piece above it.
   const presses = await bringWedgeForward(page, isMobile);
   expect(presses, 'v1.6.2: it passes the black oval only (the white oval is white too): ONE press').toBe(1);
-  await expect(el(page, '.guide .gt1')).toContainText("That's a c.");
+  await expect(el(page, '.guide .gt1')).toContainText("That's the letter 'c'.");
   await page.screenshot({ path: `${SHOTS}/v162-${info.project.name}-one-press.png` });
   s = await state(page);
   ps = await pieces(page);
@@ -659,7 +659,7 @@ test('copy v4 walk-through, guide ON: every c step (and Guide me) in screenshots
   gaps['4'] = await gapToTarget();
   await page.screenshot({ path: `${tag}-4-bring-forward.png` });
   await bringWedgeForward(page, isMobile);
-  await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+  await expect(el(page, '.guide .gt1')).toHaveText("That's the letter 'c'.");
   await page.screenshot({ path: `${tag}-5-thats-a-c.png` });
   if (await realCreate(page)) {
     await press(isMobile, gbtn(page, 'word'));
@@ -714,13 +714,13 @@ test('outline styles: a positive outline is SOLID and a negative one DOTTED, the
   if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g6-outline-styles-desktop.png` });
 });
 
-test('step 5 without word-create-1: "That\'s a c." and only Clear for free play, which clears as ONE undoable step and ends the guide', async ({ page, isMobile }, info) => {
+test('step 5 without word-create-1: step 5 and only Clear for free play, which clears as ONE undoable step and ends the guide', async ({ page, isMobile }, info) => {
   const errors = collectErrors(page);
   await open(page, '/?n=4');
   await dropCreate(page);
   await buildC(page, isMobile);
   await expect(guide(page)).toBeVisible();
-  await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+  await expect(el(page, '.guide .gt1')).toHaveText("That's the letter 'c'.");
   await expect(el(page, '.guide .gt2'), 'no question without the word').toBeHidden();
   await expect(gbtn(page, 'word')).toBeHidden();
   await expect(gbtn(page, 'clear')).toBeVisible();
@@ -769,7 +769,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   const total = await realCreate(page);
   expect(total, 'Edward\'s create (flower)').toBe(32);
   await buildC(page, isMobile, info.project.name);
-  await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+  await expect(el(page, '.guide .gt1')).toHaveText("That's the letter 'c'.");
   await expect(el(page, '.guide .gt2')).toHaveText('Do you want to continue the tutorial?');
   await expect(gbtn(page, 'word')).toHaveText('Yes, continue');
   await expect(gbtn(page, 'clear')).toHaveText('No, clear for free play');
@@ -925,7 +925,7 @@ test('the c moved as one after step 4: the word is anchored on it where it now i
   for (let i = 0; i < 2; i++) await page.keyboard.press('Shift+ArrowDown');
   await expect.poll(async () => (await pieces(page)).map((p, i) => [Math.round(p.x - was[i].x), Math.round(p.y - was[i].y)]), 'moved as one').toEqual([[40, 20], [40, 20], [40, 20]]);
   await page.waitForTimeout(400); // the nudges are judged once they pause
-  await expect(guide(page), 'still "That\'s a c."').toHaveAttribute('data-step', '5');
+  await expect(guide(page), 'still step 5').toHaveAttribute('data-step', '5');
   const c = inOutlineOrder(await pieces(page));
   const s4 = await state(page);
   c.forEach((p, i) => expect(onOutline(p, s4.outlines[i]), 'the c\'s outlines followed it').toBe(true));
@@ -1919,7 +1919,7 @@ for (const [w, h] of [[375, 812], [320, 568]] as const) {
     await clear('4');
     await page.screenshot({ path: `${tag}-4-bring-forward.png` });
     await bringWedgeForward(page, isMobile);
-    await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+    await expect(el(page, '.guide .gt1')).toHaveText("That's the letter 'c'.");
     await clear('5');
     await page.screenshot({ path: `${tag}-5-thats-a-c.png` });
   });

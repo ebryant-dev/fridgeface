@@ -30,7 +30,7 @@ describe('copy v4', () => {
     expect(GUIDE_COPY.step3).toBe('Now drag the white oval onto it.');
     expect(GUIDE_COPY.step4).toBe('Bring the wedge forward so it cuts into the black.');
     expect([GUIDE_COPY.step0, GUIDE_COPY.clearStart, GUIDE_COPY.keepMine]).toEqual(['Start on a clean fridge?', 'Clear and start', 'Keep my pieces']);
-    expect([GUIDE_COPY.step5, GUIDE_COPY.step5Ask]).toEqual(["That's a c.", 'Do you want to continue the tutorial?']);
+    expect([GUIDE_COPY.step5, GUIDE_COPY.step5Ask]).toEqual(["That's the letter 'c'.", 'Do you want to continue the tutorial?']);
     expect([GUIDE_COPY.guideMe, GUIDE_COPY.clearFree]).toEqual(['Yes, continue', 'No, clear for free play']);
     expect(GUIDE_COPY.step6).toBe('Fill in the outlines to spell "create".');
     expect(GUIDE_COPY.progress(7, 32)).toBe('7 of 32');

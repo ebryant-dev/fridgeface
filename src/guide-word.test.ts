@@ -222,7 +222,7 @@ describe('the c moved after step 4, before Guide me', () => {
     const s4 = at5();
     const away = moved(312.37, -48.1);
     const s = observeGuide(s4, world(away));
-    expect(s.step, 'still "That\'s a c."').toBe(5);
+    expect(s.step, 'still step 5').toBe(5);
     expect(close(s.letter[0].x, away[0].x) && close(s.letter[0].y, away[0].y)).toBe(true);
     expect(filledBy(s.letter, away)).toEqual(['a', 'b', 'w']);
     const outlines = anchorWord(CREATE, c, s.letter, shapeOf)!;

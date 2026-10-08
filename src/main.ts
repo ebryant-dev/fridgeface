@@ -466,6 +466,16 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .tray button[data-hint] .tpulse { display: inline; animation: ff-tray-pulse 1.3s ease-out infinite; }
 @keyframes ff-tray-pulse { 0% { transform: scale(1); opacity: 1; } 45% { opacity: 0.85; } 100% { transform: scale(var(--ax), var(--ay)); opacity: 0; } }
 
+/* The block's Back / Forward the callout points at (v1.6.5, c step 4 and the word's stacking prompts): the same blueprint-blue
+   pulse, a ring growing out from the button (decorative: aria-hidden, no pointer events, outside the layout; it may reach
+   past the block's border). Steady at half spread with reduced motion (the rule below stops every animation). */
+.block button.b { position: relative; }
+.block button.b[data-hint] { z-index: 1; }
+.block .bpulse { display: none; position: absolute; inset: -2px; box-sizing: border-box; border: 3px solid ${PULSE_COLOR}; background: rgb(55 138 221 / 0.18);
+  pointer-events: none; transform: scale(1.25); }
+.block button.b[data-hint] .bpulse { display: block; animation: ff-block-pulse 1.3s ease-out infinite; }
+@keyframes ff-block-pulse { 0% { transform: scale(1); opacity: 1; } 45% { opacity: 0.85; } 100% { transform: scale(1.5); opacity: 0; } }
+
 /* ---- motion: none at all when the visitor asks for less ---- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
@@ -499,7 +509,8 @@ const BLOCK_BUTTONS: Record<string, { icon: string; label: string; keys: string 
 
 function blockBtn(id: string): string {
   const b = BLOCK_BUTTONS[id];
-  return btn(`data-block="${id}" aria-label="${b.label}" title="${b.label}" aria-keyshortcuts="${b.keys}" disabled`, b.label, b.icon);
+  return btn(`data-block="${id}" aria-label="${b.label}" title="${b.label}" aria-keyshortcuts="${b.keys}" disabled`, b.label, b.icon)
+    .replace('</button>', '<span class="bpulse" aria-hidden="true"></span></button>');
 }
 
 /** A control button: text label on wide screens, icon on narrow ones (`i`). */
@@ -3318,6 +3329,15 @@ export class FridgeFace extends HTMLElement {
     for (const b of this.trayEl.querySelectorAll<HTMLElement>('button[data-shape]')) b.toggleAttribute('data-hint', want.includes(b.dataset.shape!));
   }
 
+  /** The block's Back / Forward the callout points at wears the pulsing ring (null: none). */
+  private syncBlockHint(action: 'backward' | 'forward' | null) {
+    if (!this.blockEl) return;
+    for (const b of this.blockEl.querySelectorAll<HTMLElement>('button[data-block]')) {
+      const want = !!action && b.dataset.block === action;
+      if (b.hasAttribute('data-hint') !== want) b.toggleAttribute('data-hint', want);
+    }
+  }
+
   private setGuide(next: GuideState) {
     const prev = this.guide;
     if (next === prev) return;
@@ -3351,6 +3371,7 @@ export class FridgeFace extends HTMLElement {
       this.wordFitPending = false;
       this.stopGlide();
       this.guideEl.hidden = true;
+      this.syncBlockHint(null);
       this.guideEl.dataset.step = '0';
       this.syncGuideBar();
       if (hadFocus) this.surface.focus();
@@ -4264,6 +4285,7 @@ export class FridgeFace extends HTMLElement {
     const show = guideRunning(this.guide) && !this.helpOpen && !this.suggOpen && !this.menuOpen && !busy && !this.introAnims.length && this.boardEl.clientWidth > 0;
     if (!show) {
       if (!g.hidden) g.hidden = true;
+      this.syncBlockHint(null);
       return;
     }
     // While the view glides to a section the callout stays where it is (placed again when the glide ends).
@@ -4418,6 +4440,7 @@ export class FridgeFace extends HTMLElement {
     const far = reachOf(p, { w: cw, h: ch }, t) > NEAR; // further than the usual gap
     g.toggleAttribute('data-noarrow', !!tip && pick.kind !== 'action' && far && obstacles.some((q) => rectsOverlap(tip, q)));
     g.dataset.target = pick.kind;
+    this.syncBlockHint(pick.kind === 'action' ? pick.action! : null);
     if (pick.piece) g.dataset.piece = pick.piece;
     else delete g.dataset.piece;
     if (pick.shape) g.dataset.shape = pick.shape;
