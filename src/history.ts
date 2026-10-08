@@ -45,6 +45,13 @@ export class History<T> {
     return this.undoStack.length;
   }
 
+  /** The states `undo` would step back to, most recent first, at most `n` of them (nothing changes). */
+  past(n: number = Infinity): T[] {
+    const out: T[] = [];
+    for (let i = this.undoStack.length - 1; i >= 0 && out.length < n; i--) out.push(this.undoStack[i]);
+    return out;
+  }
+
   /** Record a new state as one step. Returns false if it equals the present (nothing recorded). */
   record(next: T, key: string | null = null, now: number = Date.now()): boolean {
     if (this.equals(next, this.cur)) return false;

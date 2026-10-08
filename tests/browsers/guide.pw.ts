@@ -48,6 +48,11 @@ const TURN_TOUCH = 'Now turn it with the round handle to fit, or twist with two 
 const el = (page: Page, sel: string) => page.locator(`fridge-face ${sel}`);
 const guide = (page: Page) => el(page, '.guide');
 const gbtn = (page: Page, id: string) => el(page, `.guide [data-guide=${id}]`);
+/** The guide bar's buttons (v1.6.3): back, next, exit. */
+const bbtn = (page: Page, id: 'back' | 'next' | 'exit') => el(page, `.gbar [data-gbar=${id}]`);
+const gbar = (page: Page) => el(page, '.gbar');
+/** The callout's buttons showing (v1.6.3: none on an instruction step). */
+const calloutButtons = (page: Page) => el(page, '.guide button:visible');
 const press = (isMobile: boolean, l: Locator) => (isMobile ? l.tap() : l.click());
 const pieces = (page: Page) => page.evaluate(() => (document.querySelector('fridge-face') as FF).composition.pieces.map((p) => ({ ...p })));
 /** The c's pieces in OUTLINE order (black oval, white oval, wedge), whatever their stacking order: v1.6.2, the white oval and the wedge may be either way round. */
@@ -107,10 +112,6 @@ async function open(page: Page, url = '/?n=g') {
   if (await guide(page).getAttribute('data-welcome') !== null) await gbtn(page, 'yes').dispatchEvent('click');
   await expect(guide(page)).toHaveAttribute('data-step', '1', { timeout: 5000 });
   await expect(guide(page)).toBeVisible();
-}
-
-async function setNextMs(page: Page, ms: number) {
-  await page.evaluate((ms) => { (customElements.get('fridge-face') as unknown as { guideNextMs: number }).guideNextMs = ms; }, ms);
 }
 
 /** The REAL word-create-1 (src/suggestions/word-create-1.json) is in the store: its piece count. */
@@ -311,6 +312,13 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     else if (kind === 'handle') target = rect(sr.querySelector('[data-handle] circle')!);
     else if (kind === 'piece') target = rect(sr.querySelector(`[data-piece-id="${g.dataset.piece}"] .bd`)!);
     else if (kind === 'action') target = rect(sr.querySelector(`.block [data-block=${g.dataset.action}]`)!);
+    // (The callout points at a tray shape's SLICE of the tray: its column across the tray's height, its row in the
+    // landscape column. `slice` is that, for measuring how far it stands from what it points at.)
+    let slice = target;
+    if (kind === 'tray' && g.dataset.shape && target) {
+      const tray = rect(sr.querySelector('.tray')!);
+      slice = sr.querySelector('.root')!.hasAttribute('data-landscape') ? { x: tray.x, y: target.y, w: tray.w, h: target.h } : { x: target.x, y: tray.y, w: target.w, h: tray.h };
+    }
     const controls = [...sr.querySelectorAll<HTMLElement>('.dock > .panel')].filter(shown).map((e) => ({ name: e.className, r: rect(e) }));
     // An outline's box from its real geometry on screen (a rotated SVG element's own box overstates it), dots included.
     const outlines = [...sr.querySelectorAll<SVGGElement>('[data-outline]')].map((g) => {
@@ -330,6 +338,9 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
       return r && r.width ? [{ x: r.x + r.width / 2 - 22, y: r.y + r.height / 2 - 22, w: 44, h: 44 }] : [];
     });
     return {
+      slice,
+      bar: (() => { const b = sr.querySelector<HTMLElement>('.gbar')!; return b.hidden ? null : rect(b); })(),
+      portrait: (() => { const r = sr.querySelector('.root')!; return r.hasAttribute('data-compact') && !r.hasAttribute('data-landscape'); })(),
       kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), noarrow: g.hasAttribute('data-noarrow'), target, controls, outlines, handles,
       phase: (ff.guide as unknown as { phase: string }).phase, turn: turn ? rect(turn) : null, acted: acted ? rect(acted) : null, tray: rect(sr.querySelector('.tray')!), board: rect(sr.querySelector('.board')!), vw: window.innerWidth, vh: window.innerHeight,
     };
@@ -355,6 +366,26 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
   }
   if (m.turn) expect.soft(ov(c, m.turn), `${where} overlaps the piece being turned ${JSON.stringify(m.turn)}`).toBe(false);
   for (const h of m.handles) expect.soft(ov(c, h), `${where} overlaps a rotate handle's 44px hit box ${JSON.stringify(h)}`).toBe(false);
+  // v1.6.3: the guide bar is a hard obstacle (never under the callout, an outline or a handle) and covers no control.
+  if (m.bar) {
+    const bar = m.bar;
+    expect.soft(ov(c, bar), `${where} overlaps the guide bar ${JSON.stringify(bar)}`).toBe(false);
+    if (!opts.panned) for (const o of m.outlines) expect.soft(ov(o, bar), `${label}: an outline ${JSON.stringify(o)} is under the guide bar`).toBe(false);
+    for (const k of m.controls) expect.soft(ov(bar, k.r), `${label}: the guide bar overlaps ${k.name}`).toBe(false);
+    expect.soft(ov(bar, m.tray), `${label}: the guide bar overlaps the tray`).toBe(false);
+    expect.soft(inView(bar), `${label}: the guide bar is in the viewport`).toBe(true);
+  }
+  // v1.6.3: a callout may cover a control ONLY when it points at its target from close by, its arrow showing; and on
+  // phones in portrait it never covers the top row (zoom group, menu button) at all.
+  if (!opts.squeezed) {
+    const t = m.slice;
+    const reach = !t || m.side === 'centre' ? Infinity : m.side === 'above' ? t.y - (c.y + c.h) : m.side === 'below' ? c.y - (t.y + t.h) : m.side === 'right' ? c.x - (t.x + t.w) : t.x - (c.x + c.w);
+    for (const k of m.controls) {
+      if (!ov(c, k.r)) continue;
+      expect.soft(!!t && m.side !== 'centre' && !m.noarrow && reach <= 31, `${where} covers ${k.name} without pointing at its target from close by (reach ${reach}, arrow ${m.noarrow ? 'hidden' : 'shown'})`).toBe(true);
+      if (m.portrait) expect.soft(/\b(view|vmenu)\b/.test(k.name), `${where} covers the portrait top row (${k.name})`).toBe(false);
+    }
+  }
   // A centred callout (nothing to point at) keeps clear of every control; in the word the button block always stays clear.
   // (squeezed: a pan put the rotate handle where the callout was: handle and outlines come first, the block may be touched.)
   for (const k of m.controls) {
@@ -463,14 +494,16 @@ test('blank start (no intro), then the c with the stacking lesson (copy v4): the
   expect(await page.evaluate(() => !!document.querySelector('fridge-face')!.shadowRoot!.activeElement?.closest('.guide'))).toBe(false);
   await expect(el(page, '#ff-live')).toContainText(C_TEXT[1]);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[1]);
-  await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
-  await expect(gbtn(page, 'off'), "Don't show again is at step 0 only").toBeHidden();
-  await expect(gbtn(page, 'next')).toBeHidden();
-  // v1.6.1: the callout is black with white text; its secondary buttons are transparent (white edge and text).
+  // v1.6.3: the instruction steps' controls are in the guide bar; the callout shows only the instruction.
+  await expect(calloutButtons(page)).toHaveCount(0);
+  await expect(gbar(page)).toBeVisible();
+  await expect(bbtn(page, 'exit')).toHaveAccessibleName('Exit guide');
+  await expect(bbtn(page, 'next')).toBeVisible();
+  // v1.6.1: the callout is black with white text; v1.6.3: the bar's buttons are transparent (white edge and text).
   const look = await page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const g = sr.querySelector('.guide')!;
-    return { bg: getComputedStyle(g).backgroundColor, color: getComputedStyle(g).color, btn: getComputedStyle(sr.querySelector('.guide [data-guide=skip]')!).backgroundColor, arrow: sr.querySelector('.gpt path')!.getAttribute('fill') };
+    return { bg: getComputedStyle(g).backgroundColor, color: getComputedStyle(g).color, btn: getComputedStyle(sr.querySelector('.gbar [data-gbar=exit]')!).backgroundColor, arrow: sr.querySelector('.gpt path')!.getAttribute('fill') };
   });
   expect(look).toEqual({ bg: 'rgb(0, 0, 0)', color: 'rgb(255, 255, 255)', btn: 'rgba(0, 0, 0, 0)', arrow: '#000' });
   // ONE outline: the wedge, blueprint blue, DOTTED (a negative shape), about 2.75 screen px, no filters, no pointer events,
@@ -632,7 +665,7 @@ test('copy v4 walk-through, guide ON: every c step (and Guide me) in screenshots
     await press(isMobile, gbtn(page, 'word'));
     await expect(guide(page)).toHaveAttribute('data-step', '6');
     await settled(page);
-    await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+    await expect(el(page, '.gbar .gcount')).toHaveText('3 of 32');
     await page.screenshot({ path: `${tag}-6-guide-me.png` });
   }
   console.log(`[${info.project.name}] callout gap to its target, px: ${JSON.stringify(gaps)}`);
@@ -752,10 +785,10 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   await expectWordOnC(page, c);
   expect((await state(page)).batches, 'the plan of the real word (src/batches.test.ts)').toEqual(CREATE_BATCHES);
   await expect(el(page, '.guide .gt1')).toHaveText('Fill in the outlines to spell "create".');
-  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  await expect(el(page, '.gbar .gcount')).toHaveText(`3 of ${total}`);
   await expect(el(page, '#ff-live')).toContainText(`3 of ${total}`);
-  await expect(gbtn(page, 'skip')).toBeVisible();
-  await expect(gbtn(page, 'off')).toBeHidden();
+  await expect(bbtn(page, 'exit')).toBeVisible();
+  await expect(calloutButtons(page)).toHaveCount(0);
   await settled(page);
   if (!isMobile) {
     const v = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
@@ -771,11 +804,11 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   expect([und.filled[0], und.filled[2]], 'the black oval or the wedge (the wrong black/white pair)').toContain(und.stack!.id);
   expect(await pieceCount(page), 'the c is still on the board').toBe(3);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
-  await expect(el(page, '.guide .gt2')).toHaveText(`1 of ${total}`);
+  await expect(el(page, '.gbar .gcount')).toHaveText(`1 of ${total}`);
   await expect(el(page, '.guide .gt3')).toHaveText(STACK_TEXT[und.stack!.dir]);
   await expect.poll(async () => (await shown(page)).idx, 'no outline: the c is current').toEqual([]);
   await press(isMobile, el(page, '[data-block=redo]'));
-  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  await expect(el(page, '.gbar .gcount')).toHaveText(`3 of ${total}`);
   await expectCInPlace(page, c, 'undo and redo at the boundary');
   await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { select(id: string | null): void }).select(null));
 
@@ -792,7 +825,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
     const sh = await shown(page);
     expect(sh.idx, `batch ${k}: only its outlines show`).toEqual(batch);
     expect(await contextShown(page), `batch ${k}: no faint preview of the rest of the word`).toEqual([]);
-    await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
+    await expect(el(page, '.gbar .gcount')).toHaveText(`${done} of ${total}`);
     const f = await framing(page, batch);
     expect(f.inView, `batch ${k}: its outlines are in view, clear of the docks`).toBe(true);
     if (!isMobile) expect(f.zoom, `batch ${k}: never closer than the comfortable zoom`).toBeLessThanOrEqual(f.comfort + 1e-9);
@@ -835,7 +868,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
       await expect(guide(page)).not.toHaveAttribute('data-stack', '');
       expect((await misStacked(page)).bad, `after outline ${i}: no overlapping pair out of order`).toEqual([]);
       done++;
-      if (done < total) await expect(el(page, '.guide .gt2')).toHaveText(`${done} of ${total}`);
+      if (done < total) await expect(el(page, '.gbar .gcount')).toHaveText(`${done} of ${total}`);
     }
   }
   info.annotations.push({ type: 'smallest target per batch', description: mins.join(', ') + ' CSS px' });
@@ -900,7 +933,7 @@ test('the c moved as one after step 4: the word is anchored on it where it now i
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await expectCInPlace(page, c, 'moved c, Guide me');
   await expectWordOnC(page, c);
-  await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+  await expect(el(page, '.gbar .gcount')).toHaveText('3 of 32');
 });
 
 test('no click-in outside the guide: after Skip (and with no-guide) a piece dropped right by where the outline was stays where it was dropped', async ({ page, browser }, info) => {
@@ -912,7 +945,7 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   await expect.poll(async () => (await state(page)).turn, 'the guide clicked it into position').not.toBeNull();
   await press(!!info.project.use.isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(0);
-  await press(!!info.project.use.isMobile, gbtn(page, 'skip'));
+  await press(!!info.project.use.isMobile, bbtn(page, 'exit'));
   await expect(guide(page)).toBeHidden();
   expect(await el(page, '[data-outline]').count(), 'no outlines once the guide ends').toBe(0);
   // The same drop: no snapping at all.
@@ -955,26 +988,25 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   await ctx.close();
 });
 
-test('Next (after waiting, shortened timer) does the current thing for the visitor (fills the outline, or brings the wedge forward), one undoable step each; keyboard only', async ({ page }) => {
+test('Next in the guide bar (always offered on an instruction step) does the current thing for the visitor (fills the outline, or brings the wedge forward), one undoable step each; keyboard only', async ({ page }) => {
   await open(page);
-  await setNextMs(page, 200);
-  await expect(gbtn(page, 'next')).toBeHidden(); // step 1's timer is the real 10 s one
-  // Restart step 1 with the short timer: Controls -> Show guide is the replay; here Skip + Show guide via the API path.
-  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { replayGuide(): void }).replayGuide());
-  await expect(gbtn(page, 'next')).toBeVisible();
+  await expect(bbtn(page, 'next'), 'v1.6.3: no stuck delay').toBeVisible();
   for (const step of ['2', '3', '4', '5']) {
-    await gbtn(page, 'next').focus();
+    await bbtn(page, 'next').focus();
     await page.keyboard.press('Enter');
     await expect(guide(page)).toHaveAttribute('data-step', step);
     if (step === '3') expect((await pieces(page)).map((p) => p.shapeId), 'Next placed the black oval on top').toEqual(['wedge', 'positive-round']);
     if (step === '4') expect((await pieces(page)).map((p) => p.shapeId), 'and the white oval').toEqual(['wedge', 'positive-round', 'negative-round']);
-    if (step !== '5') await expect(gbtn(page, 'next')).toBeVisible();
+    if (step !== '5') await expect(bbtn(page, 'next')).toBeVisible();
   }
   const ps = await pieces(page);
   const s = await state(page);
   expect(ps.map((p) => p.shapeId), 'Next brought the wedge forward').toEqual(['positive-round', 'wedge', 'negative-round']);
   inOutlineOrder(ps).forEach((p, i) => expect(onOutline(p, s.outlines[i])).toBe(true));
-  await expect(gbtn(page, 'next'), 'step 5 has no Next').toBeHidden();
+  await expect(gbar(page), 'step 5 (a question) has no bar').toBeHidden();
+  // A keyboard user who pressed Next into the question goes on to its buttons.
+  await expect.poll(() => page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.activeElement?.closest('.guide') ? 'callout' : 'elsewhere')).toBe('callout');
+  await el(page, '.board svg.surface').focus();
   await page.keyboard.press('Control+z');
   await expect(guide(page)).toHaveAttribute('data-step', '4');
   await page.keyboard.press('Control+z');
@@ -983,7 +1015,8 @@ test('Next (after waiting, shortened timer) does the current thing for the visit
 
 test('Exit guide ends it for this visit; it comes back (asking first) on the next one', async ({ page, isMobile }) => {
   await open(page);
-  await press(isMobile, gbtn(page, 'skip'));
+  await press(isMobile, bbtn(page, 'exit'));
+  await expect(gbar(page)).toBeHidden();
   await expect(guide(page)).toBeHidden();
   expect(await stored(page)).toBeNull();
   await page.waitForTimeout(500);
@@ -1020,8 +1053,8 @@ test("Don't show again survives a reload; Show guide in Controls replays it from
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   await expect(guide(page)).toBeVisible();
   expect(await el(page, '[data-outline]').count()).toBe(1);
-  // A replay is asked for: focus moves into the callout.
-  await expect.poll(() => page.evaluate(() => !!document.querySelector('fridge-face')!.shadowRoot!.activeElement?.closest('.guide'))).toBe(true);
+  // A replay is asked for: focus moves into the guide (v1.6.3: the instruction step's controls are in the guide bar: Next).
+  await expect.poll(() => page.evaluate(() => (document.querySelector('fridge-face')!.shadowRoot!.activeElement as HTMLElement | null)?.dataset.gbar)).toBe('next');
   expect(await stored(page), "replaying keeps Don't show again").toBe('off');
 });
 
@@ -1107,11 +1140,11 @@ test('coexistence: hidden while the Controls dialog or the phone menu is open, b
   await expect(el(page, '.help')).toBeHidden();
   await expect(guide(page)).toBeVisible();
   await checkCallout(page, 'after the dialog');
-  const tabbable = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<HTMLButtonElement>('.guide button')].map((b) => b.tagName === 'BUTTON' && b.tabIndex === 0));
+  const tabbable = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<HTMLButtonElement>('.guide button, .gbar button')].map((b) => b.tagName === 'BUTTON' && b.tabIndex === 0));
   expect(tabbable.every(Boolean)).toBe(true);
   // WebKit (like Safari by default) does not Tab to buttons at all; the walk is checked in Chromium.
   if (browserName === 'webkit') {
-    await press(isMobile, gbtn(page, 'skip'));
+    await press(isMobile, bbtn(page, 'exit'));
     await expect(guide(page)).toBeHidden();
     return;
   }
@@ -1121,10 +1154,10 @@ test('coexistence: hidden while the Controls dialog or the phone menu is open, b
     await page.keyboard.press('Tab');
     reached = await page.evaluate(() => {
       const a = document.querySelector('fridge-face')!.shadowRoot!.activeElement as HTMLElement | null;
-      return a?.closest('.guide') ? a.dataset.guide ?? '' : '';
+      return a?.closest('.gbar') && a.dataset.gbar === 'exit' ? 'exit' : '';
     });
   }
-  expect(reached, 'Tab reaches the callout').toBe('skip');
+  expect(reached, 'Tab reaches the guide bar\'s Exit').toBe('exit');
   await page.keyboard.press('Enter');
   await expect(guide(page)).toBeHidden();
   expect(await page.evaluate(() => (document.querySelector('fridge-face')!.shadowRoot!.activeElement as Element | null)?.getAttribute('class')), 'focus lands on the board').toBe('surface');
@@ -1219,19 +1252,20 @@ test('storage that throws: the guide still shows, and "Don\'t show again" still 
 test('with a callout showing, the board still works around it: a wrong shape dropped on open board stays put; compact hit areas stay 44px', async ({ page }) => {
   await open(page);
   await checkCallout(page, 'step 1');
-  const hits = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<HTMLElement>('.guide .gctl button:not([hidden])')].map((b) => {
+  const hits = await page.evaluate(() => [...document.querySelector('fridge-face')!.shadowRoot!.querySelectorAll<HTMLElement>('.gbar button')].map((b) => {
     const r = b.getBoundingClientRect();
     const a = getComputedStyle(b, '::after');
     const px = (v: string) => parseFloat(v) || 0;
     return { h: r.height - px(a.top) - px(a.bottom), w: r.width - px(a.left) - px(a.right) };
   }));
+  expect(hits.length, 'the guide bar\'s three buttons').toBe(3);
   for (const h of hits) expect(h.h, 'hit area height').toBeGreaterThanOrEqual(44);
   // Open board: no callout, no control, no outline, with a margin.
   const spot = await page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const blocked = (x: number, y: number) => {
       const e = sr.elementFromPoint(x, y) as Element | null;
-      return !e || !!e.closest('.guide, .dock, .tray, .menu, [data-piece-id]');
+      return !e || !!e.closest('.guide, .gbar, .dock, .tray, .menu, [data-piece-id]');
     };
     const ol = sr.querySelector('[data-outline]')!.getBoundingClientRect();
     const b = sr.querySelector('.board')!.getBoundingClientRect();
@@ -1315,7 +1349,7 @@ test('step 0: a saved board on load asks "Start on a clean fridge?" with Clear a
   await expect(gbtn(page, 'mine')).toHaveText('Keep my pieces');
   await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
   await expect(gbtn(page, 'off')).toBeVisible();
-  await expect(gbtn(page, 'next')).toBeHidden();
+  await expect(gbar(page), 'v1.6.3: no guide bar on a question step').toBeHidden();
   for (const b of ['word', 'clear', 'fresh', 'keep']) await expect(gbtn(page, b)).toBeHidden();
   expect(await el(page, '[data-outline]').count(), 'no outlines on step 0').toBe(0);
   await expect(el(page, '#ff-live')).toContainText('Start on a clean fridge?');
@@ -1409,7 +1443,6 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" g
   await expect(guide(page)).toHaveAttribute('data-step', '5');
   const c = inOutlineOrder((await pieces(page)).filter((p) => !theirs.some((t) => t.id === p.id)));
   expect(c).toHaveLength(3);
-  await setNextMs(page, 50); // step 6's Next comes quickly (used for the rest of the word below)
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '6');
   await expect.poll(() => pieceCount(page), 'nothing is cleared').toBe(theirs.length + 3);
@@ -1418,7 +1451,7 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" g
   const left = await pieces(page);
   expect(same(theirs, left.filter((p) => theirs.some((t) => t.id === p.id))), 'their saved pieces unchanged').toBe(true);
   const total = await realCreate(page);
-  await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
+  await expect(el(page, '.gbar .gcount')).toHaveText(`3 of ${total}`);
   // The WHOLE word (every outline, the c's included) is clear of their pieces' bounds.
   const all = await state(page);
   const a = await boundsIn(page, theirs), w = await boundsIn(page, all.outlines);
@@ -1446,12 +1479,12 @@ test('step 0 -> Keep my pieces -> the c -> Guide me: nothing cleared, "create" g
     const i = Math.min(...s.outlines.map((_, j) => j).filter((j) => !s.filled[j] && s.batches!.find((b) => b.some((q) => !s.done[q]))!.includes(j)));
     await fillByHand(page, i);
     await answerPrompts(page, isMobile, `keep, outline ${i}`, false);
-    await expect(el(page, '.guide .gt2')).toHaveText(`${n + 1} of ${total}`);
+    await expect(el(page, '.gbar .gcount')).toHaveText(`${n + 1} of ${total}`);
   }
-  // The rest by Next (shortened timer, offered again after each bit of progress): it places pieces and fixes their stacking.
+  // The rest by Next (the guide bar's): it places pieces and fixes their stacking.
   for (let k = 0; k < 4 * total && (await state(page)).step === 6; k++) {
-    await expect(gbtn(page, 'next')).toBeVisible();
-    await gbtn(page, 'next').click({ force: true });
+    await expect(bbtn(page, 'next')).toBeVisible();
+    await bbtn(page, 'next').click({ force: true });
   }
   await expect(guide(page)).toHaveAttribute('data-step', '7');
   expect((await misStacked(page)).bad, 'Next left every overlapping pair in the word\'s order').toEqual([]);
@@ -1579,7 +1612,7 @@ async function toWord(page: Page, isMobile: boolean, url = '/?n=batch'): Promise
   expect(await pieceCount(page), 'the c stays').toBe(3);
   await expectCInPlace(page, c, 'Guide me');
   await expectWordOnC(page, c);
-  await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+  await expect(el(page, '.gbar .gcount')).toHaveText('3 of 32');
   return c;
 }
 
@@ -1618,7 +1651,7 @@ test('undo back across a batch boundary returns to that batch (and its framing);
   await press(isMobile, el(page, '[data-block=undo]'));
   await settled(page);
   expect((await shown(page)).idx, 'back in batch 1').toEqual(CREATE_BATCHES[1]);
-  await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+  await expect(el(page, '.gbar .gcount')).toHaveText('3 of 32');
   const v1 = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
   if (isMobile) expect(v1.x !== v3.x || v1.y !== v3.y || v1.zoom !== v3.zoom, 'phones: the view went back to batch 1').toBe(true);
   expect((await framing(page, CREATE_BATCHES[1])).inView).toBe(true);
@@ -1626,7 +1659,7 @@ test('undo back across a batch boundary returns to that batch (and its framing);
   for (let n = 0; n < 3; n++) await press(isMobile, el(page, '[data-block=redo]'));
   await settled(page);
   expect((await shown(page)).idx).toEqual(CREATE_BATCHES[3]);
-  await expect(el(page, '.guide .gt2')).toHaveText('6 of 32');
+  await expect(el(page, '.gbar .gcount')).toHaveText('6 of 32');
 });
 
 test('the safety net: the visitor brings a placed lower piece forward out of order: the stacking prompt shows (at the button block), they fix it, and the batches carry on', async ({ page, isMobile }, info) => {
@@ -1653,7 +1686,7 @@ test('the safety net: the visitor brings a placed lower piece forward out of ord
   expect((await misStacked(page)).bad, 'fixed: every overlapping pair in the word\'s order').toEqual([]);
   await settled(page);
   expect((await shown(page)).idx, 'back to the batch it was on').toEqual(CREATE_BATCHES[5]);
-  await expect(el(page, '.guide .gt2')).toHaveText(`${3 + CREATE_BATCHES.slice(1, 5).flat().length} of 32`);
+  await expect(el(page, '.gbar .gcount')).toHaveText(`${3 + CREATE_BATCHES.slice(1, 5).flat().length} of 32`);
   expect(errors).toEqual([]);
 });
 
@@ -1679,7 +1712,7 @@ test('rotating or resizing mid-step keeps the batch and the progress (portrait, 
     await expect.poll(async () => page.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.querySelector('.root')?.hasAttribute('data-compact') ?? null)).toBe(z.compact);
     await settled(page);
     expect(await progress(), `${z.name}: progress kept`).toBe(5);
-    await expect(el(page, '.guide .gt2')).toHaveText('5 of 32');
+    await expect(el(page, '.gbar .gcount')).toHaveText('5 of 32');
     expect((await shown(page)).idx, `${z.name}: still batch 2's last outline`).toEqual(rest2);
     expect((await framing(page, rest2)).inView, `${z.name}: framed`).toBe(true);
     expect(await contextShown(page), `${z.name}: no context outlines`).toEqual([]);
@@ -1899,7 +1932,8 @@ test('step 0 on a blank board (v1.6.1): "Would you like a tutorial?" with Yes, N
   await expect(gbtn(page, 'yes')).toHaveText('Yes');
   await expect(gbtn(page, 'no')).toHaveText('No');
   await expect(gbtn(page, 'optout')).toHaveText("Don't show again");
-  for (const b of ['skip', 'off', 'next', 'clean', 'mine', 'word']) await expect(gbtn(page, b)).toBeHidden();
+  for (const b of ['skip', 'off', 'clean', 'mine', 'word']) await expect(gbtn(page, b)).toBeHidden();
+  await expect(gbar(page), 'no guide bar on the question').toBeHidden();
   expect(await el(page, '[data-outline]').count(), 'no outlines at step 0').toBe(0);
   await expect(el(page, '#ff-live')).toContainText('Would you like a tutorial?');
   const m = await checkCallout(page, 'welcome');
@@ -1914,9 +1948,8 @@ test('step 0 on a blank board (v1.6.1): "Would you like a tutorial?" with Yes, N
   await expect(guide(page)).not.toHaveAttribute('data-welcome', '');
   expect(await el(page, '[data-outline]').count()).toBe(1);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[1]);
-  await expect(gbtn(page, 'skip')).toHaveText('Exit guide');
-  await expect(gbtn(page, 'off')).toBeHidden();
-  await page.screenshot({ path: `${SHOTS}/v161-1a-exit-only-${info.project.name}.png` });
+  await expect(calloutButtons(page), 'v1.6.3: the instruction alone').toHaveCount(0);
+  await expect(bbtn(page, 'exit')).toBeVisible();
   expect(errors).toEqual([]);
 });
 

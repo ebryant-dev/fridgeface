@@ -232,7 +232,7 @@ test.describe('desktop', () => {
     expect((await selected(page)).length).toBe(1);
     await page.keyboard.press('Control+a');
     // With the onboarding guide showing (FF_GUIDE=on), Escape skips the guide before it deselects (by design): skip it first.
-    const skip = page.locator('fridge-face .guide [data-guide=skip]');
+    const skip = page.locator('fridge-face .gbar [data-gbar=exit]'); // v1.6.3: Exit is in the guide bar
     if (await skip.isVisible()) {
       await page.keyboard.press('Escape');
       await expect(skip).toBeHidden();

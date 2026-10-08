@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BESIDE_ORDER, GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, welcomeGuide, besideRect, besideSpot,
+  BESIDE_ORDER, C_STEPS, GUIDE_COPY, backSteps, guideBarCount, guideBarShown, guidePosition, teachingTurn, GUIDE_IDLE, GUIDE_LETTER, GUIDE_STORAGE_KEY, GUIDE_WORD, activeOutlines, answerAsk, askGuide, welcomeGuide, besideRect, besideSpot,
   cSequence, chooseWord, currentBatch, endGuide, nextAction, fitZoom, freeRect, frameBeside, guideBuilt, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, landingOutline, moveLetter,
   nextOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type GuideState,
   type GuideStorage, type GuideWorld, type Rect,
@@ -891,5 +891,90 @@ describe('step 0 on a blank board (v1.6.1)', () => {
   it('answerAsk does nothing from it (only the clean-fridge question answers)', () => {
     const w = welcomeGuide();
     expect(answerAsk(w, 'clear', C, world([]), [])).toBe(w);
+  });
+});
+
+describe('the guide bar (v1.6.3): shown on instruction steps, the step count, Back\'s target, the turning lesson', () => {
+  const black = on('a', C[0]), white = on('b', C[1]), wedge = on('w', C[2]);
+  const landed = on('w', { ...C[2], rotation: 0 }); // at the landing outline: in position, to be turned (1b)
+  const stray = pc('x', 'positive-stem', 5000, 5000);
+  // The board after each step, oldest first: blank (1a), the wedge dropped (1b), turned in (2), the black oval (3), the white oval (4).
+  const boards = [[], [landed], [wedge], [wedge, black], [wedge, black, white]];
+  const at = (pieces: readonly OutlinePiece[]) => observeGuide(startGuide(C, world([])), world(pieces));
+  /** The undo stack when the board is boards[i], most recent first. */
+  const pastOf = (i: number) => boards.slice(0, i).reverse();
+
+  it('copy: Back, Exit, "Step N of 4"', () => {
+    expect([GUIDE_COPY.back, GUIDE_COPY.exit, GUIDE_COPY.stepOf(2, C_STEPS)]).toEqual(['Back', 'Exit', 'Step 2 of 4']);
+  });
+
+  it('positions and counts: 1a and 1b are both Step 1 of 4; the questions hide the bar', () => {
+    const states = boards.map(at);
+    expect(states.map((s) => [s.step, !!s.turn])).toEqual([[1, false], [1, true], [2, false], [3, false], [4, false]]);
+    expect(states.map(guidePosition)).toEqual([0, 1, 2, 3, 4]);
+    expect(states.map(guideBarCount)).toEqual(['Step 1 of 4', 'Step 1 of 4', 'Step 2 of 4', 'Step 3 of 4', 'Step 4 of 4']);
+    expect(states.every(guideBarShown)).toBe(true);
+    const five = at([black, wedge, white]);
+    expect(five.step).toBe(5);
+    expect([guideBarShown(five), guideBarCount(five)]).toEqual([false, null]);
+    for (const q of [askGuide(), welcomeGuide(), GUIDE_IDLE]) expect([guideBarShown(q), guideBarCount(q), guidePosition(q)]).toEqual([false, null, -1]);
+    const word = chooseWord(five, WORD, world([]));
+    expect([guideBarShown(word), guideBarCount(word), guidePosition(word)]).toEqual([true, '0 of 4', 0]);
+    const done = observeGuide(word, world(WORD.map((o, i) => on(`p${i}`, o))));
+    expect([done.step, guideBarShown(done), guideBarCount(done)], 'step 7 is a question').toEqual([7, false, null]);
+  });
+
+  it('Back in the c: one undo step back to the previous position (4 -> 3 -> 2 -> 1b -> 1a), none at 1a', () => {
+    for (let i = 1; i < boards.length; i++) {
+      const s = at(boards[i]);
+      const k = backSteps(s, pastOf(i), world);
+      expect(k, `from position ${i}`).toBe(1);
+      expect(guidePosition(observeGuide(s, world(pastOf(i)[k - 1]))), `back to position ${i - 1}`).toBe(i - 1);
+    }
+    expect(backSteps(at([]), [], world), '1a: nothing to go back to').toBe(0);
+    expect(backSteps(at([]), [[stray]], world), '1a: never below the first position, whatever the history').toBe(0);
+  });
+
+  it('Back undoes steps that do not move the guide on the way (a stray piece), and stops at the cut (the guide\'s start)', () => {
+    const now = [wedge, black, stray];
+    const s = at(now);
+    expect(s.step).toBe(3);
+    expect(backSteps(s, [[wedge, black], [wedge], [landed], []], world), 'the stray piece, then the black oval').toBe(2);
+    expect(backSteps(s, [[wedge, black]], world), 'the history cut at the guide\'s start: no step back within it').toBe(0);
+  });
+
+  it('Back in the word: until one fewer piece is done; never below the floor (the done count at Guide me); not on step 5', () => {
+    const five = at([black, wedge, white]);
+    expect(backSteps(five, pastOf(4), world)).toBe(0);
+    let s = chooseWord(five, WORD, world([]));
+    const p1 = [on('s', WORD[0])], p2 = [on('s', WORD[0]), on('r', WORD[1])];
+    s = observeGuide(s, world(p2));
+    expect(guidePosition(s)).toBe(2);
+    expect(backSteps(s, [p1, []], world)).toBe(1);
+    const sx = observeGuide(s, world([...p2, stray]));
+    expect(backSteps(sx, [p2, p1, []], world), 'a stray step on the way').toBe(2);
+    expect(backSteps(s, [p1, []], world, 2), 'at the floor: disabled').toBe(0);
+  });
+
+  it('the turning lesson: the piece to turn on 1b and on the word\'s turning hint; nobody otherwise', () => {
+    expect(teachingTurn(at([landed]))).toBe('w');
+    for (const b of [[], [wedge], [wedge, black]]) expect(teachingTurn(at(b))).toBeNull();
+    const word = chooseWord(at([black, wedge, white]), WORD, world([]));
+    const turned = observeGuide(word, world([on('s', { ...WORD[0], rotation: WORD[0].rotation + 25 })]));
+    expect(turned.turn, 'the stem in place, to be turned').toBe('s');
+    expect(teachingTurn(turned)).toBe('s');
+    expect(teachingTurn(askGuide())).toBeNull();
+  });
+
+  it('History.past: the undo stack, most recent first, without changing it', () => {
+    const h = new History<number>(0);
+    h.record(1);
+    h.record(2);
+    h.record(3);
+    expect(h.past()).toEqual([2, 1, 0]);
+    expect(h.past(2)).toEqual([2, 1]);
+    expect(h.undoDepth).toBe(3);
+    h.undo();
+    expect(h.past()).toEqual([1, 0]);
   });
 });

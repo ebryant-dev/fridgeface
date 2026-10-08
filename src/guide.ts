@@ -9,8 +9,9 @@ import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
 /**
- * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Exit guide" on every step, "Don't show again" only at step 0, and
- * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
+ * The onboarding guide (copy v4, v1.6.0; v1.6.1: black callout, "Don't show again" only at step 0, and
+ * step 0 on every automatic start: "Would you like a tutorial?" on a blank board, "Start on a clean fridge?" otherwise; v1.6.3:
+ * the guide bar, below, carries Back / Next / Exit on the instruction steps): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
  * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
  * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
  * fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without the word (or a c in it) the c
@@ -27,7 +28,9 @@ import { curatedPlan } from './guide-plans';
  *    position only, keeping its angle (`guideClickIn`). A piece turns about its centroid, its (x, y), so turning it there
  *    carries it into the true outline. 1b (a wedge is close in position but needs turning: `needsTurning`): the outline is
  *    drawn at its TRUE angle and the callout says "Now turn it with the round handle to fit." (pointing at the rotate
- *    handle); turned close to the angle it clicks in (position and angle) as any piece does. Done when it is filled.
+ *    handle; v1.6.3: that handle wears a pulsing blueprint-blue ring and the piece's dashed selection box is hidden,
+ *    `teachingTurn`, as for step 6's turning hint); turned close to the angle it clicks in (position and angle) as any piece
+ *    does. Done when it is filled.
  * 2. outline: the black oval (solid), on the wedge. Done when it is filled. A new piece lands on top, so it covers the wedge.
  * 3. outline: the white oval (dotted), on the black one. Done when it is filled (it lands on top too).
  * 4. no outline: "Bring the wedge forward so it cuts into the black." Points at the button block's Forward (Bring forward)
@@ -44,7 +47,7 @@ import { curatedPlan } from './guide-plans';
  *    piece it overlaps is already placed) and no two of a batch overlap, so a visitor who takes each piece from the tray
  *    (it lands on top) can never stack one wrongly (proved in batches.ts). The current batch is the first with a piece not
  *    done, so it too is derived from the board (undo and redo move between batches). A word piece is DONE when it is placed
- *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. The
+ *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" (in the guide bar since v1.6.3) counts done pieces. The
  *    stacking prompts (`stack`: Send it back / Bring it forward, the most recently placed first) remain only as a safety net,
  *    for a visitor who reorders pieces themselves. The order of two pieces of the SAME colour never matters (v1.6.2: black on
  *    black, white on white; stacking.ts), so such a pair is never checked (the flower's black petals come up together as one batch). Same turning hint as 1b. Nothing is cleared at Guide me; the word's
@@ -52,8 +55,26 @@ import { curatedPlan } from './guide-plans';
  * 7. no outline. "Great work! Now you're ready to create on your own." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
  *
- * The guide NEVER fixes the stacking order by itself (a click-in sets position and angle only); only Next, the escape hatch
- * offered when stuck, restacks the prompted piece for the visitor.
+ * The guide NEVER fixes the stacking order by itself (a click-in sets position and angle only); only Next (the guide bar)
+ * restacks the prompted piece for the visitor.
+ *
+ * The guide bar (v1.6.3): on every INSTRUCTION step (c steps 1 to 4, 1a and 1b included, and word step 6; `guideBarShown`)
+ * a slim black bar at the top of the board carries the guide's controls, so the callout shows only the instruction:
+ * [Back] [Next] on the left, the step count in the middle (`guideBarCount`: "Step N of 4" in the c, where 1 is the wedge,
+ * dragged AND turned, 2 the black oval, 3 the white oval, 4 bring forward; the word's progress "N of M"), [Exit] on the
+ * right. The QUESTION steps (step 0's welcome and "Start on a clean fridge?", 5, 7) hide it and keep their own buttons.
+ * - Next: always offered on an instruction step (v1.6.3 retired the 10 s stuck delay); it does `nextAction`.
+ * - Exit: Exit guide (`endGuide`).
+ * - Back: undoes board history until the guide's POSITION (`guidePosition`) drops below the current one (`backSteps`):
+ *   the c's positions are 1a = 0, 1b = 1, 2 = 2, 3 = 3, 4 = 4, so from 1b it undoes the wedge's drop (its click-in is in
+ *   the same undo step: the wedge goes, back to 1a); from 2 it undoes back to before the wedge's completing turn (1b);
+ *   from 3 to before the black oval was placed; from 4 to before the white oval was placed. Undo steps that do not move the
+ *   guide back (a piece nudged aside, a stray piece dropped) are undone on the way. In the word the position is the count
+ *   of DONE pieces: Back undoes until one fewer is done (the most recent placement or fix; across a batch boundary that
+ *   is the previous batch again). It never undoes past where the guide started (the history depth when the c's step 1,
+ *   or the word, began: the visitor's own earlier pieces and step 0's Clear and start are never touched) and never below
+ *   the first position (c 1a; the word's done count at Guide me): there it is disabled. Every undo is a normal one, so
+ *   Redo brings it all back; the step is still derived from the board.
  *
  * Which step shows is DERIVED from the board every time (`observeGuide`): an outline is filled when a piece of its shape
  * sits exactly on it, and the stacking is read from the board's order. So deleting, moving or restacking a piece, and
@@ -76,8 +97,6 @@ import { curatedPlan } from './guide-plans';
 
 export const GUIDE_STORAGE_KEY = 'fridgeface:guide:v2';
 export const GUIDE_OFF_VALUE = 'off';
-/** A step not completed after this long shows a Next button, ms. */
-export const GUIDE_NEXT_MS = 10_000;
 /** The letter the guide builds, and the word it offers next (suggestion files lower-c-1.json and word-create-1.json). */
 export const GUIDE_LETTER = { char: 'c', variant: 1 } as const;
 export const GUIDE_WORD = { text: 'create', variant: 1 } as const;
@@ -118,6 +137,10 @@ export const GUIDE_COPY = {
   skip: 'Exit guide',
   dontShow: "Don't show again",
   next: 'Next',
+  /** The guide bar (v1.6.3): Back, Exit (Exit guide), and the c's step count. */
+  back: 'Back',
+  exit: 'Exit',
+  stepOf: (n: number, total: number) => `Step ${n} of ${total}`,
   replay: 'Show guide',
 } as const;
 
@@ -471,13 +494,67 @@ export function nextOutline(s: GuideState): number | null {
 }
 
 /**
- * Next (shown when stuck) does the current thing for the visitor: restack the prompted piece (step 4, or step 6 while a
+ * Next (the guide bar's) does the current thing for the visitor: restack the prompted piece (step 4, or step 6 while a
  * piece is mis-stacked), else fill the lowest active outline. Null on steps with nothing to do (5, 7).
  */
 export function nextAction(s: GuideState): { kind: 'stack'; prompt: StackPrompt } | { kind: 'place'; outline: number } | null {
   if (s.stack && (s.step === 4 || s.step === 6)) return { kind: 'stack', prompt: s.stack };
   const i = nextOutline(s);
   return i === null ? null : { kind: 'place', outline: i };
+}
+
+// ---- the guide bar (v1.6.3) -------------------------------------------------------------------------------------
+
+/** An instruction step: the c's steps 1 to 4 (1a and 1b) and the word's step 6. The guide bar shows only on these. */
+export function guideBarShown(s: GuideState): boolean {
+  return (s.phase === 'c' && s.step >= 1 && s.step <= 4) || (s.phase === 'word' && s.step === 6);
+}
+
+/** The c's steps in the bar's count (1 is the wedge, dragged and turned). */
+export const C_STEPS = 4;
+
+/** The guide bar's count: "Step N of 4" in the c, the word's progress "N of M"; null where the bar is hidden. */
+export function guideBarCount(s: GuideState): string | null {
+  if (!guideBarShown(s)) return null;
+  if (s.phase === 'c') return GUIDE_COPY.stepOf(s.step, C_STEPS);
+  const p = guideProgress(s);
+  return GUIDE_COPY.progress(p.done, p.total);
+}
+
+/**
+ * Where the guide is, as one number that grows as the visitor goes forward: the c's 1a = 0, 1b = 1, 2 = 2, 3 = 3, 4 = 4,
+ * 5 = 5; the word's count of done pieces. -1 when the guide is not on the c or the word.
+ */
+export function guidePosition(s: GuideState): number {
+  if (s.phase === 'c') return s.step === 1 ? (s.turn ? 1 : 0) : s.step;
+  if (s.phase === 'word') return s.done.filter(Boolean).length;
+  return -1;
+}
+
+/**
+ * Back: how many undo steps take the guide back one position (`guidePosition`), or 0 when Back cannot (not an instruction
+ * step, at or below `floor`, or no undo step within `past` does). `past`: the undo snapshots the guide may go back through,
+ * most recent first, stopping at where the guide started (the caller cuts it there). `worldOf`: the guide's world for a
+ * snapshot. Pure: each snapshot is judged as the board would be after undoing back to it (`observeGuide`).
+ */
+export function backSteps(
+  s: GuideState, past: readonly (readonly OutlinePiece[])[], worldOf: (pieces: readonly OutlinePiece[]) => GuideWorld, floor = 0,
+): number {
+  if (!guideBarShown(s)) return 0;
+  const pos = guidePosition(s);
+  if (pos <= floor) return 0;
+  for (let k = 1; k <= past.length; k++) {
+    if (guidePosition(observeGuide(s, worldOf(past[k - 1]))) < pos) return k;
+  }
+  return 0;
+}
+
+/**
+ * The piece the guide is teaching to turn (c step 1b, and the word's turning hint): its rotate handle pulses and its
+ * selection box is hidden. Null otherwise.
+ */
+export function teachingTurn(s: GuideState): string | null {
+  return s.turn && ((s.phase === 'c' && s.step === 1) || (s.phase === 'word' && s.step === 6)) ? s.turn : null;
 }
 
 // ---- outlines beside the visitor's work (Keep my pieces) --------------------------------------------------------

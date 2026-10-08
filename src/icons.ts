@@ -17,6 +17,9 @@ const ICONS: Record<string, string> = {
   'zoom-in': P('M5 12h14M12 5v14'),
   fit: P('M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5'),
   close: P('M6 6l12 12M18 6L6 18'),
+  // The guide bar (v1.6.3): Back and Next.
+  'arrow-left': P('M20 12H5M11 6l-6 6 6 6'),
+  'arrow-right': P('M4 12h15M13 6l6 6-6 6'),
   // Lowercase "abc": a single-storey a (bowl + stem), b (ascender + bowl), an open c. Same 2-unit stroke, round bowls.
   letters: '<circle cx="3.75" cy="15.5" r="2.75"/>' + P('M6.5 12.75V18.25') + P('M10 5V18.25') + '<circle cx="12.75" cy="15.5" r="2.75"/>' + P('M22.2 13.55A2.75 2.75 0 1 0 22.2 17.45'),
   menu: P('M4 6h16M4 12h16M4 18h16'),
