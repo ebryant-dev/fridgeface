@@ -1,7 +1,7 @@
 import { rotatedBounds } from './camera';
 import { normalise } from './rotation';
 import {
-  FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
+  FILL_ANGLE_EPS, FILL_POS_EPS, activeIndices, angleGap, clickIn, filledBy, needsTurning, outlineAngleGap, outlineMatch, outlineOf, outlinesAt, type ClickResult, type Outline, type OutlinePiece,
   type ShapeFrame, type SizeOf,
 } from './outline';
 import { stackCheck, stackPrompt, type FreePairs, type Overlaps, type StackPrompt } from './stacking';
@@ -9,20 +9,33 @@ import { planBatches, type BatchOptions } from './batches';
 import { curatedPlan } from './guide-plans';
 
 /**
- * The onboarding guide (copy v3, v1.3.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
+ * The onboarding guide (copy v4, v1.6.0): the visitor builds Edward's "c" piece by piece onto blueprint-blue **outlines**
  * (solid for positive shapes, dotted for negative ones), learning stacking on the way, then may be guided through the whole
  * word "create" (`word-create-1`). The c is the one INSIDE the word (`findWordC`), placed so the whole word aligned to it
  * fits (`placeWordC`), and it stays in place as the start of "create" (`anchorWord`). Without the word (or a c in it) the c
  * is `lower-c-1`. Pure, no DOM: the step state machine, the "don't show again" storage rule and the callout placement. The
  * component (main.ts) feeds it the board and draws the outlines and the callout.
  *
- * 1. outline: the white oval (dotted).                          Done when it is filled (a piece sits exactly on it).
- * 2. outline: the black oval (solid), on the white one.         Done when it is filled. A new piece lands on top, so it
- *    hides the white oval.
- * 3. no outline: "Send the black oval back so the white shows through." Points at the button block's Back (Send backward) (the black
- *    oval is selected for it). Done when the black oval is below the white one in the stacking order (`stack` is the prompt).
- * 4. outline: the wedge, at its angle. 4a "drag it into place"; 4b (a wedge is close in position but needs turning) "turn it".
- * 5. no outline. "That's a c." Guide me (only when word-create-1 exists) or Clear for free play. A finished c moved as one
+ * Copy v4 (v1.6.0) builds the c wedge first, so the stacking lesson is bringing the wedge (a negative shape) forward to cut
+ * into the black oval that landed on top of it (copy v3, v1.3.0 to v1.5.1, built white oval, black oval, "send the black
+ * oval back", wedge). Order: `cSequence`.
+ *
+ * 1. outline: the wedge (dotted). 1a "Drag the wedge onto the fridge.": the outline is drawn at its LANDING angle
+ *    (`landingOutline`: the true outline's position at rotation 0, the angle a piece dragged from the tray lands at), so its
+ *    silhouette matches the piece in the hand. A wedge released close to that position at about that angle clicks into the
+ *    position only, keeping its angle (`guideClickIn`). A piece turns about its centroid, its (x, y), so turning it there
+ *    carries it into the true outline. 1b (a wedge is close in position but needs turning: `needsTurning`): the outline is
+ *    drawn at its TRUE angle and the callout says "Now turn it with the round handle to fit." (pointing at the rotate
+ *    handle); turned close to the angle it clicks in (position and angle) as any piece does. Done when it is filled.
+ * 2. outline: the black oval (solid), on the wedge. Done when it is filled. A new piece lands on top, so it covers the wedge.
+ * 3. outline: the white oval (dotted), on the black one. Done when it is filled (it lands on top too).
+ * 4. no outline: "Bring the wedge forward so it cuts into the black." Points at the button block's Forward (Bring forward)
+ *    (the wedge is selected for it). Done when every c piece is stacked as in the letter against every c piece it overlaps
+ *    (stacking.ts; the wedge and the black oval always count as overlapping, as they do in the c). `stack` is the prompt,
+ *    the wedge first (several presses may be needed: it passes each overlapping piece above it); any other mis-stacked c
+ *    piece (the visitor restacked one) gets the generic Send it back / Bring it forward prompt.
+ * 5. no outline. "That's a c." / "Do you want to continue the tutorial?" with Guide me ("Yes, continue"; only when
+ *    word-create-1 exists, as is the question) or Clear for free play ("No, clear for free play"). A finished c moved as one
  *    (rigidly, not turned) keeps step 5: its outlines follow it (`rigidShift`).
  * 6. outlines: the word, built in STACKING ORDER one small BATCH at a time (v1.4.0, every layout; batches.ts): only the
  *    current batch's outlines show and accept a piece, filled in any order. Every outline of a batch is ready (each lower
@@ -32,9 +45,9 @@ import { curatedPlan } from './guide-plans';
  *    AND stacked right against every placed piece it overlaps (stacking.ts); progress "N of M" counts done pieces. The
  *    stacking prompts (`stack`: Send it back / Bring it forward, the most recently placed first) remain only as a safety net,
  *    for a visitor who reorders pieces themselves. A curated plan may declare ORDER-FREE pairs (v1.5.0: the flower's petals,
- *    which come up together as one batch): their order is never checked. Same turning hint as 4b. Nothing is cleared at Guide me; the word's
+ *    which come up together as one batch): their order is never checked. Same turning hint as 1b. Nothing is cleared at Guide me; the word's
  *    outlines are in the c's board frame, so the c's pieces fill theirs (they are batch 0, already done).
- * 7. no outline. "You made "create"." Start fresh or Keep it. Only once every piece is done: the stacking order of every
+ * 7. no outline. "Great work! Now you're ready to create on your own." Start fresh or Keep it. Only once every piece is done: the stacking order of every
  *    overlapping pair is the word's.
  *
  * The guide NEVER fixes the stacking order by itself (a click-in sets position and angle only); only Next, the escape hatch
@@ -67,28 +80,32 @@ export const GUIDE_NEXT_MS = 10_000;
 export const GUIDE_LETTER = { char: 'c', variant: 1 } as const;
 export const GUIDE_WORD = { text: 'create', variant: 1 } as const;
 
-/** Edward's approved copy v3 (creative/personal-brand/working/fridgeface/docs/guide-copy.md), word for word. */
+/** Edward's approved copy v4 (v1.6.0), word for word. */
 export const GUIDE_COPY = {
   step0: 'Start on a clean fridge?',
   clearStart: 'Clear and start',
   keepMine: 'Keep my pieces',
-  step1: 'Drag the white oval onto the fridge.',
-  step2: 'Now drag the black oval onto it.',
-  step3: 'Send the black oval back so the white shows through.',
-  step4a: 'Drag the wedge into place.',
-  step4b: 'Now turn it with the round handle to fit.',
+  /** Step 1a: the wedge, its outline at the angle it lands at. */
+  step1: 'Drag the wedge onto the fridge.',
+  /** Step 1b (and step 6's turning hint): a piece in position but at the wrong angle. */
+  step1b: 'Now turn it with the round handle to fit.',
   /** Touch devices: one sentence. */
-  step4bTouch: 'Now turn it with the round handle to fit, or twist with two fingers.',
+  step1bTouch: 'Now turn it with the round handle to fit, or twist with two fingers.',
+  step2: 'Now drag the black oval into place.',
+  step3: 'Now drag the white oval onto it.',
+  step4: 'Bring the wedge forward so it cuts into the black.',
   step5: "That's a c.",
-  step5Ask: 'Want to spell "create" next?',
-  guideMe: 'Guide me',
-  clearFree: 'Clear for free play',
+  step5Ask: 'Do you want to continue the tutorial?',
+  /** Step 5's "Guide me" button (into the word "create"). */
+  guideMe: 'Yes, continue',
+  /** Step 5's "Clear for free play" button. */
+  clearFree: 'No, clear for free play',
   step6: 'Fill in the outlines to spell "create".',
   progress: (done: number, total: number) => `${done} of ${total}`,
   /** Step 6: a placed piece stacked wrongly against a piece it overlaps (points at Send backward / Bring forward). */
   stackBack: 'Send it back so it sits behind.',
   stackForward: 'Bring it forward so it sits in front.',
-  step7: 'You made "create". Now try your own name.',
+  step7: "Great work! Now you're ready to create on your own.",
   startFresh: 'Start fresh',
   keepIt: 'Keep it',
   skip: 'Skip',
@@ -139,9 +156,9 @@ export interface GuideState {
   done: readonly boolean[];
   /** The placed pieces, in the order they were placed (oldest first): the most recent mis-stacked one is prompted first. */
   recent: readonly string[];
-  /** Step 3, and step 6 whenever a placed piece is mis-stacked: which piece to restack, which way, how many presses. */
+  /** Step 4, and step 6 whenever a placed piece is mis-stacked: which piece to restack, which way, how many presses. */
   stack: StackPrompt | null;
-  /** A piece close to an active outline of its shape but at the wrong angle (step 4b, or the same hint in step 6), or null. */
+  /** A piece close to an active outline of its shape but at the wrong angle (step 1b, or the same hint in step 6), or null. */
   turn: string | null;
   /**
    * The word phase: the word's outlines in batches (outline indices per batch, in the order they are built; batch 0 is the
@@ -179,23 +196,45 @@ export function currentBatch(s: GuideState): number {
 }
 
 /**
- * The c's outlines in the order the guide asks for them (v3): the white oval first, then the black oval, then the rest
- * (the wedge). Outlines without both ovals: in their own order.
+ * The c's outlines in the order the guide asks for them (copy v4): the wedge first, then the black oval, then the white
+ * oval, then any others. Outlines without all three: in their own order.
  */
 export function cSequence(outlines: readonly Outline[]): number[] {
-  const white = outlines.findIndex((o) => o.shapeId === 'negative-round');
+  const wedge = outlines.findIndex((o) => o.shapeId === 'wedge');
   const black = outlines.findIndex((o) => o.shapeId === 'positive-round');
+  const white = outlines.findIndex((o) => o.shapeId === 'negative-round');
   const all = outlines.map((_, i) => i);
-  if (white < 0 || black < 0) return all;
-  return [white, black, ...all.filter((i) => i !== white && i !== black)];
+  if (wedge < 0 || black < 0 || white < 0) return all;
+  return [wedge, black, white, ...all.filter((i) => i !== wedge && i !== black && i !== white)];
 }
 
 /**
- * The outlines showing (and accepting a piece) in this state: one at a time in steps 1, 2 and 4 (none in step 3, the
+ * The wedge's outline as first shown (step 1a, copy v4): the true outline's position at rotation 0, the angle a piece
+ * dragged from the tray lands at (`Composition.addPiece`). A single piece turns about its centroid, which is its (x, y), so
+ * a piece sitting on this turns into the true outline without moving.
+ */
+export function landingOutline(o: Outline): Outline {
+  return { ...o, rotation: 0 };
+}
+
+/** Step 1a: the wedge's outline is drawn (and accepts a piece, position only) at its landing angle. */
+const landing = (s: GuideState, i: number): boolean =>
+  s.phase === 'c' && s.step === 1 && !s.turn && s.outlines[i]?.shapeId === 'wedge' && !s.filled[i];
+
+/**
+ * The outline as it is drawn (and framed, and kept clear by the callout): step 1a draws the wedge at its landing angle
+ * (`landingOutline`); otherwise the outline itself.
+ */
+export function shownOutline(s: GuideState, i: number): Outline {
+  return landing(s, i) ? landingOutline(s.outlines[i]) : s.outlines[i];
+}
+
+/**
+ * The outlines showing (and accepting a piece) in this state: one at a time in steps 1, 2 and 3 (none in step 4, the
  * stacking lesson), every unfilled one of the current batch in step 6, lowest index (bottom of the stacking order) first.
  */
 export function activeOutlines(s: GuideState): number[] {
-  if (s.phase === 'c' && (s.step === 1 || s.step === 2 || s.step === 4)) {
+  if (s.phase === 'c' && (s.step === 1 || s.step === 2 || s.step === 3)) {
     const i = cSequence(s.outlines).find((k) => !s.filled[k]);
     return i === undefined ? [] : [i];
   }
@@ -218,31 +257,38 @@ function updateRecent(recent: readonly string[], filled: readonly (string | null
   return !added.length && kept.length === recent.length ? recent : [...kept, ...added];
 }
 
-/** The c (steps 1 to 5): white oval, black oval, the black oval sent back, the wedge. */
-function deriveC(outlines: readonly Outline[], w: GuideWorld, filled: (string | null)[]): { step: GuideStep; done: boolean[]; stack: StackPrompt | null } {
+/**
+ * The c (steps 1 to 5, copy v4): the wedge, the black oval, the white oval, then the wedge brought forward. `recent`: the
+ * placed pieces, oldest first (the stacking prompt asks about the wedge first).
+ */
+function deriveC(
+  outlines: readonly Outline[], w: GuideWorld, filled: (string | null)[], recent: readonly string[],
+): { step: GuideStep; done: boolean[]; stack: StackPrompt | null } {
   const seq = cSequence(outlines);
-  const [white, black] = seq;
-  const pos = new Map(w.pieces.map((p, i) => [p.id, i]));
   const done = filled.map(Boolean);
-  if (!filled[white]) return { step: 1, done, stack: null };
-  if (!filled[black]) return { step: 2, done, stack: null };
-  const pair = new Set([filled[white]!, filled[black]!]);
-  if (seq.length > 1 && white !== black && pos.get(filled[black]!)! > pos.get(filled[white]!)!) {
-    // The black oval hides the white one: send it back. (The two ovals always count as overlapping, as they do in the c.)
-    const ov = overlapsOf(w);
-    const only = filled.map((id, i) => (i === white || i === black ? id : null));
-    const stack = stackPrompt(only, w.pieces, (a, b) => (pair.has(a.id) && pair.has(b.id)) || ov(a, b), [filled[white]!, filled[black]!]);
-    done[white] = done[black] = false;
-    return { step: 3, done, stack };
-  }
-  return { step: seq.slice(2).some((i) => !filled[i]) ? 4 : 5, done, stack: null };
+  const first = seq.findIndex((i) => !filled[i]);
+  if (first === 0) return { step: 1, done, stack: null };
+  if (first === 1) return { step: 2, done, stack: null };
+  if (first >= 2) return { step: 3, done, stack: null };
+  // Every piece placed: the stacking lesson. The wedge and the black oval always count as overlapping (as they do in the
+  // c, where the wedge cuts into it); every other pair by its real geometry.
+  const wedgeId = filled[outlines.findIndex((o) => o.shapeId === 'wedge')] ?? null;
+  const blackId = filled[outlines.findIndex((o) => o.shapeId === 'positive-round')] ?? null;
+  const ov = overlapsOf(w);
+  const pair = (a: OutlinePiece, b: OutlinePiece) => !!wedgeId && !!blackId && ((a.id === wedgeId && b.id === blackId) || (a.id === blackId && b.id === wedgeId));
+  const overlaps: Overlaps = (a, b) => pair(a, b) || ov(a, b);
+  // The wedge is the lesson: it is asked about first (the most recent in the prompt's eyes).
+  const order = wedgeId ? [...recent.filter((id) => id !== wedgeId), wedgeId] : recent;
+  const stack = stackPrompt(filled, w.pieces, overlaps, order);
+  if (!stack) return { step: 5, done, stack: null };
+  return { step: 4, done: stackCheck(filled, w.pieces, overlaps).done, stack };
 }
 
 function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld, c: Carry): GuideState {
   const filled = filledBy(outlines, w.pieces);
   const recent = updateRecent(c.recent, filled);
   let step: GuideStep, done: boolean[], stack: StackPrompt | null;
-  if (phase === 'c') ({ step, done, stack } = deriveC(outlines, w, filled));
+  if (phase === 'c') ({ step, done, stack } = deriveC(outlines, w, filled, recent));
   else {
     const ov = overlapsOf(w);
     done = stackCheck(filled, w.pieces, ov, c.free).done;
@@ -251,8 +297,8 @@ function derive(phase: 'c' | 'word', outlines: readonly Outline[], w: GuideWorld
   }
   const s: GuideState = { ...c, recent, batches: phase === 'word' ? c.batches : null, free: phase === 'word' ? c.free : NONE, step, phase, outlines, filled, done, stack, turn: null };
   const active = activeOutlines(s);
-  // The turning hint: in step 4 (the wedge) and step 6 (any piece of the word).
-  const turn = step === 4 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
+  // The turning hint: in step 1 (the wedge) and step 6 (any piece of the word).
+  const turn = step === 1 || step === 6 ? needsTurning(outlines, active, filled, w.pieces, w.sizeOf) : null;
   return { ...s, turn };
 }
 
@@ -283,9 +329,12 @@ export function answerAsk(s: GuideState, answer: 'clear' | 'keep', cOutlines: re
   return startGuide(cOutlines, w, { kept: answer === 'keep', theirs: [...theirs] });
 }
 
-/** Move the c's outlines (nothing filled yet: e.g. their pieces came back on an undo and the outlines sat on them). */
+/**
+ * Move the c's outlines (nothing filled yet: e.g. their pieces came back on an undo and the outlines sat on them). Never
+ * while a wedge waits to be turned into its outline (step 1b): it is the c begun, not their work.
+ */
 export function moveLetter(s: GuideState, cOutlines: readonly Outline[], w: GuideWorld): GuideState {
-  if (s.phase !== 'c' || s.filled.some(Boolean) || !cOutlines.length) return s;
+  if (s.phase !== 'c' || s.filled.some(Boolean) || s.turn || !cOutlines.length) return s;
   return derive('c', cOutlines, w, { ...carry(s), letter: cOutlines });
 }
 
@@ -383,10 +432,30 @@ export function guideProgress(s: GuideState): { done: number; total: number } {
   return { done: s.done.filter(Boolean).length, total: s.done.length };
 }
 
-/** A released piece (or several): what clicks into the active outlines, if anything. Always null when the guide is not running. */
+/**
+ * A released piece (or several): what clicks into the active outlines, if anything. Always null when the guide is not
+ * running. Step 1a (copy v4): a wedge that does not fit the true outline but is released close to its LANDING outline
+ * (`landingOutline`: within the click-in position tolerance, and the angle tolerance of rotation 0) clicks into its position
+ * only, keeping its own angle; the turning hint (1b) then asks for the turn.
+ */
 export function guideClickIn(s: GuideState, w: GuideWorld, released: readonly string[]): ClickResult | null {
   if (!s.step) return null;
-  return clickIn(s.outlines, activeOutlines(s), w.pieces, released, w.sizeOf);
+  const active = activeOutlines(s);
+  const r = clickIn(s.outlines, active, w.pieces, released, w.sizeOf);
+  if (r || !(s.phase === 'c' && s.step === 1)) return r;
+  const byId = new Map(w.pieces.map((p) => [p.id, p]));
+  const filled = filledBy(s.outlines, w.pieces);
+  for (const i of active) {
+    if (filled[i] || s.outlines[i].shapeId !== 'wedge') continue;
+    const o = landingOutline(s.outlines[i]);
+    for (const id of released) {
+      const p = byId.get(id);
+      if (!p || filled.includes(id) || outlineMatch(o, p, w.sizeOf) !== 'fit') continue;
+      if (Math.hypot(p.x - o.x, p.y - o.y) <= FILL_POS_EPS) continue; // already there: nothing to click
+      return { placements: [{ id, x: o.x, y: o.y, rotation: p.rotation, outline: i }] };
+    }
+  }
+  return null;
 }
 
 /** The lowest active outline (the one Next fills when no piece needs restacking), or null on steps without outlines. */
@@ -395,11 +464,11 @@ export function nextOutline(s: GuideState): number | null {
 }
 
 /**
- * Next (shown when stuck) does the current thing for the visitor: restack the prompted piece (step 3, or step 6 while a
+ * Next (shown when stuck) does the current thing for the visitor: restack the prompted piece (step 4, or step 6 while a
  * piece is mis-stacked), else fill the lowest active outline. Null on steps with nothing to do (5, 7).
  */
 export function nextAction(s: GuideState): { kind: 'stack'; prompt: StackPrompt } | { kind: 'place'; outline: number } | null {
-  if (s.stack && (s.step === 3 || s.step === 6)) return { kind: 'stack', prompt: s.stack };
+  if (s.stack && (s.step === 4 || s.step === 6)) return { kind: 'stack', prompt: s.stack };
   const i = nextOutline(s);
   return i === null ? null : { kind: 'place', outline: i };
 }
@@ -553,7 +622,7 @@ export function findWordC(pieces: readonly Outline[], shapeOf: FrameOf): WordC |
   return wedge < 0 ? null : { round, negative, wedge };
 }
 
-/** The c's three outlines, picked out of the word's (in the c's step order: black oval, white oval, wedge). */
+/** The c's three outlines, picked out of the word's (in the word's stacking order: black oval, white oval, wedge). */
 export function cOutlines(word: readonly Outline[], c: WordC): Outline[] {
   return [word[c.round], word[c.negative], word[c.wedge]];
 }

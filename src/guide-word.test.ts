@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BESIDE_ORDER, adoptTheirs, anchorWord, askGuide, answerAsk, activeOutlines, besideSpot, chooseWord, cOutlines, currentBatch, findWordC, guideBuilt,
-  guideClearPlan, guideProgress, observeGuide, placeWordC, recordBuilt, rectsOverlap, rigidShift, startGuide, type GuideState, type GuideWorld, type Rect,
+  guideClearPlan, guideClickIn, guideProgress, observeGuide, placeWordC, recordBuilt, rectsOverlap, rigidShift, startGuide, type GuideState, type GuideWorld, type Rect,
 } from './guide';
 import { filledBy, type Outline, type OutlinePiece, type ShapeFrame } from './outline';
 import { rotatedBounds } from './camera';
 import { History } from './history';
 import { HULLS } from './hulls.testdata';
-import { boundsOf, convexIntersect, placeOutline } from './selection';
+import { boundsOf, bringForwardOverlapping, convexIntersect, placeOutline } from './selection';
 
 /**
  * v1.2.3: the guided c is the c INSIDE word-create-1, so it stays in place as the start of "create" at Guide me.
@@ -117,6 +117,44 @@ describe('placement: the c chosen from the WHOLE word\'s bounds', () => {
   });
 });
 
+describe('copy v4 on the REAL c (real geometry): wedge, black oval, white oval, then the wedge brought forward', () => {
+  const c = findWordC(CREATE, shapeOf)!;
+  const { word: planned, c: letter } = placeWordC(CREATE, c, shapeOf, { x: 400, y: 120 });
+  const [black, white, wedge] = letter.map((o, i) => on(['a', 'b', 'w'][i], o));
+
+  it('the wedge lands first from the tray (rotation 0) on its landing outline, turns in place, then the ovals cover it; Bring forward until it cuts in; Guide me counts the c', () => {
+    let s = startGuide(letter, world([]));
+    expect([s.step, activeOutlines(s)]).toEqual([1, [2]]);
+    const dropped = on('w', { ...wedge, x: wedge.x + 20, y: wedge.y - 15, rotation: 0 });
+    const r = guideClickIn(s, world([dropped]), ['w'])!;
+    expect(r.placements, 'position only: its angle kept').toEqual([{ id: 'w', x: wedge.x, y: wedge.y, rotation: 0, outline: 2 }]);
+    s = observeGuide(s, world([{ ...dropped, ...r.placements[0] }]));
+    expect([s.step, s.turn]).toEqual([1, 'w']);
+    s = observeGuide(s, world([wedge]));
+    expect(s.step).toBe(2);
+    s = observeGuide(s, world([wedge, black]));
+    expect(s.step).toBe(3);
+    s = observeGuide(s, world([wedge, black, white]));
+    expect([s.step, s.stack?.id, s.stack?.dir]).toEqual([4, 'w', 'forward']);
+    // Follow the prompt with the real overlap-aware Bring forward, press by press.
+    let order = ['w', 'a', 'b'];
+    const byId = new Map([wedge, black, white].map((p) => [p.id, p]));
+    const ovId = (x: string, y: string) => overlaps(byId.get(x)!, byId.get(y)!);
+    expect(ovId('w', 'a'), 'the wedge cuts into the black oval').toBe(true);
+    const presses = s.stack!.presses;
+    for (let i = 0; i < presses; i++) order = bringForwardOverlapping(order, new Set(['w']), ovId)!;
+    s = observeGuide(s, world(order.map((id) => byId.get(id)!)));
+    expect(s.step, `after ${presses} press(es): ${order.join(',')}`).toBe(5);
+    expect([presses, order, ovId('w', 'b')], 'it overlaps the white oval too: two presses, and the c is in the word\'s order').toEqual([2, ['a', 'b', 'w'], true]);
+    expect(order.indexOf('w')).toBeGreaterThan(order.indexOf('a'));
+    // Guide me: the c is batch 0, done; 3 of 32.
+    const built = order.map((id) => byId.get(id)!);
+    const w5 = chooseWord(recordBuilt(s, ['a', 'b', 'w']), anchorWord(CREATE, c, s.letter, shapeOf)!, world(built), PLAN);
+    expect(anchorWord(CREATE, c, s.letter, shapeOf)).toEqual(planned);
+    expect([w5.step, guideProgress(w5)]).toEqual([6, { done: 3, total: 32 }]);
+  });
+});
+
 describe('Guide me on the c: no clear, the c counts, progress starts at 3 of 32', () => {
   const c = findWordC(CREATE, shapeOf)!;
   const { word: planned, c: letter } = placeWordC(CREATE, c, shapeOf, { x: 400, y: 120 });
@@ -208,7 +246,7 @@ describe('the c moved after step 4, before Guide me', () => {
     expect(rigidShift(letter, ['a', 'b', 'w'], moved(100, 0, 10))).toBeNull();
     expect(observeGuide(at5(), world(moved(100, 0, 10))).step).toBe(1);
     const apart = [...moved(100, 0).slice(0, 2), built[2]];
-    expect(observeGuide(at5(), world(apart)).step, "the round and its negative moved, the wedge left behind").toBe(1);
+    expect(observeGuide(at5(), world(apart)).step, "the round and its negative moved, the wedge left behind").toBe(2);
     expect(rigidShift(letter, ['a', 'b', 'w'], built), 'not moved at all').toBeNull();
     const turnedLetter = letter.map((o) => ({ ...o, rotation: o.rotation + 10 }));
     expect(anchorWord(CREATE, c, turnedLetter, shapeOf), 'a turned c is not this word\'s c').toBeNull();

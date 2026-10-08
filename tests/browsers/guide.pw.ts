@@ -3,10 +3,12 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 declare const process: { env: Record<string, string | undefined> }; // runs in Node; the project has no @types/node
 
 /**
- * The onboarding guide (copy v3 in v1.3.0: the c teaches stacking; "create" prompts the visitor to fix the stacking, never
- * reorders by itself; solid outlines for positive shapes, dotted for negative), in Chromium AND WebKit, desktop, iPhone
- * portrait and iPhone landscape: a blank board, the c built piece by piece onto outlines that pieces click into (guide
- * only): white oval, black oval (it covers the white), Send backward from the button block, the wedge; step 5's
+ * The onboarding guide (copy v4 in v1.6.0: the c teaches stacking, wedge first; "create" prompts the visitor to fix the
+ * stacking, never reorders by itself; solid outlines for positive shapes, dotted for negative), in Chromium AND WebKit,
+ * desktop, iPhone portrait and iPhone landscape: a blank board, the c built piece by piece onto outlines that pieces click
+ * into (guide only): the wedge (its outline first at the angle it lands at; dropped there it clicks into position, then
+ * the outline shows its true angle and the visitor turns it in), the black oval and the white oval (they cover the wedge),
+ * Bring forward from the button block until the wedge cuts in; step 5's
  * choice, the whole word "create" from Edward's REAL word-create-1 (32 pieces; v1.2.3: the c built is the word's own c, and
  * it stays in place at Guide me, exactly, counting as "3 of 32"; a c moved as one re-anchors the word; v1.4.0: built in
  * stacking order, batch by batch, with no stacking prompt, which remains only as a safety net), Skip / Don't show again / Next, replay from
@@ -35,8 +37,10 @@ type FF = HTMLElement & {
 const SHOT = '.playwright-mcp';
 const NAMES: Record<string, string> = { 'chromium-desktop': 'desktop', 'webkit-iphone': 'wk-iphone', 'webkit-iphone-landscape': 'wk-iphone-landscape' };
 const C_TEXT = {
-  1: 'Drag the white oval onto the fridge.', 2: 'Now drag the black oval onto it.', 3: 'Send the black oval back so the white shows through.', 4: 'Drag the wedge into place.',
+  1: 'Drag the wedge onto the fridge.', 2: 'Now drag the black oval into place.', 3: 'Now drag the white oval onto it.', 4: 'Bring the wedge forward so it cuts into the black.',
 };
+/** Where the copy v4 walk-through saves its phone screenshots (FF_SHOTS; default the usual scratch folder). */
+const SHOTS = process.env.FF_SHOTS || SHOT;
 const STACK_TEXT = { back: 'Send it back so it sits behind.', forward: 'Bring it forward so it sits in front.' };
 const TURN = 'Now turn it with the round handle to fit.';
 const TURN_TOUCH = 'Now turn it with the round handle to fit, or twist with two fingers.';
@@ -55,6 +59,19 @@ const state = (page: Page) => page.evaluate(() => {
   };
 });
 const stored = (page: Page) => page.evaluate(() => localStorage.getItem('fridgeface:guide:v2'));
+/**
+ * Undo / redo from the keyboard. v1.6.0: on phones a callout pointing at the tray (or at Forward) may sit over the button
+ * block, right by its target (the controls are no longer obstacles to it), so its Undo / Redo may be covered there.
+ */
+async function historyKey(page: Page, kind: 'undo' | 'redo') {
+  await el(page, '.board svg.surface').focus();
+  await page.keyboard.press(kind === 'undo' ? 'Control+z' : 'Control+Shift+z');
+}
+/** A click-in glides the piece into place (170 ms); the callout is placed again once it lands. */
+const landed = async (page: Page) => {
+  await page.waitForTimeout(260);
+  await frames(page);
+};
 const frames = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
 function collectErrors(page: Page): string[] {
@@ -160,7 +177,7 @@ async function turnTo(page: Page, id: string, target: number, err = 4) {
 /** Does a piece sit exactly on outline `o`? */
 const onOutline = (p: P, o: O) => p.shapeId === o.shapeId && Math.hypot(p.x - o.x, p.y - o.y) < 0.2 && Math.abs(((p.rotation - o.rotation + 540) % 360) - 180) < 0.06;
 
-/** The outline showing in the c's steps (1, 2, 4): its index. */
+/** The outline showing in the c's steps (1, 2, 3): its index. */
 const activeOutline = async (page: Page) => Number(await el(page, '[data-outline]').first().getAttribute('data-outline'));
 
 /**
@@ -246,8 +263,9 @@ async function answerPrompts(page: Page, isMobile: boolean, label: string, check
 }
 
 /**
- * The callout: inside the viewport and the board, clear of its target, the dock panels, the button block and the tray, and
- * (v2) clear of every active outline and of the piece being turned toward one.
+ * The callout: inside the viewport and the board, clear of its target (the tray shape it names, the Back / Forward it names,
+ * the rotate handle), of the piece a stacking prompt acts on, of every active outline and of the piece being turned toward
+ * one. Since v1.6.0 it MAY cover the dock panels, the button block and the rest of the tray (it sits close to its target).
  */
 async function checkCallout(page: Page, label: string, opts: { panned?: boolean; squeezed?: boolean } = {}) {
   await frames(page);
@@ -262,7 +280,7 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     const shown = (e: HTMLElement) => !e.hidden && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
     const kind = g.dataset.target!;
     let target: { x: number; y: number; w: number; h: number } | null = null;
-    if (kind === 'tray') target = rect(sr.querySelector('.tray')!);
+    if (kind === 'tray') target = rect(g.dataset.shape ? sr.querySelector(`.tray button[data-shape="${g.dataset.shape}"]`)! : sr.querySelector('.tray')!);
     else if (kind === 'handle') target = rect(sr.querySelector('[data-handle] circle')!);
     else if (kind === 'piece') target = rect(sr.querySelector(`[data-piece-id="${g.dataset.piece}"] .bd`)!);
     else if (kind === 'action') target = rect(sr.querySelector(`.block [data-block=${g.dataset.action}]`)!);
@@ -277,6 +295,7 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
       return { x: Math.min(...xs) - m, y: Math.min(...ys) - m, w: Math.max(...xs) - Math.min(...xs) + 2 * m, h: Math.max(...ys) - Math.min(...ys) + 2 * m };
     });
     const turn = ff.guide.turn ? sr.querySelector(`[data-piece-id="${ff.guide.turn}"] .bd`) : null;
+    const acted = kind === 'action' && ff.guide.stack ? sr.querySelector(`[data-piece-id="${ff.guide.stack.id}"] .bd`) : null;
     const arrow = sr.querySelector('.gpt')!;
     // Every rotate handle showing, as its 44 px hit box (centred on the handle).
     const handles = [...sr.querySelectorAll('[data-handle]')].flatMap((h) => {
@@ -285,7 +304,7 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     });
     return {
       kind, side: g.dataset.side, callout: rect(g), arrow: g.dataset.side === 'centre' ? null : rect(arrow), noarrow: g.hasAttribute('data-noarrow'), target, controls, outlines, handles,
-      turn: turn ? rect(turn) : null, tray: rect(sr.querySelector('.tray')!), board: rect(sr.querySelector('.board')!), vw: window.innerWidth, vh: window.innerHeight,
+      phase: (ff.guide as unknown as { phase: string }).phase, turn: turn ? rect(turn) : null, acted: acted ? rect(acted) : null, tray: rect(sr.querySelector('.tray')!), board: rect(sr.querySelector('.board')!), vw: window.innerWidth, vh: window.innerHeight,
     };
   });
   type R = { x: number; y: number; w: number; h: number };
@@ -300,19 +319,21 @@ async function checkCallout(page: Page, label: string, opts: { panned?: boolean;
     expect.soft(ov(c, m.target), `${where} overlaps its target ${JSON.stringify(m.target)}`).toBe(false);
     if (m.arrow) expect.soft(ov(m.arrow, m.target), `${where}: the arrow ${JSON.stringify(m.arrow)} overlaps the target`).toBe(false);
   }
-  // v1.5.0: a visible pointer never lands on a control it is not about (the block stands between the callout and the tray
-  // on phones); only step 3's and the prompts' own Back / Forward may be touched by it.
-  if (m.arrow && !m.noarrow && m.kind !== 'action') for (const k of m.controls) expect.soft(ov(m.arrow, k.r), `${where}: the pointer lands on ${k.name}`).toBe(false);
+  // The target stays fully visible: inside the viewport too.
+  if (m.target) expect.soft(inView(m.target), `${where}: its target ${JSON.stringify(m.target)} is in the viewport`).toBe(true);
+  if (m.acted) expect.soft(ov(c, m.acted), `${where} overlaps the piece it asks to restack ${JSON.stringify(m.acted)}`).toBe(false);
   for (const o of m.outlines) {
     expect.soft(ov(c, o), `${where} overlaps an active outline ${JSON.stringify(o)}`).toBe(false);
     if (!opts.panned) expect.soft(inView(o), `${label}: the outline ${JSON.stringify(o)} is inside the viewport`).toBe(true); // a visitor's pan may take it out
   }
   if (m.turn) expect.soft(ov(c, m.turn), `${where} overlaps the piece being turned ${JSON.stringify(m.turn)}`).toBe(false);
   for (const h of m.handles) expect.soft(ov(c, h), `${where} overlaps a rotate handle's 44px hit box ${JSON.stringify(h)}`).toBe(false);
-  expect.soft(ov(c, m.tray), `${where} overlaps the tray`).toBe(false);
-  // (squeezed: a pan put the rotate handle where the callout was, at the foot of a ~545 px board between the section and the
-  // button block: the callout's last resort puts handle and outlines first, the button block may then be touched.)
-  for (const k of m.controls) if (!(opts.squeezed && k.name.includes('block'))) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
+  // A centred callout (nothing to point at) keeps clear of every control; in the word the button block always stays clear.
+  // (squeezed: a pan put the rotate handle where the callout was: handle and outlines come first, the block may be touched.)
+  for (const k of m.controls) {
+    const block = k.name.includes('block');
+    if ((m.side === 'centre' || (block && m.phase === 'word')) && !(opts.squeezed && block)) expect.soft(ov(c, k.r), `${where} overlaps ${k.name} ${JSON.stringify(k.r)}`).toBe(false);
+  }
   return m;
 }
 
@@ -321,20 +342,21 @@ async function shoot(page: Page, project: string, name: string) {
   if (n) await page.screenshot({ path: `${SHOT}/g2-${name}-${n}.png` });
 }
 
-/** Step 3: the black oval covers the white one; the callout points at Send backward, the black oval selected. */
-async function checkStep3(page: Page, label: string) {
-  await expect(guide(page)).toHaveAttribute('data-step', '3');
-  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[3]);
-  expect(await el(page, '[data-outline]').count(), 'no outline at step 3').toBe(0);
+/** Step 4: the ovals cover the wedge; the callout points at Bring forward, the wedge selected. */
+async function checkStep4(page: Page, label: string) {
+  await expect(guide(page)).toHaveAttribute('data-step', '4');
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[4]);
+  expect(await el(page, '[data-outline]').count(), 'no outline at step 4').toBe(0);
   await expect(el(page, '[data-block=x]')).toHaveAttribute('data-mode', 'delete');
   await expect(guide(page)).toHaveAttribute('data-target', 'action');
-  await expect(guide(page)).toHaveAttribute('data-action', 'backward');
+  await expect(guide(page)).toHaveAttribute('data-action', 'forward');
   const s = await state(page);
-  const black = s.filled[s.outlines.findIndex((o) => o.shapeId === 'positive-round')]!;
-  expect(s.stack).toEqual({ id: black, dir: 'back', presses: 1 });
-  expect(await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { selection: string[] }).selection), 'the black oval is selected').toEqual([black]);
-  // v1.5.0: it points at the block's Back (the down arrow), which is on, and never covers it.
-  await expect(el(page, '.block [data-block=backward]')).toBeEnabled();
+  const wedge = s.filled[s.outlines.findIndex((o) => o.shapeId === 'wedge')]!;
+  expect(s.stack?.id).toBe(wedge);
+  expect(s.stack?.dir).toBe('forward');
+  expect(await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { selection: string[] }).selection), 'the wedge is selected').toEqual([wedge]);
+  // It points at the block's Forward (the up arrow), which is on, and never covers it (nor Back beside it).
+  await expect(el(page, '.block [data-block=forward]')).toBeEnabled();
   const geo = await page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const r = (e: Element) => e.getBoundingClientRect().toJSON() as DOMRect;
@@ -342,19 +364,52 @@ async function checkStep3(page: Page, label: string) {
     return { g: r(g), b: r(b), f: r(f), side: (g as HTMLElement).dataset.side, arrow: r(sr.querySelector('.gpt')!) };
   });
   const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-  expect(hit(geo.g, geo.b) || hit(geo.g, geo.f), `${label}: the callout never covers Back or Forward`).toBe(false);
+  expect(hit(geo.g, geo.f), `${label}: the callout never covers Forward`).toBe(false);
   if (geo.side === 'above' || geo.side === 'below') {
     const tip = geo.arrow.x + geo.arrow.width / 2;
-    expect(tip >= geo.b.x - 1 && tip <= geo.b.x + geo.b.width + 1, `${label}: the arrow is level with Back ${JSON.stringify(geo)}`).toBe(true);
+    expect(tip >= geo.f.x - 1 && tip <= geo.f.x + geo.f.width + 1, `${label}: the arrow is level with Forward ${JSON.stringify(geo)}`).toBe(true);
   }
   await checkCallout(page, label);
-  return black;
+  return wedge;
 }
 
-/** Build the c: white oval, black oval (covers it), Send backward, then the wedge dropped near (4a -> 4b) and turned in. */
-async function buildC(page: Page, isMobile: boolean, project?: string, from = 1) {
-  if (from === 1) await dropNear(page, await activeOutline(page));
+/** Step 4: press Bring forward (the block's Forward) as many times as it takes; step 5. Returns the presses. */
+async function bringWedgeForward(page: Page, isMobile: boolean) {
+  let n = 0;
+  for (; n < 6 && (await state(page)).step === 4; n++) {
+    const before = JSON.stringify(await pieces(page));
+    await pressAction(page, isMobile, 'forward');
+    await expect.poll(async () => JSON.stringify(await pieces(page))).not.toBe(before);
+  }
+  await expect.poll(async () => (await state(page)).step).toBe(5);
+  return n;
+}
+
+/**
+ * Step 1 (copy v4): the wedge from the tray, dropped close to its outline drawn at the angle it lands at (0): it clicks into
+ * that position, unturned (1b: the outline now at its true angle, the turning hint); then turned in with the handle.
+ */
+async function wedgeIn(page: Page, isMobile: boolean, project?: string, shots?: string) {
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[1]);
+  await dropNear(page, 2);
+  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
+  await expect(guide(page)).toHaveAttribute('data-step', '1');
+  await expect(el(page, '.guide .gt1')).toHaveText(isMobile ? TURN_TOUCH : TURN);
+  const s = await state(page);
+  const wedge = s.turn!;
+  const p = (await pieces(page)).find((q) => q.id === wedge)!;
+  expect([p.x, p.y, p.rotation], 'clicked into the outline\'s position, its angle kept').toEqual([s.outlines[2].x, s.outlines[2].y, 0]);
+  await landed(page);
+  if (project) await checkCallout(page, 'step 1b');
+  if (shots) await page.screenshot({ path: `${shots}-1b-turn.png` });
+  await turnTo(page, wedge, s.outlines[2].rotation, 5); // 5 degrees past: still clicks in, exactly
   await expect.poll(async () => (await state(page)).step).toBe(2);
+  return wedge;
+}
+
+/** Build the c (copy v4): the wedge (dropped at its landing angle, turned in), the black oval, the white oval, Bring forward. */
+async function buildC(page: Page, isMobile: boolean, project?: string) {
+  const wedge = await wedgeIn(page, isMobile, project);
   await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[2]);
   if (project) {
     await checkCallout(page, 'step 2');
@@ -362,28 +417,17 @@ async function buildC(page: Page, isMobile: boolean, project?: string, from = 1)
   }
   await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(3);
-  await checkStep3(page, 'step 3');
-  if (project) await shoot(page, project, 'step3');
-  if (project === 'webkit-iphone') await page.screenshot({ path: `${SHOT}/v150-guide-step3-wk-iphone.png` });
-  await pressAction(page, isMobile, 'backward');
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[3]);
+  if (project) await checkCallout(page, 'step 3');
+  await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(4);
-  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[4]);
-  if (project) await checkCallout(page, 'step 4a');
-  await dropNear(page, 2); // at rotation 0: close in position, 101 degrees off
-  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
-  await expect(guide(page)).toHaveAttribute('data-step', '4');
-  await expect(el(page, '.guide .gt1')).toHaveText(isMobile ? TURN_TOUCH : TURN);
-  const wedge = (await state(page)).turn!;
-  if (project) {
-    await checkCallout(page, 'step 4b');
-    await shoot(page, project, 'step4b');
-  }
-  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 5); // 5 degrees past (101.22 + 5): still clicks in, exactly
-  await expect.poll(async () => (await state(page)).step).toBe(5);
+  await checkStep4(page, 'step 4');
+  if (project) await shoot(page, project, 'step4');
+  await bringWedgeForward(page, isMobile);
   return wedge;
 }
 
-test('blank start (no intro), then the c with the stacking lesson: white oval, black oval covers it, Send backward from the button block, white shows, wedge; undo keeps the guide in step', async ({ page, isMobile }, info) => {
+test('blank start (no intro), then the c with the stacking lesson (copy v4): the wedge at its landing angle, clicked into position, turned in; the black oval and the white oval cover it; Bring forward from the button block until it cuts in; undo keeps the guide in step', async ({ page, isMobile }, info) => {
   const errors = collectErrors(page);
   await open(page, '/?n=c');
   expect(await pieceCount(page), 'the toy starts on a blank board').toBe(0);
@@ -395,7 +439,15 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   await expect(gbtn(page, 'skip')).toHaveText('Skip');
   await expect(gbtn(page, 'off')).toHaveText("Don't show again");
   await expect(gbtn(page, 'next')).toBeHidden();
-  // ONE outline: the white oval, blueprint blue, DOTTED (a negative shape), about 2.75 screen px, no filters, no pointer events.
+  // v1.6.0: the callout is filled with a light tint of the blueprint blue; its buttons keep their paper background.
+  const look = await page.evaluate(() => {
+    const sr = document.querySelector('fridge-face')!.shadowRoot!;
+    const g = sr.querySelector('.guide')!;
+    return { bg: getComputedStyle(g).backgroundColor, color: getComputedStyle(g).color, btn: getComputedStyle(sr.querySelector('.guide [data-guide=skip]')!).backgroundColor, arrow: sr.querySelector('.gpt path')!.getAttribute('fill') };
+  });
+  expect(look).toEqual({ bg: 'rgb(228, 239, 251)', color: 'rgb(0, 0, 0)', btn: 'rgb(255, 255, 255)', arrow: '#E4EFFB' });
+  // ONE outline: the wedge, blueprint blue, DOTTED (a negative shape), about 2.75 screen px, no filters, no pointer events,
+  // drawn at the angle a piece from the tray lands at (0), at the true outline's position.
   const outline = () => page.evaluate(() => {
     const sr = document.querySelector('fridge-face')!.shadowRoot!;
     const os = [...sr.querySelectorAll<SVGGElement>('[data-outline]')];
@@ -403,73 +455,82 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
     const layer = sr.querySelector('[data-outlines]')!;
     const k = parseFloat(getComputedStyle(sr.querySelector('.board')!).getPropertyValue('--k'));
     const zoom = (document.querySelector('fridge-face') as FF).getView().zoom;
+    const tf = os[0]?.getAttribute('transform') ?? '';
     return {
       n: os.length, shape: os[0]?.dataset.shape, line: os[0]?.dataset.line, stroke: geom?.getAttribute('stroke'), dash: geom?.getAttribute('stroke-dasharray') ?? null,
       css: geom ? getComputedStyle(geom).strokeDasharray : '', px: Number(geom?.getAttribute('stroke-width')) * k * zoom, events: layer.getAttribute('pointer-events'),
       filters: sr.querySelectorAll('filter').length + [...sr.querySelectorAll('[data-pieces] *, [data-outlines] *')].filter((e) => getComputedStyle(e).filter !== 'none').length,
+      at: tf.match(/^translate\(([-\d.]+) ([-\d.]+)\) rotate\(([-\d.]+)\)/)?.slice(1).map(Number) ?? [],
     };
   });
+  const s0 = await state(page);
+  const W = s0.outlines[2];
+  expect(W.shapeId).toBe('wedge');
   const o1 = await outline();
-  expect(o1).toMatchObject({ n: 1, shape: 'negative-round', line: 'dotted', stroke: '#378ADD', events: 'none', filters: 0 });
+  expect(o1).toMatchObject({ n: 1, shape: 'wedge', line: 'dotted', stroke: '#378ADD', events: 'none', filters: 0 });
+  expect(o1.at, 'the landing outline: the true position, rotation 0').toEqual([W.x, W.y, 0]);
   expect(o1.dash, 'a negative shape: dotted').toBeTruthy();
   expect(o1.px).toBeGreaterThan(2.4);
   expect(o1.px).toBeLessThan(3.1);
   const m1 = await checkCallout(page, 'step 1');
   expect(m1.kind).toBe('tray');
+  await expect(guide(page)).toHaveAttribute('data-shape', 'wedge');
   await shoot(page, info.project.name, 'step1');
 
-  // The white oval, dropped close: it clicks EXACTLY into place, as part of the drop (one undo step).
-  await dropNear(page, await activeOutline(page));
-  await expect.poll(async () => (await state(page)).step).toBe(2);
+  // The wedge from the tray (rotation 0), dropped close to its landing outline: it clicks into the POSITION, unturned, as
+  // part of the drop (one undo step). The outline now shows the true angle and the callout asks for the turn.
+  await dropNear(page, 2);
+  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
+  await expect(el(page, '#ff-live')).toContainText('Clicked into place.');
   let s = await state(page);
   let ps = await pieces(page);
-  expect(ps).toHaveLength(1);
-  expect(onOutline(ps[0], s.outlines[1]), 'exactly on its outline').toBe(true);
-  await expect(el(page, '#ff-live')).toContainText('Clicked into place.');
+  const wedge = s.turn!;
+  expect(ps.map((p) => [p.shapeId, p.x, p.y, p.rotation])).toEqual([['wedge', W.x, W.y, 0]]);
+  expect(s.step).toBe(1);
+  await expect(el(page, '.guide .gt1')).toHaveText(isMobile ? TURN_TOUCH : TURN);
+  await landed(page);
+  expect((await outline()).at, 'the outline at its TRUE angle now').toEqual([W.x, W.y, W.rotation]);
+  await expect(guide(page)).toHaveAttribute('data-target', 'handle');
+  await checkCallout(page, 'step 1b');
+  await shoot(page, info.project.name, 'step1b');
+  await press(isMobile, el(page, '[data-block=undo]'));
+  await expect.poll(() => pieceCount(page), 'one undo removes the drop AND its click-in').toBe(0);
+  await expect.poll(async () => (await state(page)).turn).toBeNull();
+  expect((await outline()).at, 'back to the landing outline').toEqual([W.x, W.y, 0]);
+  // (v1.6.0: on phones the step 1a callout may sit over the button block, right by the tray: redo from the keyboard.)
+  await historyKey(page, 'redo');
+  await expect.poll(async () => (await state(page)).turn).toBe(wedge);
+  // Turned with the handle, about its centroid: it reaches the true outline and clicks in exactly.
+  await page.evaluate((id) => (document.querySelector('fridge-face') as unknown as { select(id: string): void }).select(id), wedge);
+  await turnTo(page, wedge, W.rotation, 5);
+  await expect.poll(async () => (await state(page)).step).toBe(2);
+  ps = await pieces(page);
+  expect(onOutline(ps[0], W), 'exactly on its outline').toBe(true);
   // Step 2: the black oval's outline, SOLID (a positive shape), the same weight.
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[2]);
   const o2 = await outline();
   expect(o2).toMatchObject({ n: 1, shape: 'positive-round', line: 'solid', stroke: '#378ADD', dash: null, css: 'none', filters: 0 });
   expect(o2.px).toBeCloseTo(o1.px, 1);
-  await press(isMobile, el(page, '[data-block=undo]'));
-  await expect.poll(() => pieceCount(page), 'one undo removes the drop AND its click-in').toBe(0);
-  await expect(guide(page)).toHaveAttribute('data-step', '1');
-  await press(isMobile, el(page, '[data-block=redo]'));
-  await expect(guide(page)).toHaveAttribute('data-step', '2');
   await checkCallout(page, 'step 2');
   await shoot(page, info.project.name, 'step2');
 
-  // The black oval lands ON TOP (a newly added piece): it hides the white oval. Nothing reorders it.
+  // The black oval lands ON TOP (a newly added piece): it covers the wedge. Nothing reorders it.
   await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(3);
-  ps = await pieces(page);
-  expect(ps.map((p) => p.shapeId), 'no auto-reorder: the black oval is on top, covering the white').toEqual(['negative-round', 'positive-round']);
-  if (info.project.name === 'chromium-desktop') await page.screenshot({ path: `${SHOT}/g6-step2-black-covers-desktop.png` }); // the white oval hidden
-  const black = await checkStep3(page, 'step 3');
-  await expect(el(page, '#ff-live')).toContainText(C_TEXT[3]);
-  const nm = NAMES[info.project.name];
-  if (nm) await page.screenshot({ path: `${SHOT}/g6-step3-sendback-${nm}.png` });
-  // Send backward, from the button block the callout points at: ONE press steps past the white oval (overlap-aware).
-  await pressAction(page, isMobile, 'backward');
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[3]);
+  expect((await outline()).shape).toBe('negative-round');
+  await checkCallout(page, 'step 3');
+  await shoot(page, info.project.name, 'step3');
+  await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(4);
   ps = await pieces(page);
-  expect(ps.map((p) => p.shapeId), 'the white shows through').toEqual(['positive-round', 'negative-round']);
-  expect(ps[0].id).toBe(black);
-  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[4]);
-  // Undo the send-back: step 3 again (the guide follows the board); redo: step 4.
-  await press(isMobile, el(page, '[data-block=undo]'));
-  await expect(guide(page)).toHaveAttribute('data-step', '3');
-  await press(isMobile, el(page, '[data-block=redo]'));
-  await expect(guide(page)).toHaveAttribute('data-step', '4');
-
-  await checkCallout(page, 'step 4a');
-  await dropNear(page, 2);
-  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
-  await expect(el(page, '.guide .gt1')).toHaveText(isMobile ? TURN_TOUCH : TURN);
-  const wedge = (await state(page)).turn!;
-  await checkCallout(page, 'step 4b');
-  await shoot(page, info.project.name, 'step4b');
-  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 5);
-  await expect.poll(async () => (await state(page)).step).toBe(5);
+  expect(ps.map((p) => p.shapeId), 'no auto-reorder: the ovals on top, covering the wedge').toEqual(['wedge', 'positive-round', 'negative-round']);
+  await checkStep4(page, 'step 4');
+  await expect(el(page, '#ff-live')).toContainText(C_TEXT[4]);
+  await shoot(page, info.project.name, 'step4');
+  // Bring forward, from the button block the callout points at: the wedge passes each overlapping piece above it.
+  const presses = await bringWedgeForward(page, isMobile);
+  expect(presses, 'it passes the black oval and the white one').toBe(2);
   s = await state(page);
   ps = await pieces(page);
   expect(ps.map((p) => p.shapeId), 'stacking order of the c (as in word-create-1)').toEqual(['positive-round', 'negative-round', 'wedge']);
@@ -477,13 +538,13 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   expect(ps[2].rotation, 'the c inside word-create-1: its wedge at 101.22 degrees').toBeCloseTo(101.22, 2);
   expect(ps[1].x - ps[0].x).toBeCloseTo(-0.4, 6); // arranged exactly as in the word
   expect(ps[1].y - ps[0].y).toBeCloseTo(4.0, 6);
-  // Undo the turn: the wedge goes back (unturned, close) and the guide follows: 4b again. Redo: step 5.
-  await press(isMobile, el(page, '[data-block=undo]'));
-  await expect.poll(async () => (await state(page)).turn).toBe(wedge);
+  // Undo the last press: step 4 again (the guide follows the board); redo: step 5.
+  await historyKey(page, 'undo');
   await expect(guide(page)).toHaveAttribute('data-step', '4');
-  await press(isMobile, el(page, '[data-block=redo]'));
+  await historyKey(page, 'redo');
   await expect(guide(page)).toHaveAttribute('data-step', '5');
   // Robust: a clicked-in piece moved away shows its outline again (step 2), and moving it back fills it again.
+  const black = ps[0].id;
   await page.evaluate(({ id }) => {
     const ff = document.querySelector('fridge-face') as unknown as { composition: { movePiece(id: string, x: number, y: number): boolean } } & FF;
     const p = ff.composition.pieces.find((q) => q.id === id)!;
@@ -491,8 +552,62 @@ test('blank start (no intro), then the c with the stacking lesson: white oval, b
   }, { id: black });
   await expect(guide(page)).toHaveAttribute('data-step', '2');
   expect(await el(page, '[data-outline]').count()).toBe(1);
-  await press(isMobile, el(page, '[data-block=undo]'));
+  await historyKey(page, 'undo');
   await expect(guide(page)).toHaveAttribute('data-step', '5');
+  expect(errors).toEqual([]);
+});
+
+test('copy v4 walk-through, guide ON: every c step (and Guide me) in screenshots; the callout sits by what it points at', async ({ page, isMobile }, info) => {
+  test.setTimeout(120_000);
+  const errors = collectErrors(page);
+  await open(page, '/?n=v4');
+  const tag = `${SHOTS}/v160-${info.project.name}`;
+  // How far the callout stands from its target (px between their edges), logged per step: it should hug it.
+  const gapToTarget = async () => (await frames(page), await page.evaluate(() => {
+    const sr = document.querySelector('fridge-face')!.shadowRoot!;
+    const g = sr.querySelector<HTMLElement>('.guide')!;
+    const r = g.getBoundingClientRect();
+    const k = g.dataset.target;
+    // The tray target is the shape's slice of the tray (its column across the tray; its row in the landscape column).
+    const tb = sr.querySelector('.tray')!.getBoundingClientRect(), sb = sr.querySelector(`.tray button[data-shape="${g.dataset.shape}"]`)?.getBoundingClientRect();
+    const slice = sb ? (tb.width >= tb.height ? new DOMRect(sb.x, tb.y, sb.width, tb.height) : new DOMRect(tb.x, sb.y, tb.width, sb.height)) : null;
+    const t = k === 'tray' ? (slice ? { getBoundingClientRect: () => slice } : null) : k === 'handle' ? sr.querySelector('[data-handle] circle') : k === 'action' ? sr.querySelector(`.block [data-block=${g.dataset.action}]`) : null;
+    if (!t) return null;
+    const q = t.getBoundingClientRect();
+    const dx = Math.max(0, q.left - r.right, r.left - q.right), dy = Math.max(0, q.top - r.bottom, r.top - q.bottom);
+    return Math.round(Math.hypot(dx, dy));
+  }));
+  const gaps: Record<string, number | null> = {};
+  gaps['1a'] = await gapToTarget();
+  await checkCallout(page, 'v4 step 1a');
+  await page.screenshot({ path: `${tag}-1a-drag-wedge.png` });
+  await wedgeIn(page, isMobile, info.project.name, tag);
+  await expect(el(page, '.guide .gt1')).toHaveText(C_TEXT[2]);
+  gaps['2'] = await gapToTarget();
+  await checkCallout(page, 'v4 step 2');
+  await page.screenshot({ path: `${tag}-2-black-oval.png` });
+  await dropNear(page, await activeOutline(page));
+  await expect.poll(async () => (await state(page)).step).toBe(3);
+  gaps['3'] = await gapToTarget();
+  await checkCallout(page, 'v4 step 3');
+  await page.screenshot({ path: `${tag}-3-white-oval.png` });
+  await dropNear(page, await activeOutline(page));
+  await expect.poll(async () => (await state(page)).step).toBe(4);
+  await checkStep4(page, 'v4 step 4');
+  gaps['4'] = await gapToTarget();
+  await page.screenshot({ path: `${tag}-4-bring-forward.png` });
+  await bringWedgeForward(page, isMobile);
+  await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
+  await page.screenshot({ path: `${tag}-5-thats-a-c.png` });
+  if (await realCreate(page)) {
+    await press(isMobile, gbtn(page, 'word'));
+    await expect(guide(page)).toHaveAttribute('data-step', '6');
+    await settled(page);
+    await expect(el(page, '.guide .gt2')).toHaveText('3 of 32');
+    await page.screenshot({ path: `${tag}-6-guide-me.png` });
+  }
+  console.log(`[${info.project.name}] callout gap to its target, px: ${JSON.stringify(gaps)}`);
+  for (const [k, v] of Object.entries(gaps)) expect.soft(v ?? 0, `step ${k}: the callout is close to its target`).toBeLessThan(80);
   expect(errors).toEqual([]);
 });
 
@@ -547,7 +662,7 @@ test('step 5 without word-create-1: "That\'s a c." and only Clear for free play,
   await expect(el(page, '.guide .gt2'), 'no question without the word').toBeHidden();
   await expect(gbtn(page, 'word')).toBeHidden();
   await expect(gbtn(page, 'clear')).toBeVisible();
-  await expect(gbtn(page, 'clear')).toHaveText('Clear for free play');
+  await expect(gbtn(page, 'clear')).toHaveText('No, clear for free play');
   await expect(gbtn(page, 'skip')).toBeHidden();
   await expect(gbtn(page, 'off')).toBeHidden();
   expect(await el(page, '[data-outline]').count(), 'no outlines on step 5').toBe(0);
@@ -590,9 +705,9 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   expect(total, 'Edward\'s create (flower)').toBe(32);
   await buildC(page, isMobile, info.project.name);
   await expect(el(page, '.guide .gt1')).toHaveText("That's a c.");
-  await expect(el(page, '.guide .gt2')).toHaveText('Want to spell "create" next?');
-  await expect(gbtn(page, 'word')).toHaveText('Guide me');
-  await expect(gbtn(page, 'clear')).toHaveText('Clear for free play');
+  await expect(el(page, '.guide .gt2')).toHaveText('Do you want to continue the tutorial?');
+  await expect(gbtn(page, 'word')).toHaveText('Yes, continue');
+  await expect(gbtn(page, 'clear')).toHaveText('No, clear for free play');
   await checkCallout(page, 'step 5');
   await shoot(page, info.project.name, 'step5');
   const c = await pieces(page);
@@ -614,14 +729,19 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
     const v = await page.evaluate(() => (document.querySelector('fridge-face') as FF).getView());
     expect(v, 'desktop: the first batch is beside the c, already in view: the view does not move').toEqual(view5);
   }
-  // Undo at the start of step 6: Guide me added no undo step, so it takes back the c's last action (the wedge's turn) and
-  // never the c itself; the guide stays on the word (batch 0, the c, is current again). Redo: 3 of 32 again.
+  // Undo at the start of step 6: Guide me added no undo step, so it takes back the c's last action (copy v4: the wedge's
+  // last Bring forward) and never the c itself; the guide stays on the word, which now prompts to restack the wedge and the
+  // white oval it is under (the word's own prompt: either may be asked to move; batch 0, the c, is current again: no outline
+  // shows). Redo: 3 of 32 again.
   await press(isMobile, el(page, '[data-block=undo]'));
-  await expect.poll(async () => (await state(page)).filled[2]).toBeNull();
+  await expect.poll(async () => (await state(page)).stack).not.toBeNull();
+  const und = await state(page);
+  expect([und.filled[1], und.filled[2]], 'the white oval or the wedge').toContain(und.stack!.id);
   expect(await pieceCount(page), 'the c is still on the board').toBe(3);
   await expect(guide(page)).toHaveAttribute('data-step', '6');
-  await expect(el(page, '.guide .gt2')).toHaveText(`2 of ${total}`);
-  await expect.poll(async () => (await shown(page)).idx, 'the wedge\'s outline').toEqual([2]);
+  await expect(el(page, '.guide .gt2')).toHaveText(`1 of ${total}`);
+  await expect(el(page, '.guide .gt3')).toHaveText(STACK_TEXT[und.stack!.dir]);
+  await expect.poll(async () => (await shown(page)).idx, 'no outline: the c is current').toEqual([]);
   await press(isMobile, el(page, '[data-block=redo]'));
   await expect(el(page, '.guide .gt2')).toHaveText(`3 of ${total}`);
   await expectCInPlace(page, c, 'undo and redo at the boundary');
@@ -689,7 +809,7 @@ test('the REAL word-create-1 (32 pieces), built in stacking order batch by batch
   info.annotations.push({ type: 'smallest target per batch', description: mins.join(', ') + ' CSS px' });
   console.log(`[${info.project.name}] smallest target per batch: ${mins.join(', ')} CSS px; the view moved for ${moves} of ${CREATE_BATCHES.length - 1} batches`);
   await expect(guide(page)).toHaveAttribute('data-step', '7');
-  await expect(el(page, '.guide .gt1')).toHaveText('You made "create". Now try your own name.');
+  await expect(el(page, '.guide .gt1')).toHaveText("Great work! Now you're ready to create on your own.");
   await expect(gbtn(page, 'fresh')).toHaveText('Start fresh');
   await expect(gbtn(page, 'keep')).toHaveText('Keep it');
   await expectCInPlace(page, c, 'the finished word');
@@ -755,8 +875,9 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   await open(page, '/?n=nosnap');
   const first = await activeOutline(page);
   const o = (await state(page)).outlines[first];
+  expect(o.shapeId, 'copy v4: the wedge first').toBe('wedge');
   await dropNear(page, first);
-  await expect(guide(page)).toHaveAttribute('data-step', '2');
+  await expect.poll(async () => (await state(page)).turn, 'the guide clicked it into position').not.toBeNull();
   await press(!!info.project.use.isMobile, el(page, '[data-block=undo]'));
   await expect.poll(() => pieceCount(page)).toBe(0);
   await press(!!info.project.use.isMobile, gbtn(page, 'skip'));
@@ -773,6 +894,7 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   const landed = toClient(g, p), aimed = toClient(g, at);
   expect(Math.hypot(landed.x - aimed.x, landed.y - aimed.y), 'it landed where dropped (pointer rounding only)').toBeLessThan(2.5);
   expect(onOutline(p, o)).toBe(false);
+  expect(Math.hypot(p.x - o.x, p.y - o.y), 'not pulled into the outline\'s position either').toBeGreaterThan(1);
   // A handle turn to within a degree or two of 0 stays where it is, too.
   await turnTo(page, p.id, 0, 3);
   const q = (await pieces(page))[0];
@@ -801,7 +923,7 @@ test('no click-in outside the guide: after Skip (and with no-guide) a piece drop
   await ctx.close();
 });
 
-test('Next (after waiting, shortened timer) does the current thing for the visitor (fills the outline, or sends the black oval back), one undoable step each; keyboard only', async ({ page }) => {
+test('Next (after waiting, shortened timer) does the current thing for the visitor (fills the outline, or brings the wedge forward), one undoable step each; keyboard only', async ({ page }) => {
   await open(page);
   await setNextMs(page, 200);
   await expect(gbtn(page, 'next')).toBeHidden(); // step 1's timer is the real 10 s one
@@ -812,18 +934,19 @@ test('Next (after waiting, shortened timer) does the current thing for the visit
     await gbtn(page, 'next').focus();
     await page.keyboard.press('Enter');
     await expect(guide(page)).toHaveAttribute('data-step', step);
-    if (step === '3') expect((await pieces(page)).map((p) => p.shapeId), 'Next placed the black oval on top').toEqual(['negative-round', 'positive-round']);
+    if (step === '3') expect((await pieces(page)).map((p) => p.shapeId), 'Next placed the black oval on top').toEqual(['wedge', 'positive-round']);
+    if (step === '4') expect((await pieces(page)).map((p) => p.shapeId), 'and the white oval').toEqual(['wedge', 'positive-round', 'negative-round']);
     if (step !== '5') await expect(gbtn(page, 'next')).toBeVisible();
   }
   const ps = await pieces(page);
   const s = await state(page);
-  expect(ps.map((p) => p.shapeId), 'Next sent the black oval back').toEqual(['positive-round', 'negative-round', 'wedge']);
+  expect(ps.map((p) => p.shapeId), 'Next brought the wedge forward').toEqual(['positive-round', 'negative-round', 'wedge']);
   ps.forEach((p, i) => expect(onOutline(p, s.outlines[i])).toBe(true));
   await expect(gbtn(page, 'next'), 'step 5 has no Next').toBeHidden();
   await page.keyboard.press('Control+z');
   await expect(guide(page)).toHaveAttribute('data-step', '4');
   await page.keyboard.press('Control+z');
-  await expect(guide(page), 'undoing Next\'s send-back').toHaveAttribute('data-step', '3');
+  await expect(guide(page), 'undoing Next\'s white oval').toHaveAttribute('data-step', '3');
 });
 
 test('Skip ends it for this visit; it comes back on the next one', async ({ page, isMobile }) => {
@@ -1007,14 +1130,14 @@ test('reduced motion: the pointer does not move, and a click-in does not animate
     if (reduce) expect(running, 'no pointer animation with reduced motion').toBe(0);
     else expect(running, 'the pointer nudges toward the target').toBeGreaterThan(0);
     await dropNear(p, await activeOutline(p), 0.12);
-    await expect.poll(async () => (await state(p)).step).toBe(2);
+    await expect.poll(async () => (await state(p)).turn, 'the wedge clicked into position').not.toBeNull();
     const anims = await p.evaluate(() => document.querySelector('fridge-face')!.shadowRoot!.querySelector('[data-pieces] > [data-piece-id]')!.getAnimations().length);
     if (reduce) expect(anims, 'no settle with reduced motion').toBe(0);
     await ctx.close();
   }
 });
 
-test('axe: no violations with a callout showing (steps 1, 3, 4b, 5, 6 and a stacking prompt)', async ({ page, browserName, isMobile }) => {
+test('axe: no violations with a callout showing (steps 1, 1b, 4, 5, 6 and a stacking prompt)', async ({ page, browserName, isMobile }) => {
   test.skip(browserName !== 'chromium', 'axe gate runs in Chromium');
   test.setTimeout(120_000);
   await open(page);
@@ -1024,18 +1147,17 @@ test('axe: no violations with a callout showing (steps 1, 3, 4b, 5, 6 and a stac
     return r.violations.map((v) => `${v.id} (${v.nodes.length}) ${JSON.stringify(v.nodes.map((n: any) => n.target))}`);
   });
   expect(await run()).toEqual([]);
-  await dropNear(page, await activeOutline(page));
-  await expect(guide(page)).toHaveAttribute('data-step', '2');
-  await dropNear(page, await activeOutline(page));
-  await checkStep3(page, 'axe step 3');
-  expect(await run(), 'step 3').toEqual([]);
-  await pressAction(page, isMobile, 'backward');
-  await expect(guide(page)).toHaveAttribute('data-step', '4');
   await dropNear(page, 2);
   await expect(guide(page)).toHaveAttribute('data-turn', '');
-  expect(await run()).toEqual([]);
+  expect(await run(), 'step 1b').toEqual([]);
   await turnTo(page, (await state(page)).turn!, (await state(page)).outlines[2].rotation, 0);
-  await expect(guide(page)).toHaveAttribute('data-step', '5');
+  await expect(guide(page)).toHaveAttribute('data-step', '2');
+  await dropNear(page, await activeOutline(page));
+  await expect(guide(page)).toHaveAttribute('data-step', '3');
+  await dropNear(page, await activeOutline(page));
+  await checkStep4(page, 'axe step 4');
+  expect(await run(), 'step 4').toEqual([]);
+  await bringWedgeForward(page, isMobile);
   expect(await run()).toEqual([]);
   await press(isMobile, gbtn(page, 'word'));
   await expect(guide(page)).toHaveAttribute('data-step', '6');
@@ -1189,12 +1311,13 @@ test('step 0 -> Clear and start: a blank board, the c built; undoing back past t
   await checkCallout(page, 'clear and start, step 1');
   await buildC(page, isMobile);
   expect(await pieceCount(page)).toBe(3);
-  // Back through the c (turn, wedge, send-back, black oval, white oval): the guide follows to step 1 on a blank board.
-  for (let i = 0; i < 5; i++) await press(isMobile, el(page, '[data-block=undo]'));
+  // Back through the c (two Bring forwards, white oval, black oval, turn, wedge): the guide follows to step 1 on a blank board.
+  // (v1.6.0: on phones the step 1 to 3 callouts may sit over the button block: undo from the keyboard.)
+  for (let i = 0; i < 6; i++) await historyKey(page, 'undo');
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   // ONE more undo: every one of their pieces back, exactly (ids, places, rotations, stacking order).
-  await press(isMobile, el(page, '[data-block=undo]'));
+  await historyKey(page, 'undo');
   await expect.poll(() => pieceCount(page)).toBe(theirs.length);
   expect(same(theirs, await pieces(page)), 'their pieces restored exactly').toBe(true);
   // Sane: still step 1, the c's outline moved beside their work (never on it), the callout well placed; redo clears again.
@@ -1202,7 +1325,7 @@ test('step 0 -> Clear and start: a blank board, the c built; undoing back past t
   await expect(guide(page)).toBeVisible();
   await expectBeside(page, theirs);
   await checkCallout(page, 'after undoing Clear and start');
-  await press(isMobile, el(page, '[data-block=redo]'));
+  await historyKey(page, 'redo');
   await expect.poll(() => pieceCount(page)).toBe(0);
   await expect(guide(page)).toHaveAttribute('data-step', '1');
   expect(errors).toEqual([]);
@@ -1615,36 +1738,35 @@ test('the callout never covers a rotate handle: a selected piece (or a selection
   await handleProbe(page, 'step 1', [a]);
   await handleProbe(page, 'step 1', [a], true);
   if (info.project.name === 'webkit-iphone') await page.screenshot({ path: `${SHOT}/handle-clear-wk-iphone.png` });
-  await dropNear(page, await activeOutline(page));
+  await dropNear(page, 2); // the wedge, at its landing angle: it clicks into position (1b)
+  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
+  const wedge = (await state(page)).turn!;
+  await handleProbe(page, 'step 1b, another piece selected', [a]);
+  await page.evaluate((id) => {
+    const ff = document.querySelector('fridge-face') as unknown as FFi;
+    ff.setSelection([id]);
+    ff.render();
+  }, wedge);
+  await checkCallout(page, 'step 1b, the wedge selected');
+  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 3);
   await expect.poll(async () => (await state(page)).step).toBe(2);
   await handleProbe(page, 'step 2', [a]);
   const b = await addStem(page, 60);
   await handleProbe(page, 'step 2, a selection of two', [a, b]);
   await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(3);
-  // Step 3 points at Send backward with the black oval selected: its own handle is never covered.
-  const black = await checkStep3(page, 'step 3, the black oval selected');
-  await handleProbe(page, 'step 3', [black], true); // panned: moving the black oval would take it off its outline
-  await page.evaluate((id) => {
-    const ff = document.querySelector('fridge-face') as unknown as FFi;
-    ff.setSelection([id]);
-    ff.render();
-  }, black);
-  await pressAction(page, isMobile, 'backward');
+  await handleProbe(page, 'step 3', [a]);
+  await dropNear(page, await activeOutline(page));
   await expect.poll(async () => (await state(page)).step).toBe(4);
-  await handleProbe(page, 'step 4a', [a]);
-  await dropNear(page, 2);
-  await expect.poll(async () => (await state(page)).turn).not.toBeNull();
-  const wedge = (await state(page)).turn!;
-  await handleProbe(page, 'step 4b, another piece selected', [a]);
+  // Step 4 points at Bring forward with the wedge selected: its own handle is never covered.
+  await checkStep4(page, 'step 4, the wedge selected');
+  await handleProbe(page, 'step 4', [wedge], true); // panned: moving the wedge would take it off its outline
   await page.evaluate((id) => {
     const ff = document.querySelector('fridge-face') as unknown as FFi;
     ff.setSelection([id]);
     ff.render();
   }, wedge);
-  await checkCallout(page, 'step 4b, the wedge selected');
-  await turnTo(page, wedge, (await state(page)).outlines[2].rotation, 3);
-  await expect.poll(async () => (await state(page)).step).toBe(5);
+  await bringWedgeForward(page, isMobile);
   await handleProbe(page, 'step 5', [a, b]);
   if (await realCreate(page)) {
     // The visitor's two stems were moved under the callout at the c's close-up (scale-dependent board spots, now beside the c).
@@ -1676,18 +1798,20 @@ test('v1.2.4 symmetry: an oval half a turn round clicks in where it is (no spin)
     return { id: p.id, before, after: { ...after }, outline: { ...o } };
   }, { shapeId, i, turn });
   const gap = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
-  const white = await release('negative-round', 1, 180 + 6);
-  expect([white.after.x, white.after.y], 'exactly in place').toEqual([white.outline.x, white.outline.y]);
-  expect(gap(white.after.rotation, white.before), 'turned only the 6 degrees it was off, not half a turn').toBeCloseTo(6, 6);
-  expect(gap(white.after.rotation, white.outline.rotation), 'half a turn from the outline: the same oval').toBeCloseTo(180, 6);
-  await expect.poll(async () => (await state(page)).step, 'the white oval counts as filled').toBe(2);
-  const black = await release('positive-round', 0, -180 - 4);
-  expect(gap(black.after.rotation, black.before)).toBeCloseTo(4, 6);
-  await expect.poll(async () => (await state(page)).step, 'on top of the white one: send it back').toBe(3);
-  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { guideNextFill(): void }).guideNextFill());
-  await expect.poll(async () => (await state(page)).step).toBe(4);
+  // Copy v4: the wedge first. Half a turn round it does not fit (and is nowhere near its landing angle): it needs turning (1b).
   const wedge = await release('wedge', 2, 180);
   expect(wedge.after.rotation, 'the wedge did not click in').toBeCloseTo(wedge.before, 6);
-  await expect.poll(async () => (await state(page)).turn, 'it needs turning (4b)').toBe(wedge.id);
+  expect([wedge.after.x, wedge.after.y], 'nor was it moved').not.toEqual([wedge.outline.x, wedge.outline.y]);
+  await expect.poll(async () => (await state(page)).turn, 'it needs turning (1b)').toBe(wedge.id);
+  await page.evaluate(() => (document.querySelector('fridge-face') as unknown as { guideNextFill(): void }).guideNextFill());
+  await expect.poll(async () => (await state(page)).step).toBe(2);
+  const black = await release('positive-round', 0, -180 - 4);
+  expect([black.after.x, black.after.y], 'exactly in place').toEqual([black.outline.x, black.outline.y]);
+  expect(gap(black.after.rotation, black.before), 'turned only the 4 degrees it was off, not half a turn').toBeCloseTo(4, 6);
+  expect(gap(black.after.rotation, black.outline.rotation), 'half a turn from the outline: the same oval').toBeCloseTo(180, 6);
+  await expect.poll(async () => (await state(page)).step, 'the black oval counts as filled').toBe(3);
+  const white = await release('negative-round', 1, 180 + 6);
+  expect(gap(white.after.rotation, white.before)).toBeCloseTo(6, 6);
+  await expect.poll(async () => (await state(page)).step, 'on top of the wedge: bring it forward').toBe(4);
   expect(errors).toEqual([]);
 });

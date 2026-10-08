@@ -127,26 +127,29 @@ describe('outlines treat symmetric rotations as equal', () => {
     expect(sitsOn(wedge, { ...p, x: wedge.x, y: wedge.y })).toBe(false);
   });
 
-  it('in the guide: a black oval dropped half a turn round clicks in, the step moves on, and the 4b hint works the same way', () => {
+  it('in the guide: a black oval dropped half a turn round clicks in, the step moves on, and the 1b hint works the same way', () => {
     const C = outlinesAt(
       [{ shapeId: 'positive-round', x: 0, y: 0, rotation: 15 }, { shapeId: 'negative-round', x: -0.4, y: 4, rotation: 15 }, { shapeId: 'wedge', x: 102, y: 0, rotation: 101.22 }],
       frame, { x: 0, y: 0 },
     );
     const w = (ps: OutlinePiece[]): GuideWorld => ({ pieces: ps, sizeOf });
-    const white = pc('b', 'negative-round', C[1].x, C[1].y, C[1].rotation - 180); // exactly on it, half a turn round: filled
-    let s = startGuide(C, w([white]));
+    // Step 1: a wedge half a turn round is close but needs turning (1b); an oval would not have.
+    const wd = pc('w', 'wedge', C[2].x, C[2].y, C[2].rotation + 180);
+    let s = startGuide(C, w([wd]));
+    expect([s.step, s.turn]).toEqual([1, 'w']);
+    const wedge = { ...wd, rotation: C[2].rotation };
+    s = observeGuide(s, w([wedge]));
     expect(s.step).toBe(2);
     const black = pc('a', 'positive-round', C[0].x + 3, C[0].y + 2, C[0].rotation + 185);
-    const r = guideClickIn(s, w([white, black]), ['a'])!;
+    const r = guideClickIn(s, w([wedge, black]), ['a'])!;
     expect(r.placements[0].rotation).toBeCloseTo(C[0].rotation + 180 - 360, 9); // the near equivalent: 195 -> -165, 5 degrees away
     const placed = { ...black, ...r.placements[0] };
-    s = observeGuide(s, w([white, placed]));
-    expect(s.step, 'it landed on top: step 3, send it back').toBe(3);
-    s = observeGuide(s, w([placed, white]));
-    expect(s.step).toBe(4);
-    // Step 4: a wedge half a turn round is close but needs turning (4b); an oval would not have.
-    const wd = pc('w', 'wedge', C[2].x, C[2].y, C[2].rotation + 180);
-    s = observeGuide(s, w([placed, white, wd]));
-    expect([s.step, s.turn]).toEqual([4, 'w']);
+    s = observeGuide(s, w([wedge, placed]));
+    expect(s.step, 'the black oval in place: step 3, the white oval').toBe(3);
+    const white = pc('b', 'negative-round', C[1].x, C[1].y, C[1].rotation - 180); // exactly on it, half a turn round: filled
+    s = observeGuide(s, w([wedge, placed, white]));
+    expect(s.step, 'it landed on top of the wedge: step 4, bring the wedge forward').toBe(4);
+    s = observeGuide(s, w([placed, white, wedge]));
+    expect(s.step).toBe(5);
   });
 });

@@ -20,7 +20,7 @@ import {
   GUIDE_COPY, GUIDE_IDLE, GUIDE_LETTER, GUIDE_NEXT_MS, GUIDE_WORD, activeOutlines, adoptTheirs, anchorWord, answerAsk, askGuide, besideSpot, chooseWord, coverage,
   findWordC, placeWordC, type WordC,
   currentBatch, endGuide, frameBeside, freeRect, guideClearPlan, guideClickIn, guideProgress, guideRunning, guideWanted, moveLetter, nextAction,
-  observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, startGuide, writeGuideOff, type CalloutSide, type GuideState,
+  landingOutline, observeGuide, placeCallout, readGuideOff, recordBuilt, rectsOverlap, shownOutline, startGuide, writeGuideOff, type CalloutSide, type GuideState,
   type GuideWorld, type Rect,
 } from './guide';
 import { outlinesAt, settleRotation, type Outline } from './outline';
@@ -378,10 +378,13 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .helpbody .combo { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .helpbody .or { font-size: 11px; align-self: center; color: #4a4a4a; }
 
-/* ---- the guide: one small callout on the real UI, flat black and white, Jost caps (see src/guide.ts) ---- */
+/* ---- the guide: one small callout on the real UI, flat, Jost caps (see src/guide.ts) ---- */
+/* v1.6.0: a light tint of the outlines' blueprint blue (#378ADD) fills the callout and its pointer; black text on it is
+   about 17:1. Its buttons keep their own paper background. */
 .guide {
+  --guide-fill: #E4EFFB;
   position: absolute; z-index: 7; left: 0; top: 0; box-sizing: border-box; width: max-content; max-width: min(340px, calc(100% - 32px));
-  padding: 12px 12px 12px 14px; background: var(--paper); color: var(--ink); border: 2px solid var(--ink);
+  padding: 12px 12px 12px 14px; background: var(--guide-fill); color: var(--ink); border: 2px solid var(--ink);
   box-shadow: 4px 6px 0 rgb(0 0 0 / 0.25); pointer-events: auto; touch-action: manipulation;
 }
 .guide[hidden], .guide [hidden] { display: none !important; }
@@ -392,7 +395,7 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .grow.gctl button.b { font-size: 11px; padding: 0 10px; }
 .guide button.b.pri { background: var(--ink); color: var(--paper); }
 .guide button.b.pri:hover { background: #333; }
-/* The pointer: a flat black triangle (white edge, so it reads on black pieces too) just outside the callout, tip toward the target. */
+/* The pointer: a flat triangle in the callout's fill (black edge, so it reads on the board and on black pieces) just outside the callout, tip toward the target. */
 .gpt { position: absolute; width: 22px; height: 13px; pointer-events: none; line-height: 0; }
 .gpt svg { display: block; animation: ff-guide-nudge 1.2s ease-in-out infinite; }
 @keyframes ff-guide-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
@@ -739,7 +742,7 @@ export class FridgeFace extends HTMLElement {
         <div class="grp" role="group" aria-label="Negative shapes"><div class="shapes" data-polarity="negative"></div><div class="bracket" aria-hidden="true"><span>Negative</span></div></div>
       </div>
       <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
-        <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></span>
+        <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#E4EFFB" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg></span>
         <p class="gtext"><span class="gt1"></span><span class="gt2" hidden></span><span class="gt3" hidden></span></p>
         <div class="grow gpick" data-pick="0" hidden>
           <button type="button" class="b" data-guide="clean"><span class="tx">${GUIDE_COPY.clearStart}</span></button>
@@ -3175,6 +3178,8 @@ export class FridgeFace extends HTMLElement {
   private guideRelocate() {
     const s = this.guide;
     if (s.phase !== 'c' || s.filled.some(Boolean) || !this.composition.pieces.length || !this.boardEl.clientWidth) return;
+    // Not untouched: a wedge the guide clicked into position waits to be turned (step 1b; e.g. redone), or any piece it built is back.
+    if (s.turn || s.built.some((id) => this.composition.getPiece(id))) return;
     const shape = (id: string) => SHAPE_BY_ID.get(id);
     // From the word (v1.2.3): the WHOLE word that will be anchored on this c must stay clear of their pieces, not just the c.
     const wc = this.guideWordC();
@@ -3270,14 +3275,15 @@ export class FridgeFace extends HTMLElement {
     return step === 0 || step === 1 || step === 2 || step === 3 || step === 4 || step === 6;
   }
 
-  /** The stacking prompt showing (step 3, or step 6 when no turning hint takes its place), as a key: '' when none. */
+  /** The stacking prompt showing (step 4, or step 6 when no turning hint takes its place), as a key: '' when none. */
   private promptKey(s: GuideState): string {
-    if (!s.stack || !(s.step === 3 || (s.step === 6 && !s.turn))) return '';
+    if (!s.stack || !(s.step === 4 || (s.step === 6 && !s.turn))) return '';
     return `${s.step}:${s.stack.id}:${s.stack.dir}`;
   }
 
   private stackText(s: GuideState): string {
-    if (s.step === 3) return GUIDE_COPY.step3;
+    // Step 4, the lesson: the wedge brought forward (any other c piece the visitor restacked gets the plain prompt).
+    if (s.step === 4 && s.stack?.dir === 'forward' && this.composition.getPiece(s.stack.id)?.shapeId === 'wedge') return GUIDE_COPY.step4;
     return s.stack?.dir === 'forward' ? GUIDE_COPY.stackForward : GUIDE_COPY.stackBack;
   }
 
@@ -3347,7 +3353,8 @@ export class FridgeFace extends HTMLElement {
       const old = before.get(pl.id), el = this.els.get(pl.id), s = old ? SHAPE_BY_ID.get(old.shapeId) : undefined;
       if (!old || !el || !s || typeof el.g.animate !== 'function') continue;
       if (old.x !== pl.x || old.y !== pl.y) {
-        el.g.animate([{ transform: `translate(${n3(old.x)}px, ${n3(old.y)}px)` }, { transform: `translate(${n3(pl.x)}px, ${n3(pl.y)}px)` }], opts);
+        // When it lands, the callout is placed again: it keeps clear of where the piece IS, not where it was mid-glide.
+        el.g.animate([{ transform: `translate(${n3(old.x)}px, ${n3(old.y)}px)` }, { transform: `translate(${n3(pl.x)}px, ${n3(pl.y)}px)` }], opts).onfinish = () => this.scheduleGuide();
       }
       if (old.rotation !== pl.rotation) {
         const to = old.rotation + normalise(pl.rotation - old.rotation); // the short way round
@@ -3422,7 +3429,7 @@ export class FridgeFace extends HTMLElement {
   }
 
   private turnText(): string {
-    return this.guideTouch() ? GUIDE_COPY.step4bTouch : GUIDE_COPY.step4b;
+    return this.guideTouch() ? GUIDE_COPY.step1bTouch : GUIDE_COPY.step1b;
   }
 
   /**
@@ -3433,10 +3440,10 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide;
     if (s.phase === 'ask') return [GUIDE_COPY.step0, '', ''];
     switch (s.step) {
-      case 1: return [GUIDE_COPY.step1, '', ''];
+      case 1: return [s.turn ? this.turnText() : GUIDE_COPY.step1, '', ''];
       case 2: return [GUIDE_COPY.step2, '', ''];
       case 3: return [GUIDE_COPY.step3, '', ''];
-      case 4: return [s.turn ? this.turnText() : GUIDE_COPY.step4a, '', ''];
+      case 4: return [this.stackText(s), '', ''];
       case 5: return [GUIDE_COPY.step5, this.guideWordSuggestion() ? GUIDE_COPY.step5Ask : '', ''];
       case 6: {
         const p = guideProgress(s);
@@ -3525,7 +3532,7 @@ export class FridgeFace extends HTMLElement {
     if (!active.length) return;
     const k = this.k * this.view.zoom; // CSS px per board unit
     const draw = (i: number) => {
-      const o = s.outlines[i];
+      const o = shownOutline(s, i); // step 1a: the wedge at the angle it lands at
       const sh = SHAPE_BY_ID.get(o.shapeId);
       if (!sh) return;
       const solid = sh.polarity === 'positive';
@@ -3580,7 +3587,10 @@ export class FridgeFace extends HTMLElement {
     return { x: left, y: top, w: Math.max(0, right - left), h: Math.max(0, bottom - top) };
   }
 
-  /** The controls the callout must not cover: the dock panels (the button block among them) and the notice. */
+  /**
+   * The controls: the dock panels (the button block among them) and the notice. Phones' framing keeps the outlines clear of
+   * them, and a far-off pointer that would land on one hides. Since v1.6.0 the callout itself may cover them.
+   */
   private guideObstacles(): Rect[] {
     const out: Rect[] = [];
     const shown = (e: HTMLElement) => !e.hidden && !e.closest('[hidden]') && getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden';
@@ -3593,8 +3603,8 @@ export class FridgeFace extends HTMLElement {
   }
 
   /**
-   * What the current step points at and which sides to try. Steps 1, 2 and 4 (4a): the tray shape to drag. 4b and step 6's
-   * hint: the rotate handle of the piece that needs turning (or the piece). Step 3 and step 6's stacking prompt: the block's
+   * What the current step points at and which sides to try. Steps 1 (1a), 2 and 3: the tray shape to drag. 1b and step 6's
+   * hint: the rotate handle of the piece that needs turning (or the piece). Step 4 and step 6's stacking prompt: the block's
    * Back (Send backward) or Forward (Bring forward) (the piece itself while the block's buttons are not showing). Step 6: the tray. Steps 5 and 7:
    * the board (centred).
    */
@@ -3602,7 +3612,7 @@ export class FridgeFace extends HTMLElement {
     const s = this.guide;
     const visible = (r: Rect) => r.w > 0 && r.x + r.w / 2 >= bounds.x && r.x + r.w / 2 <= bounds.x + bounds.w && r.y + r.h / 2 >= bounds.y && r.y + r.h / 2 <= bounds.y + bounds.h;
     const board: GuideTarget = { target: null, avoid: [], prefer: [], kind: 'board' };
-    if (s.turn && (s.step === 4 || s.step === 6)) {
+    if (s.turn && (s.step === 1 || s.step === 6)) {
       const out: GuideTarget[] = [];
       if (this.selection.length === 1 && this.selection[0] === s.turn) {
         const hit = this.overlay.querySelector<SVGElement>('[data-handle] circle');
@@ -3627,7 +3637,7 @@ export class FridgeFace extends HTMLElement {
       if (out.length) return [...out, board];
     }
     const tray = toRect(this.trayEl.getBoundingClientRect());
-    if (s.step === 1 || s.step === 2 || s.step === 4) {
+    if (s.step === 1 || s.step === 2 || s.step === 3) {
       const o = s.outlines[activeOutlines(s)[0] ?? -1];
       const btn = o ? this.trayEl.querySelector(`button[data-shape="${o.shapeId}"]`) : null;
       const r = btn ? toRect(btn.getBoundingClientRect()) : null;
@@ -3869,7 +3879,8 @@ export class FridgeFace extends HTMLElement {
    * button block and the tray leave (`frameClear`: the largest free strip wins, the c centred in it).
    */
   private fitC(widths: readonly number[], bounds: Rect, obstacles: readonly Rect[]) {
-    const list = this.guide.outlines;
+    // Every outline of the c, and the wedge's landing outline (step 1a draws it there; v1.6.0).
+    const list = [...this.guide.outlines, ...this.guide.outlines.filter((o) => o.shapeId === 'wedge').map(landingOutline)];
     const b = this.tightBounds(list);
     if (!b) return;
     const v = this.visibleView();
@@ -4011,14 +4022,23 @@ export class FridgeFace extends HTMLElement {
       this.renderOutlines();
     } else if (this.wordFitPending && this.guide.phase !== 'word') this.wordFitPending = false;
     if (this.cFitPending && this.guide.phase !== 'c') this.cFitPending = false;
-    // The active outlines and the piece being turned toward one must stay in sight: the callout never covers them.
+    // The active outlines and the piece being turned toward one must stay in sight: the callout never covers them. Since
+    // v1.6.0 the dock panels, the button block, the tray and the notice are NOT obstacles to it (it may cover them, so it
+    // sits close to what it points at); only what the step is about stays clear: its target, the piece it acts on, every
+    // rotate handle and the active outlines.
     const st = this.guide;
-    const outlineRects = activeOutlines(st).map((i) => this.outlineRect(st.outlines[i]));
+    const outlineRects = activeOutlines(st).map((i) => this.outlineRect(shownOutline(st, i)));
     const turnEl = st.turn ? this.els.get(st.turn)?.g.querySelector('.bd') : null;
     // ...and neither may any rotate handle (a single piece's or a selection's, in every step): the visitor needs it to turn
     // what they hold, and the 3b hint asks for it. Its whole 44 px hit box, plus a margin.
     const handles = this.handleRects();
-    const hard = [...obstacles, ...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : []), ...handles];
+    const hard = [...outlineRects, ...(turnEl ? [toRect(turnEl.getBoundingClientRect())] : []), ...handles];
+    // Two exceptions keep the controls clear: a callout with nothing to point at (steps 0, 5 and 7, centred) has no reason to
+    // sit on them; and in the word (steps 6 and 7) the button block stays clear, because building "create" leans on its
+    // Undo, Redo, Back and Forward the whole way through.
+    const block = toRect(this.blockEl.getBoundingClientRect());
+    const wordBlock = st.phase === 'word' && block.w > 0 && block.h > 0 ? [block] : [];
+    const clearOf = (o: GuideTarget) => [...hard, ...o.avoid, ...(o.target ? wordBlock : obstacles)];
     // If no spot clears everything, these still win over the controls and the pieces (placeCallout's last resort).
     const must = [...handles, ...outlineRects];
     // Steps 5 and 7 (centred): keep the finished letter or word in sight where the board allows.
@@ -4050,10 +4070,11 @@ export class FridgeFace extends HTMLElement {
       g.style.maxWidth = w ? `${w}px` : '';
       const size = { w: g.offsetWidth, h: g.offsetHeight };
       let pick = options[options.length - 1];
-      let p = placeCallout(size, pick.target, bounds, hard, pick.prefer, [...pick.avoid, ...done], pieces, undefined, must, pick.kind === 'action');
+      // The piece a target's step acts on (`avoid`: the piece to restack) is never covered either.
+      let p = placeCallout(size, pick.target, bounds, clearOf(pick), pick.prefer, done, pieces, undefined, [...must, ...pick.avoid], pick.kind === 'action');
       for (const o of options) {
         // The block's Back / Forward sit side by side: the arrow must be level with the one it means (pointFirst).
-        const q = placeCallout(size, o.target, bounds, hard, o.prefer, [...o.avoid, ...done], pieces, undefined, must, o.kind === 'action');
+        const q = placeCallout(size, o.target, bounds, clearOf(o), o.prefer, done, pieces, undefined, [...must, ...o.avoid], o.kind === 'action');
         if (q.side !== 'centre' || !o.target) {
           pick = o;
           p = q;
@@ -4064,7 +4085,7 @@ export class FridgeFace extends HTMLElement {
       const c = coverage(box, pieces);
       // First never over a handle or an active outline; then clear of every control too; then pointing at its target
       // (a centred last resort does not); then covering the fewest pieces.
-      const rank = (must.some((q) => rectsOverlap(box, q)) ? 0 : 4) + (hard.some((q) => rectsOverlap(box, q)) ? 0 : 2) + (pick.target && p.side !== 'centre' ? 1 : 0);
+      const rank = (must.some((q) => rectsOverlap(box, q)) ? 0 : 4) + (clearOf(pick).some((q) => rectsOverlap(box, q)) ? 0 : 2) + (pick.target && p.side !== 'centre' ? 1 : 0);
       const better = !best || rank > best.rank || (rank === best.rank && (c.n < best.n || (c.n === best.n && c.a < best.a * 0.8)));
       if (better) best = { w, pick, p, n: c.n, a: c.a, rank };
       if (!c.n && best!.rank >= 6) break; // clear of every piece and obstacle: no need to narrow further
@@ -4075,13 +4096,18 @@ export class FridgeFace extends HTMLElement {
     g.dataset.side = p.side;
     // v1.5.0: on phones the button block stands between the callout and the tray. A pointer that would land on a control it
     // is not about (the tray shape behind the block) would seem to point at that control instead: it is hidden (kept in
-    // layout, so its nudge still runs). The block's own Back / Forward are its target in step 3, so there it always shows.
+    // layout, so its nudge still runs). The block's own Back / Forward are its target in step 4, so there it always shows.
+    // v1.6.0: the callout may cover controls, so it usually sits right by its target: a pointer that close is plainly about
+    // the target, so it shows whatever it overlaps; only one standing farther off (pushed by a handle or an outline) hides.
     const cw = g.offsetWidth, ch = g.offsetHeight;
     const tip: Rect | null = p.side === 'above' ? { x: p.x + p.arrow - 13, y: p.y + ch + 6, w: 22, h: 13 }
       : p.side === 'below' ? { x: p.x + p.arrow - 13, y: p.y - 19, w: 22, h: 13 }
         : p.side === 'right' ? { x: p.x - 21, y: p.y + p.arrow - 11, w: 13, h: 22 }
           : p.side === 'left' ? { x: p.x + cw + 4, y: p.y + p.arrow - 11, w: 13, h: 22 } : null;
-    g.toggleAttribute('data-noarrow', !!tip && pick.kind !== 'action' && obstacles.some((q) => rectsOverlap(tip, q)));
+    const t = pick.target;
+    const reach = !t ? 0 : p.side === 'above' ? t.y - (p.y + ch) : p.side === 'below' ? p.y - (t.y + t.h) : p.side === 'right' ? p.x - (t.x + t.w) : p.x + cw - t.x;
+    const far = reach > 22 + 8; // further than the usual gap
+    g.toggleAttribute('data-noarrow', !!tip && pick.kind !== 'action' && far && obstacles.some((q) => rectsOverlap(tip, q)));
     g.dataset.target = pick.kind;
     if (pick.piece) g.dataset.piece = pick.piece;
     else delete g.dataset.piece;

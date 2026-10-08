@@ -42,7 +42,7 @@ _Avoid_: canvas (implementation term), artboard, page
 In visitor-facing copy the board may be called **the fridge** ("Drag the black oval onto the fridge").
 
 **Outline**:
-A guide-only target that shows where one piece of a suggestion belongs during the guide: a solid line for a positive shape, a dotted one for a negative shape. A piece released close to its outline clicks exactly into place (position and angle only: its stacking order is never changed for it); outside the guide, pieces never snap.
+A guide-only target that shows where one piece of a suggestion belongs during the guide: a solid line for a positive shape, a dotted one for a negative shape. A piece released close to its outline clicks exactly into place (position and angle only: its stacking order is never changed for it); outside the guide, pieces never snap. The guide's first outline, the wedge's, is drawn at first at the angle a piece from the tray lands at: a wedge released close to it clicks into position only, then turns into the outline.
 _Avoid_: ghost, placeholder, template, snap target
 
 **Order-free pair**:
