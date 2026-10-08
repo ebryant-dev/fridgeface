@@ -393,6 +393,11 @@ button.b:focus-visible, .linkbox input:focus-visible, .helpbody:focus-visible { 
 .guide[hidden], .guide [hidden] { display: none !important; }
 .gtext { margin: 0; font: 700 14px/1.35 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
 .gtext .gt2, .gtext .gt3 { display: block; margin-top: 4px; }
+/* v1.6.7: the welcome question is centred (text and buttons), and the tagline stands on the board right above it, centred on the callout. */
+.guide[data-welcome] .gtext { text-align: center; }
+.guide[data-welcome] .grow { justify-content: center; }
+.gtag { position: absolute; left: 50%; bottom: calc(100% + 2px + var(--tg-gap, 23px)); transform: translateX(-50%); width: max-content; margin: 0; padding: 0; background: none; color: #000; pointer-events: none; text-align: center; white-space: nowrap; font: 700 var(--tg-size, 28px)/1.25 var(--font); letter-spacing: 0.08em; text-transform: uppercase; }
+.gtag span { display: block; }
 .gtext .gt2.gprog { font-weight: 500; letter-spacing: 0.12em; }
 .grow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .grow.gctl button.b { font-size: 11px; padding: 0 10px; }
@@ -826,6 +831,7 @@ export class FridgeFace extends HTMLElement {
       </div>
       <div class="guide" role="group" aria-label="Guide" data-step="0" hidden>
         <span class="gpt" aria-hidden="true"><svg viewBox="0 0 22 13" width="22" height="13" focusable="false"><path d="M1.5 1 L11 12 L20.5 1 Z" fill="#000" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg></span>
+        <p class="gtag" hidden><span>${GUIDE_COPY.tagline[0]}</span><span>${GUIDE_COPY.tagline[1]}</span></p>
         <p class="gtext"><span class="gt1"></span><span class="gt2" hidden></span><span class="gt3" hidden></span></p>
         <div class="grow gpick" data-pick="0" hidden>
           <button type="button" class="b" data-guide="clean"><span class="tx">${GUIDE_COPY.clearStart}</span></button>
@@ -3769,6 +3775,7 @@ export class FridgeFace extends HTMLElement {
     const welcome = this.guide.phase === 'welcome';
     g.toggleAttribute('data-ask', ask);
     g.toggleAttribute('data-welcome', welcome);
+    g.querySelector<HTMLElement>('.gtag')!.hidden = !welcome; // v1.6.7: the tagline stands above the welcome question only
     g.toggleAttribute('data-turn', !!this.guide.turn);
     const lines = this.guideLines();
     ['.gt1', '.gt2', '.gt3'].forEach((sel, i) => {
@@ -4294,6 +4301,28 @@ export class FridgeFace extends HTMLElement {
     this.scheduleGuide();
   }
 
+  /**
+   * v1.6.7: the welcome question's tagline, sized to fit the board (16 px gutters) and the room: its width and height and
+   * the gap above the callout, all 0 at every other step. Phones 22 px, desktop 28; it shrinks (and the gap to 14) in a tight room.
+   */
+  private fitTagline(bounds: Rect): { w: number; h: number; gap: number } {
+    const el = this.guideEl.querySelector<HTMLElement>('.gtag')!;
+    if (el.hidden) return { w: 0, h: 0, gap: 0 };
+    const avail = Math.min(bounds.w, this.boardEl.getBoundingClientRect().width - 32);
+    let size = this.isCompact ? 22 : 28, gap = 23;
+    const put = () => {
+      el.style.setProperty('--tg-size', `${size}px`);
+      el.style.setProperty('--tg-gap', `${gap}px`);
+      return { w: el.offsetWidth, h: el.offsetHeight };
+    };
+    let m = put();
+    if (m.w > avail && m.w) { size = Math.max(10, Math.floor(size * avail / m.w)); m = put(); }
+    const room = bounds.h - this.guideEl.offsetHeight;
+    if (m.h + gap > room) { gap = 14; m = put(); }
+    while (m.h + gap > room && size > 12) { size -= 1; m = put(); }
+    return { w: m.w, h: m.h, gap };
+  }
+
   /** Show, fill and place the callout, or hide it while a sheet, dialog or menu is open or a piece is in the hand. */
   private syncGuide() {
     this.placeGuideBar(); // the bar follows the layout (it shows even while the callout hides)
@@ -4410,11 +4439,13 @@ export class FridgeFace extends HTMLElement {
       // Forward sit side by side: the arrow must be level with the one it means (pointFirst).
       p: placeCallout(size, o.target, bounds, [...clearOf(o), ...extra], o.prefer, done, pieces, undefined, [...must, ...o.avoid], o.kind === 'action'),
     }));
+    // v1.6.7: on the welcome question the tagline above the callout is placed with it, as one block.
+    const tag = this.fitTagline(bounds);
     for (const w of tryWidths) {
       if (w === NARROW && best && best.rank >= 28) break; // only when nothing wider stays clear of every control
       g.toggleAttribute('data-narrow', w === NARROW);
       g.style.maxWidth = w ? `${w}px` : '';
-      const size = { w: g.offsetWidth, h: g.offsetHeight };
+      const size = { w: Math.max(g.offsetWidth, tag.w), h: g.offsetHeight + tag.h + tag.gap };
       // v1.6.3: every target (the handle, then the piece; the restack button, then the piece; ...), each two ways: free to
       // cover the controls (so it can sit right by its target) and clear of them. Covering a control is only worth it when
       // the callout then points at its target from close by; and a target it can stand close to beats one it points at
@@ -4466,8 +4497,8 @@ export class FridgeFace extends HTMLElement {
     if (pick.action) g.dataset.action = pick.action;
     else delete g.dataset.action;
     g.style.setProperty('--ga', `${Math.round(p.arrow)}px`);
-    g.style.left = `${Math.round(p.x - host.left)}px`;
-    g.style.top = `${Math.round(p.y - host.top)}px`;
+    g.style.left = `${Math.round(p.x + (Math.max(cw, tag.w) - cw) / 2 - host.left)}px`;
+    g.style.top = `${Math.round(p.y + tag.h + tag.gap - host.top)}px`;
     if (this.guideFocusOnShow) {
       this.guideFocusOnShow = false;
       // The callout's first button; on an instruction step (v1.6.3: no buttons in the callout), the guide bar's Next.
